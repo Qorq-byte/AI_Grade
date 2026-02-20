@@ -1,0 +1,27 @@
+# Web Framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
+
+# LangChain & LangGraph
+langchain>=0.1.0
+langchain-core>=0.1.0
+langchain-community>=0.0.20
+langgraph>=0.0.20
+langsmith>=0.0.80
+
+# Vector Database & RAG
+chromadb>=0.4.22
+faiss-cpu>=1.7.4
+sentence-transformers>=2.3.1
+
+# LLM Providers
+openai>=1.10.0
+anthropic>=0.8.1
+dashscope>=1.14.0
+
+# Data Validation & Settings
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+python-dotenv>=1.0.0
+
