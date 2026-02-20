@@ -32,3 +32,43 @@ env/
 .env.local
 .env.*.local
 
+# Data directories (created at runtime)
+backend/data/
+backend/exports/
+uploads/
+state_backups/
+frontend/avatars/
+templates/indicator_templates.json
+
+# Documentation
+README*.md
+*.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Docker
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+
+# Windows
+Desktop.ini
+
+# Trae
+.trae/
