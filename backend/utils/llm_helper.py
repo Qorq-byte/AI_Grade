@@ -48,3 +48,48 @@ def get_supported_models() -> List[Dict[str, str]]:
             })
     return models
 
+
+def get_model_provider(model_name: str) -> Optional[str]:
+    """
+    根据模型名称获取提供商
+    
+    Args:
+        model_name: 模型名称
+        
+    Returns:
+        提供商名称，如果未找到返回None
+    """
+    model_lower = model_name.lower()
+    
+    if "qwen" in model_lower:
+        return "qwen"
+    elif "deepseek" in model_lower:
+        return "deepseek"
+    elif "gpt" in model_lower or "openai" in model_lower:
+        return "openai"
+    elif "claude" in model_lower or "anthropic" in model_lower:
+        return "anthropic"
+    else:
+        return None
+
+
+def is_model_supported(model_name: str) -> bool:
+    """
+    检查模型是否支持
+    
+    Args:
+        model_name: 模型名称
+        
+    Returns:
+        是否支持
+    """
+    return get_model_provider(model_name) is not None
+
+
+def get_model_info(model_name: str) -> Optional[Dict]:
+    """
+    获取模型详细信息
+    
+    Args:
+        model_name: 模型名称
+        
