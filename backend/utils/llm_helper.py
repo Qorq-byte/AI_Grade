@@ -93,3 +93,50 @@ def get_model_info(model_name: str) -> Optional[Dict]:
     Args:
         model_name: 模型名称
         
+    Returns:
+        模型信息字典
+    """
+    provider = get_model_provider(model_name)
+    if not provider:
+        return None
+    
+    provider_info = SUPPORTED_MODELS.get(provider)
+    if not provider_info:
+        return None
+    
+    return {
+        "model": model_name,
+        "provider": provider_info["provider"],
+        "category": provider,
+        "config_key": provider_info["config_key"]
+    }
+
+
+def validate_api_key(provider: str, api_key: str) -> bool:
+    """
+    验证API密钥是否有效（简单验证）
+
+    Args:
+        provider: 提供商名称
+        api_key: API密钥
+
+    Returns:
+        是否有效
+    """
+    if not api_key or api_key.strip() == "":
+        logger.warning(f"{provider} API密钥未配置")
+        return False
+
+    # 简单的格式验证
+    if len(api_key) < 10:
+        logger.warning(f"{provider} API密钥格式可能不正确")
+        return False
+
+    return True
+
+
+def get_model_credentials(model_name: str) -> dict:
+    """
+    根据模型名称返回对应的API密钥和base_url
+    统一管理所有LLM提供商的凭证，避免硬编码
+
