@@ -55,3 +55,52 @@ class Settings(BaseSettings):
     CHROMA_DB_PATH: str = "./backend/data/chroma_db"
     REDIS_URL: str = "redis://localhost:6379/0"
     
+    @property
+    def DATABASE_URL(self) -> str:
+        """获取MySQL数据库连接URL"""
+        encoded_password = quote_plus(self.MYSQL_PASSWORD)
+        return (
+            f"mysql+pymysql://{self.MYSQL_USER}:{encoded_password}"
+            f"@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{self.MYSQL_DATABASE}"
+        )
+    
+    # JWT Configuration
+    JWT_SECRET_KEY: str = ""
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24小时
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 30
+
+    # CORS Configuration
+    ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:5173,http://localhost:8000"
+    
+    # Model Parameters
+    DEFAULT_MODEL: str = "qwen-long"
+    TEMPERATURE: float = 0.7
+    TOP_P: float = 0.9
+    MAX_TOKENS: int = 4000
+    
+    # ─── 连接池配置 ───
+    DB_POOL_SIZE: int = 10
+    DB_POOL_RECYCLE: int = 3600
+    
+    class Config:
+        env_file = ".env"
+        case_sensitive = True
+    
+    def get_allowed_origins(self) -> List[str]:
+        """获取CORS允许的源列表"""
+        return [origin.strip() for origin in self.ALLOWED_ORIGINS.split(",")]
+
+    def validate_required_settings(self) -> list[str]:
+        """校验生产环境必需的配置项，返回缺失项的列表"""
+        issues = []
+        if not self.JWT_SECRET_KEY:
+            issues.append("JWT_SECRET_KEY 未配置")
+        if not self.MYSQL_PASSWORD:
+            issues.append("MYSQL_PASSWORD 未配置")
+        if not self.DASHSCOPE_API_KEY and not self.OPENAI_API_KEY and not self.DEEPSEEK_API_KEY:
+            issues.append("至少需要一个LLM API Key")
+        return issues
+
+
+# 创建全局配置实例
+settings = Settings()
