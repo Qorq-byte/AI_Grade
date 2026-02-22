@@ -140,3 +140,51 @@ def get_model_credentials(model_name: str) -> dict:
     根据模型名称返回对应的API密钥和base_url
     统一管理所有LLM提供商的凭证，避免硬编码
 
+    Args:
+        model_name: 模型名称
+
+    Returns:
+        包含 api_key 和 base_url 的字典
+    """
+    from backend.config import settings
+    import os
+
+    provider = get_model_provider(model_name)
+
+    if provider == "deepseek":
+        return {
+            "api_key": os.environ.get("DEEPSEEK_API_KEY", "") or settings.DEEPSEEK_API_KEY,
+            "base_url": os.environ.get("DEEPSEEK_BASE_URL", "") or settings.DEEPSEEK_BASE_URL or "https://api.deepseek.com/v1",
+        }
+    elif provider == "openai":
+        return {
+            "api_key": os.environ.get("OPENAI_API_KEY", "") or settings.OPENAI_API_KEY,
+            "base_url": "https://api.openai.com/v1",
+        }
+    elif provider == "anthropic":
+        return {
+            "api_key": os.environ.get("ANTHROPIC_API_KEY", "") or settings.ANTHROPIC_API_KEY,
+            "base_url": "https://api.anthropic.com",
+        }
+    else:
+        # 默认使用通义千问（DashScope 兼容模式）
+        return {
+            "api_key": os.environ.get("DASHSCOPE_API_KEY", "") or settings.DASHSCOPE_API_KEY,
+            "base_url": os.environ.get("DASHSCOPE_BASE_URL", "") or "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        }
+
+
+if __name__ == "__main__":
+    # 测试
+    print("支持的模型列表:")
+    for model in get_supported_models():
+        print(f"  - {model['model']} ({model['provider']})")
+    
+    print("\n模型检测测试:")
+    test_models = ["gpt-4", "claude-3-sonnet", "qwen-plus", "deepseek-chat"]
+    for model in test_models:
+        info = get_model_info(model)
+        if info:
+            print(f"  {model}: {info['provider']}")
+        else:
+            print(f"  {model}: 不支持")
