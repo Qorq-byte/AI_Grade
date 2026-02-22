@@ -50,3 +50,51 @@ def _serve_page(path: str, name: str) -> FileResponse:
     if not full_path.exists():
         raise HTTPException(status_code=404, detail=f"{name}页面不存在")
 
+    resp = FileResponse(str(full_path))
+    # HTML 页面禁用缓存以确保用户看到最新版本
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
+
+def _register_page_routes():
+    """动态注册所有前端页面路由"""
+    for route, (path, name) in _PAGE_ROUTES.items():
+        def _handler(p=path, n=name):
+            return _serve_page(p, n)
+        _handler.__name__ = f"page_{name}"
+        app.get(route)(_handler)
+
+_register_page_routes()
+
+# 配置CORS（允许前端跨域访问）
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.get_allowed_origins(),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 全局异常处理 — 确保所有异常返回JSON而非HTML traceback
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"success": False, "detail": exc.detail},
+        headers=getattr(exc, "headers", None),
+    )
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"未处理的异常 [{request.method} {request.url.path}]: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"success": False, "detail": f"服务器内部错误: {str(exc)}"},
+    )
+
+# 导入路由
+from backend.routes import agent_routes
+from backend.routes.client_routes import router as client_router
+
+
