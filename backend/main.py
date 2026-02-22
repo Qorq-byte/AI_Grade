@@ -98,3 +98,42 @@ from backend.routes import agent_routes
 from backend.routes.client_routes import router as client_router
 
 
+@app.on_event("startup")
+async def startup_event():
+    """应用启动事件"""
+    logger.info(f"{settings.APP_NAME} v{settings.APP_VERSION} 启动中...")
+    
+    # ── 环境配置校验 ──
+    config_issues = settings.validate_required_settings()
+    if config_issues:
+        logger.warning("=" * 50)
+        logger.warning("环境配置缺失，请检查以下配置项（可参考 .env.example）：")
+        for issue in config_issues:
+            logger.warning(f"  ⚠ {issue}")
+        logger.warning("=" * 50)
+    
+    logger.info(f"LangSmith追踪: {'启用' if settings.LANGCHAIN_TRACING_V2 else '禁用'}")
+    logger.info(f"默认模型: {settings.DEFAULT_MODEL}")
+    
+    # 初始化数据库
+    try:
+        from backend.database import init_db
+        # 先导入所有模型，确保Base.metadata包含所有表定义
+        from backend.models.user_models import (
+            User, Project, ProjectFile, WorkflowSession, Report,
+            TokenUsage, PromptTemplate, AiConversation, AiMessage,
+            OperationLog, Notification, ReportModuleSequence,
+        )
+        init_db()
+        logger.info("数据库初始化成功")
+        
+        # 自动创建默认管理员账号
+        from backend.database import SessionLocal
+        from backend.services.auth_service import create_admin_if_not_exists
+        db = SessionLocal()
+        try:
+            create_admin_if_not_exists(db)
+        finally:
+            db.close()
+        logger.info("管理员账号检查完成")
+        
