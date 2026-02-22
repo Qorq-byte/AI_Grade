@@ -196,3 +196,58 @@ def _start_cleanup_scheduler():
                     if stuck_count > 0:
                         logger.info(f"自动清理了 {stuck_count} 个卡住的工作流")
                     
+                    stats = CleanupService.cleanup_expired_files(db)
+                    if stats["deleted_files"] > 0:
+                        logger.info(
+                            f"自动清理完成: 删除 {stats['deleted_files']} 文件, "
+                            f"释放 {stats['freed_disk_bytes']/1024/1024:.2f} MB"
+                        )
+                finally:
+                    db.close()
+            except Exception as e:
+                logger.error(f"自动清理任务执行失败: {e}")
+    
+    asyncio.create_task(_cleanup_loop())
+    logger.info("文件保留清理定时器已启动（每日凌晨3点）")
+    
+@app.on_event("shutdown")
+async def shutdown_event():
+    """应用关闭事件"""
+    logger.info("应用关闭...")
+
+
+@app.get("/health")
+async def health_check():
+    """健康检查接口"""
+    return {
+        "status": "healthy",
+        "service": settings.APP_NAME,
+        "version": settings.APP_VERSION
+    }
+
+
+# 注册路由
+app.include_router(agent_routes.router, prefix="/api/agent", tags=["Agent"])
+from backend.routes.auth_routes import router as auth_router
+app.include_router(auth_router)
+
+from backend.routes.admin_routes import router as admin_router
+app.include_router(admin_router)
+
+app.include_router(client_router)
+
+# 挂载前端静态文件（CSS/JS等）
+if FRONTEND_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="frontend")
+    logger.info(f"前端静态文件已挂载: {FRONTEND_DIR}")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    logger.info(f"启动服务器: http://{settings.HOST}:{settings.PORT}")
+    uvicorn.run(
+        "backend.main:app",
+        host=settings.HOST,
+        port=settings.PORT,
+        reload=settings.DEBUG
+    )
