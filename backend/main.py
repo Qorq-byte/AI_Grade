@@ -137,3 +137,62 @@ async def startup_event():
             db.close()
         logger.info("管理员账号检查完成")
         
+        # 自动填充默认Prompt模板到数据库（仅插入缺失步骤）
+        from backend.agents.prompts.default_prompts import PromptTemplateFactory, STEP_META
+        db2 = SessionLocal()
+        try:
+            for step_number in range(1, 15):
+                existing = db2.query(PromptTemplate).filter_by(
+                    step_number=step_number, is_system=True
+                ).first()
+                if existing is None:
+                    meta = STEP_META.get(step_number, {"name": f"Step {step_number}"})
+                    system_prompt = PromptTemplateFactory.build_raw_system_prompt(step_number)
+                    human_prompt = PromptTemplateFactory.build_raw_human_prompt(step_number)
+                    full_prompt = f"{system_prompt}\n\n---\n\n{human_prompt}"
+                    pt = PromptTemplate(
+                        step_number=step_number,
+                        step_name=meta.get("name", f"Step {step_number}"),
+                        prompt_content=full_prompt,
+                        is_system=True,
+                        version=1,
+                        change_log="系统初始化默认模板",
+                    )
+                    db2.add(pt)
+            db2.commit()
+            logger.info("默认Prompt模板已同步到数据库")
+        except Exception as e:
+            logger.warning(f"默认Prompt模板同步失败（非致命）: {e}")
+        finally:
+            db2.close()
+        
+        # ── 启动文件保留清理任务 ──
+        _start_cleanup_scheduler()
+        
+    except Exception as e:
+        logger.error(f"数据库初始化失败: {str(e)}")
+
+
+def _start_cleanup_scheduler():
+    """启动后台定时清理任务（每天凌晨3点检查）"""
+    from backend.services.cleanup_service import CleanupService
+    from backend.database import SessionLocal
+    
+    async def _cleanup_loop():
+        while True:
+            now = datetime.now()
+            next_run = now.replace(hour=3, minute=0, second=0, microsecond=0)
+            if next_run <= now:
+                next_run = next_run + timedelta(days=1)
+            wait_seconds = (next_run - now).total_seconds()
+            
+            logger.info(f"文件清理任务将在 {next_run.strftime('%Y-%m-%d %H:%M:%S')} 执行（等待 {wait_seconds/3600:.1f} 小时）")
+            await asyncio.sleep(wait_seconds)
+            
+            try:
+                db = SessionLocal()
+                try:
+                    stuck_count = CleanupService.cleanup_failed_workflows(db, max_age_hours=24)
+                    if stuck_count > 0:
+                        logger.info(f"自动清理了 {stuck_count} 个卡住的工作流")
+                    
