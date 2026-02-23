@@ -213,3 +213,65 @@ class WorkflowSession(Base):
     """
     __tablename__ = "workflow_sessions"
 
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String(100), unique=True, nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    project_name = Column(String(200), nullable=False)
+    project_type = Column(String(50), default="部门评价")
+    status = Column(String(20), default="created", index=True)  # created/running/paused/completed/failed
+    current_step = Column(Integer, default=0)
+    completed_steps = Column(Text, nullable=True)  # JSON: [1,2,3,...]
+    model_name = Column(String(100), nullable=True)
+    use_rag = Column(Boolean, default=False)
+    comparison_mode = Column(String(20), default="single")
+    temperature_profile = Column(String(20), default="normal")
+    checkpoint_data = Column(MEDIUMTEXT, nullable=True)  # JSON: 序列化的langgraph状态
+    final_report = Column(MEDIUMTEXT, nullable=True)
+    errors = Column(Text, nullable=True)  # JSON: [...]
+    warnings = Column(Text, nullable=True)  # JSON: [...]
+    token_used = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True, index=True)
+
+    def __repr__(self):
+        return f"<WorkflowSession(id={self.id}, session={self.session_id}, status={self.status})>"
+
+
+class OperationLog(Base):
+    """
+    操作日志 / 审计日志表
+    记录所有关键操作，用于Admin面板展示
+    """
+    __tablename__ = "operation_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    username = Column(String(50), nullable=True)
+    action = Column(String(50), nullable=False)  # login/logout/create_project/delete_project/export/admin_action
+    resource_type = Column(String(50), nullable=True)  # user/project/report/system
+    resource_id = Column(String(100), nullable=True)
+    detail = Column(Text, nullable=True)
+    ip_address = Column(String(50), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    def __repr__(self):
+        return f"<OperationLog(id={self.id}, user={self.username}, action={self.action})>"
+
+
+class AiConversation(Base):
+    """AI对话表"""
+    __tablename__ = "ai_conversations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    title = Column(String(200), nullable=False, default="新对话")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", backref="ai_conversations")
+    messages = relationship("AiMessage", back_populates="conversation", cascade="all, delete-orphan", order_by="AiMessage.created_at")
+
+    def __repr__(self):
+        return f"<AiConversation(id={self.id}, title={self.title})>"
+
