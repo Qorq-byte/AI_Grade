@@ -275,3 +275,58 @@ class AiConversation(Base):
     def __repr__(self):
         return f"<AiConversation(id={self.id}, title={self.title})>"
 
+
+class AiMessage(Base):
+    """AI消息表"""
+    __tablename__ = "ai_messages"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(Integer, ForeignKey("ai_conversations.id"), nullable=False, index=True)
+    role = Column(String(20), nullable=False)  # user / assistant
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    conversation = relationship("AiConversation", back_populates="messages")
+
+    def __repr__(self):
+        return f"<AiMessage(id={self.id}, role={self.role})>"
+
+
+class Notification(Base):
+    """通知表 — 管理端向客户端发送通知"""
+    __tablename__ = "notifications"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    title = Column(String(200), nullable=False)
+    content = Column(Text, nullable=False)
+    is_read = Column(Boolean, default=False, index=True)
+    sender_id = Column(Integer, nullable=True)  # 发送者（管理员）ID
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    user = relationship("User", backref="notifications")
+
+    def __repr__(self):
+        return f"<Notification(id={self.id}, title={self.title}, read={self.is_read})>"
+
+
+class ReportModuleSequence(Base):
+    """
+    报告模块顺序管理表
+    管理端配置各步骤中报告模块的显示顺序、名称、是否可被客户端编辑
+    对应工作文档：步骤6/13/14 的模块顺序管理
+    """
+    __tablename__ = "report_module_sequences"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    step_number = Column(Integer, nullable=False, index=True)      # 关联步骤
+    module_key = Column(String(100), nullable=False)                # 模块唯一标识
+    module_name = Column(String(200), nullable=False)               # 模块显示名称
+    sort_order = Column(Integer, default=0)                         # 排序
+    is_visible = Column(Boolean, default=True)                      # 是否可见
+    client_editable = Column(Boolean, default=True)                 # 客户端是否可调序（仅序，不可改名）
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<ReportModuleSequence(id={self.id}, step={self.step_number}, key={self.module_key})>"
