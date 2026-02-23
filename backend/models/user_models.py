@@ -54,3 +54,113 @@ class Project(Base):
     def __repr__(self):
         return f"<Project(id={self.id}, name={self.project_name}, status={self.status})>"
 
+
+class Report(Base):
+    __tablename__ = "reports"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    step_number = Column(Integer, nullable=False)
+    step_name = Column(String(100), nullable=False)
+    content = Column(MEDIUMTEXT, nullable=True)
+    model_used = Column(String(100), nullable=True)
+    version = Column(Integer, default=1)
+    is_final = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    project = relationship("Project", back_populates="reports")
+
+    def __repr__(self):
+        return f"<Report(id={self.id}, step={self.step_name}, version={self.version})>"
+
+
+class ProjectFile(Base):
+    __tablename__ = "project_files"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    original_name = Column(String(255), nullable=False)
+    file_type = Column(String(20), nullable=False)
+    file_path = Column(String(500), nullable=False)
+    file_size = Column(Integer, default=0)
+    upload_type = Column(String(20), default="通用")
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    expires_at = Column(DateTime, nullable=True)
+
+    project = relationship("Project", back_populates="files")
+
+    def __repr__(self):
+        return f"<ProjectFile(id={self.id}, name={self.original_name})>"
+
+
+class TokenUsage(Base):
+    __tablename__ = "token_usage"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    session_id = Column(String(100), nullable=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True)
+    step_number = Column(Integer, nullable=True)
+    model_name = Column(String(100), nullable=False)
+    prompt_tokens = Column(Integer, default=0)
+    completion_tokens = Column(Integer, default=0)
+    total_tokens = Column(Integer, default=0)
+    cost = Column(Float, default=0.0)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    user = relationship("User", back_populates="token_records")
+
+    def __repr__(self):
+        return f"<TokenUsage(id={self.id}, tokens={self.total_tokens})>"
+
+
+class ModelConfig(Base):
+    __tablename__ = "model_configs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    platform = Column(String(50), nullable=False)
+    model_name = Column(String(100), nullable=False, index=True)
+    model_id = Column(String(100), nullable=True)
+    api_key = Column(String(500), nullable=True)
+    api_base_url = Column(String(500), nullable=True)
+    is_enabled = Column(Boolean, default=True)
+    supports_vision = Column(Boolean, default=False)
+    supports_file = Column(Boolean, default=False)
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<ModelConfig(id={self.id}, name={self.model_name}, platform={self.platform})>"
+
+
+class PromptTemplate(Base):
+    __tablename__ = "prompt_templates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    step_number = Column(Integer, nullable=False, index=True)
+    step_name = Column(String(100), nullable=False)
+    prompt_content = Column(Text, nullable=True)
+    is_system = Column(Boolean, default=False)
+    # ── 粒度化字段（支持按指标层级/维度配置） ──
+    indicator_level = Column(Integer, nullable=True)      # 1/2/3 级指标
+    parent_indicator = Column(String(200), nullable=True)  # 所属上级指标名称
+    dimension = Column(String(50), nullable=True)          # 维度: 决策/过程/产出/效益
+    # ── 版本追踪 ──
+    version = Column(Integer, default=1)
+    modified_by = Column(Integer, nullable=True)
+    change_log = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        extra = ""
+        if self.indicator_level:
+            extra += f", level={self.indicator_level}"
+        if self.dimension:
+            extra += f", dim={self.dimension}"
+        return f"<PromptTemplate(id={self.id}, step={self.step_name}, version={self.version}{extra})>"
+
