@@ -164,3 +164,52 @@ class PromptTemplate(Base):
             extra += f", dim={self.dimension}"
         return f"<PromptTemplate(id={self.id}, step={self.step_name}, version={self.version}{extra})>"
 
+
+class KnowledgeBase(Base):
+    __tablename__ = "knowledge_base"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(200), nullable=False)
+    content = Column(Text, nullable=False)
+    category = Column(String(100), nullable=True, index=True)
+    step_number = Column(Integer, nullable=True, index=True)
+    indicator_level = Column(Integer, nullable=True)
+    parent_indicator = Column(String(200), nullable=True)  # 关联到具体上级指标
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<KnowledgeBase(id={self.id}, name={self.name})>"
+
+class QuestionnaireAnswer(Base):
+    """
+    调查问卷答案存储表
+    结构化存储李克特量表选择和开放题文本
+    """
+    __tablename__ = "questionnaire_answers"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String(100), nullable=False, index=True)
+    question_id = Column(String(100), nullable=False)
+    question_text = Column(Text, nullable=True)
+    question_type = Column(String(20), nullable=False, default="likert")
+    related_indicator_id = Column(String(100), nullable=True)
+    related_indicator_name = Column(String(200), nullable=True)
+    # 答案：李克特用 selected_level_index (0-4)；开放题用文本
+    selected_level_index = Column(Integer, nullable=True)
+    text_answer = Column(Text, nullable=True)
+    submitter_ip = Column(String(50), nullable=True)
+    submitted_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    def __repr__(self):
+        return f"<QuestionnaireAnswer(id={self.id}, question={self.question_id}, type={self.question_type})>"
+
+
+class WorkflowSession(Base):
+    """
+    工作流会话持久化表
+    支持断点续跑、跨重启恢复
+    """
+    __tablename__ = "workflow_sessions"
+
