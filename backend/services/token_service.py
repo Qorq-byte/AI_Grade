@@ -100,3 +100,103 @@ def extract_token_usage_from_response(response: Any) -> Dict[str, int]:
     """
     result = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     
+    try:
+        # LangChain ChatOpenAI 的 response_metadata
+        if hasattr(response, 'response_metadata'):
+            meta = response.response_metadata
+            if 'token_usage' in meta:
+                usage = meta['token_usage']
+                result["prompt_tokens"] = usage.get('prompt_tokens', 0) or 0
+                result["completion_tokens"] = usage.get('completion_tokens', 0) or 0
+                result["total_tokens"] = usage.get('total_tokens', 0) or 0
+                return result
+        
+        # 尝试从 usage_metadata 获取
+        if hasattr(response, 'usage_metadata'):
+            usage = response.usage_metadata
+            if usage:
+                result["prompt_tokens"] = usage.get('input_tokens', 0) or 0
+                result["completion_tokens"] = usage.get('output_tokens', 0) or 0
+                result["total_tokens"] = usage.get('total_tokens', 0) or 0
+                return result
+        
+        # 尝试从 additional_kwargs 获取
+        if hasattr(response, 'additional_kwargs'):
+            ak = response.additional_kwargs
+            if 'usage' in ak:
+                u = ak['usage']
+                result["prompt_tokens"] = u.get('prompt_tokens', 0) or 0
+                result["completion_tokens"] = u.get('completion_tokens', 0) or 0
+                result["total_tokens"] = u.get('total_tokens', 0) or 0
+                return result
+    except Exception as e:
+        logger.info("提取token用量失败（非关键）: model={} error={}", 
+                     getattr(response, 'model', 'unknown'), str(e))
+    
+    return result
+
+
+def get_user_token_usage(
+    db: Session,
+    user_id: int,
+    days: int = 30
+) -> Dict[str, Any]:
+    """
+    获取用户的token使用统计
+    
+    Args:
+        db: 数据库会话
+        user_id: 用户ID
+        days: 统计最近N天
+    
+    Returns:
+        统计结果字典
+    """
+    from backend.models.user_models import User, TokenUsage
+    from sqlalchemy import func, text
+    
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        return {"total_tokens": 0, "daily_usage": [], "by_model": []}
+    
+    # 每日使用统计
+    daily = (
+        db.query(
+            func.date(TokenUsage.created_at).label('date'),
+            func.sum(TokenUsage.total_tokens).label('tokens'),
+            func.count(TokenUsage.id).label('calls'),
+        )
+        .filter(
+            TokenUsage.user_id == user_id,
+            TokenUsage.created_at >= text("DATE_SUB(NOW(), INTERVAL :days DAY)")
+        )
+        .params(days=days)
+        .group_by(func.date(TokenUsage.created_at))
+        .order_by(func.date(TokenUsage.created_at).desc())
+        .all()
+    )
+    
+    # 按模型统计
+    by_model = (
+        db.query(
+            TokenUsage.model_name,
+            func.sum(TokenUsage.total_tokens).label('tokens'),
+            func.count(TokenUsage.id).label('calls'),
+        )
+        .filter(TokenUsage.user_id == user_id)
+        .group_by(TokenUsage.model_name)
+        .order_by(func.sum(TokenUsage.total_tokens).desc())
+        .all()
+    )
+    
+    return {
+        "total_tokens": user.tokens_used or 0,
+        "daily_usage": [
+            {"date": str(d.date), "tokens": d.tokens, "calls": d.calls}
+            for d in daily
+        ],
+        "by_model": [
+            {"model": m.model_name, "tokens": m.tokens, "calls": m.calls}
+            for m in by_model
+        ],
+    }
