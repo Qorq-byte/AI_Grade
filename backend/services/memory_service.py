@@ -173,3 +173,94 @@ class MemoryService:
             LongTermMemory.last_accessed_at.desc()
         ).limit(limit).all()
         
+        # 更新访问次数
+        for memory in memories:
+            memory.access_count += 1
+            memory.last_accessed_at = datetime.now(timezone.utc)
+        self.db.commit()
+        
+        return memories
+    
+    def update_memory_importance(
+        self,
+        memory_id: int,
+        new_importance: float
+    ):
+        """更新记忆重要性评分"""
+        memory = self.db.query(LongTermMemory).filter(
+            LongTermMemory.id == memory_id
+        ).first()
+        if memory:
+            memory.importance_score = new_importance
+            memory.updated_at = datetime.now(timezone.utc)
+            self.db.commit()
+    
+    def deactivate_memory(self, memory_id: int):
+        """停用记忆（软删除）"""
+        memory = self.db.query(LongTermMemory).filter(
+            LongTermMemory.id == memory_id
+        ).first()
+        if memory:
+            memory.is_active = False
+            memory.updated_at = datetime.now(timezone.utc)
+            self.db.commit()
+            logger.info(f"停用长期记忆: {memory_id}")
+    
+    # ==================== 对话总结 ====================
+    
+    def add_conversation_summary(
+        self,
+        session_id: str,
+        summary_content: str,
+        start_message_id: Optional[int] = None,
+        end_message_id: Optional[int] = None,
+        tokens_saved: int = 0
+    ) -> ConversationSummary:
+        """添加对话总结"""
+        summary = ConversationSummary(
+            session_id=session_id,
+            summary_content=summary_content,
+            start_message_id=start_message_id,
+            end_message_id=end_message_id,
+            tokens_saved=tokens_saved,
+            created_at=datetime.now(timezone.utc)
+        )
+        self.db.add(summary)
+        self.db.commit()
+        self.db.refresh(summary)
+        logger.info(f"添加对话总结: tokens_saved={tokens_saved}")
+        return summary
+    
+    def get_latest_summary(
+        self,
+        session_id: str
+    ) -> Optional[ConversationSummary]:
+        """获取最新的对话总结"""
+        return self.db.query(ConversationSummary).filter(
+            ConversationSummary.session_id == session_id
+        ).order_by(
+            ConversationSummary.created_at.desc()
+        ).first()
+    
+    # ==================== 记忆统计 ====================
+    
+    def get_memory_stats(self, session_id: str) -> Dict:
+        """获取记忆统计信息"""
+        short_term_count = self.db.query(ShortTermMemory).filter(
+            ShortTermMemory.session_id == session_id
+        ).count()
+        
+        long_term_count = self.db.query(LongTermMemory).filter(
+            LongTermMemory.session_id == session_id,
+            LongTermMemory.is_active == True
+        ).count()
+        
+        summary_count = self.db.query(ConversationSummary).filter(
+            ConversationSummary.session_id == session_id
+        ).count()
+        
+        return {
+            "short_term_memories": short_term_count,
+            "long_term_memories": long_term_count,
+            "conversation_summaries": summary_count
+        }
