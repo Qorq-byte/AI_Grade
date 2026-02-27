@@ -164,3 +164,88 @@ class CleanupService:
                 Report.created_at < cutoff_date
             ).delete(synchronize_session=False)
 
+            # 4. 清理过期Project（无关联文件的）
+            expired_projects = db.query(Project).filter(
+                Project.created_at < cutoff_date
+            ).all()
+            for proj in expired_projects:
+                # 检查是否有关联的活跃工作流会话
+                active_count = db.query(func.count(WorkflowSession.id)).filter(
+                    WorkflowSession.user_id == proj.user_id,
+                    WorkflowSession.project_name == proj.project_name,
+                    WorkflowSession.status.in_(["created", "running", "paused"]),
+                ).scalar() or 0
+                if active_count == 0:
+                    db.delete(proj)
+                    stats["deleted_reports"] += 1
+
+            db.commit()
+            logger.info(
+                f"文件清理完成: 释放磁盘 {stats['freed_disk_bytes'] / (1024*1024):.2f} MB, "
+                f"删除文件 {stats['deleted_files']} 个"
+            )
+
+        except Exception as e:
+            db.rollback()
+            logger.error(f"文件清理失败: {e}")
+            stats["errors"].append(f"整体清理失败: {e}")
+
+        return stats
+
+    @staticmethod
+    def cleanup_user_data(db: Session, user_id: int) -> Dict:
+        """
+        清理指定用户的所有过期数据
+        
+        Args:
+            db: 数据库会话
+            user_id: 用户ID
+        
+        Returns:
+            清理统计
+        """
+        stats = {"user_id": user_id, "deleted_files": 0, "deleted_records": 0}
+
+        try:
+            user = db.query(User).filter(User.id == user_id).first()
+            if not user:
+                return {"error": "用户不存在"}
+
+            cutoff_date = datetime.now(timezone.utc) - timedelta(
+                days=CleanupService.RETENTION_DAYS
+            )
+
+            # 清理用户的过期文件
+            files = db.query(ProjectFile).filter(
+                ProjectFile.user_id == user_id,
+                ProjectFile.created_at < cutoff_date,
+            ).all()
+
+            for pf in files:
+                if pf.file_path and os.path.exists(pf.file_path):
+                    try:
+                        os.remove(pf.file_path)
+                        stats["deleted_files"] += 1
+                    except OSError:
+                        pass
+                db.delete(pf)
+
+            # 清理过期会话
+            expired = db.query(WorkflowSession).filter(
+                WorkflowSession.user_id == user_id,
+                WorkflowSession.status.in_(["completed", "failed"]),
+                WorkflowSession.completed_at < cutoff_date,
+            ).all()
+
+            for ws in expired:
+                db.delete(ws)
+                stats["deleted_records"] += 1
+
+            db.commit()
+            logger.info(f"用户 {user_id} 数据清理完成: {stats}")
+
+        except Exception as e:
+            db.rollback()
+            logger.error(f"用户 {user_id} 数据清理失败: {e}")
+            stats["error"] = str(e)
+
