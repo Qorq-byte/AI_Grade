@@ -81,3 +81,86 @@ class CleanupService:
                 .all()
             )
 
+            for pf in expired_files:
+                try:
+                    if pf.file_path and os.path.exists(pf.file_path):
+                        file_size = os.path.getsize(pf.file_path)
+                        os.remove(pf.file_path)
+                        stats["freed_disk_bytes"] += file_size
+                        stats["deleted_files"] += 1
+                except OSError as e:
+                    stats["errors"].append(f"删除文件失败 {pf.file_path}: {e}")
+
+            # 数据库删除文件记录
+            db.query(ProjectFile).filter(
+                ProjectFile.created_at < cutoff_date
+            ).delete(synchronize_session=False)
+
+            # 删除上传目录中的过期文件
+            upload_dirs = ["uploads", "backend/uploads", "frontend/uploads"]
+            for upload_dir_name in upload_dirs:
+                base_dir = os.path.dirname(os.path.dirname(os.path.dirname(
+                    os.path.abspath(__file__)
+                )))
+                upload_dir = os.path.join(base_dir, upload_dir_name)
+                if not os.path.exists(upload_dir):
+                    continue
+                for root, dirs, files in os.walk(upload_dir, topdown=False):
+                    for fname in files:
+                        fpath = os.path.join(root, fname)
+                        try:
+                            mtime = datetime.fromtimestamp(
+                                os.path.getmtime(fpath), tz=timezone.utc
+                            )
+                            if mtime < cutoff_date:
+                                file_size = os.path.getsize(fpath)
+                                os.remove(fpath)
+                                stats["freed_disk_bytes"] += file_size
+                                stats["deleted_files"] += 1
+                        except OSError as e:
+                            stats["errors"].append(f"删除上传文件失败 {fpath}: {e}")
+                    # 删除空目录
+                    if not os.listdir(root):
+                        try:
+                            os.rmdir(root)
+                        except OSError:
+                            pass
+
+            # 3. 清理数据库记录
+
+            # 3a. 删除TokenUsage记录
+            db.query(TokenUsage).filter(
+                TokenUsage.created_at < cutoff_date
+            ).delete(synchronize_session=False)
+
+            # 3b. 删除过期会话的Notification
+            if expired_user_ids:
+                db.query(Notification).filter(
+                    Notification.created_at < cutoff_date
+                ).delete(synchronize_session=False)
+
+            # 3c. 删除过期OperationLog
+            db.query(OperationLog).filter(
+                OperationLog.created_at < cutoff_date
+            ).delete(synchronize_session=False)
+
+            # 3d. 删除过期WorkflowSession
+            if expired_session_ids:
+                from backend.models.user_models import ReportModuleSequence
+                try:
+                    db.query(ReportModuleSequence).filter(
+                        ReportModuleSequence.session_id.in_(expired_session_ids)
+                    ).delete(synchronize_session=False)
+                except Exception:
+                    pass
+
+            db.query(WorkflowSession).filter(
+                WorkflowSession.completed_at.isnot(None),
+                WorkflowSession.completed_at < cutoff_date,
+            ).delete(synchronize_session=False)
+
+            # 3e. 删除过期Report
+            db.query(Report).filter(
+                Report.created_at < cutoff_date
+            ).delete(synchronize_session=False)
+
