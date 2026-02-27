@@ -150,3 +150,83 @@ class RAGService:
                 filter=filter_dict
             )
             
+            return [
+                {
+                    "content": doc.page_content,
+                    "metadata": doc.metadata
+                }
+                for doc in results
+            ]
+        except Exception as e:
+            logger.error(f"检索失败: {str(e)}")
+            return []
+    
+    def search_with_score(
+        self,
+        query: str,
+        k: int = 5
+    ) -> List[Dict]:
+        """
+        检索相关文档并返回相似度分数
+        
+        Args:
+            query: 查询文本
+            k: 返回结果数量
+            
+        Returns:
+            相关文档列表（包含分数）
+        """
+        try:
+            results = self.vectorstore.similarity_search_with_score(query=query, k=k)
+            
+            return [
+                {
+                    "content": doc.page_content,
+                    "metadata": doc.metadata,
+                    "score": float(score)
+                }
+                for doc, score in results
+            ]
+        except Exception as e:
+            logger.error(f"检索失败: {str(e)}")
+            return []
+    
+    def delete_collection(self):
+        """删除当前集合"""
+        try:
+            self.vectorstore.delete_collection()
+            logger.info(f"已删除集合: {self.collection_name}")
+        except Exception as e:
+            logger.error(f"删除集合失败: {str(e)}")
+    
+    def get_collection_stats(self) -> Dict:
+        """获取集合统计信息"""
+        try:
+            count = self.vectorstore._collection.count()
+            return {
+                "collection_name": self.collection_name,
+                "document_count": count
+            }
+        except Exception as e:
+            logger.error(f"获取统计信息失败: {str(e)}")
+            return {"collection_name": self.collection_name, "document_count": 0}
+
+
+# 全局RAG服务实例（可按需创建多个）
+_default_rag_service = None
+
+
+def get_rag_service(collection_name: str = "performance_evaluation") -> RAGService:
+    """
+    获取RAG服务实例
+    
+    Args:
+        collection_name: 集合名称
+        
+    Returns:
+        RAG服务实例
+    """
+    global _default_rag_service
+    if _default_rag_service is None:
+        _default_rag_service = RAGService(collection_name)
+    return _default_rag_service
