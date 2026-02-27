@@ -74,3 +74,79 @@ class RAGService:
             try:
                 ext = os.path.splitext(file_path)[1].lower()
                 
+                if ext == '.pdf':
+                    loader = PyPDFLoader(file_path)
+                elif ext == '.docx':
+                    loader = Docx2txtLoader(file_path)
+                elif ext == '.xlsx' or ext == '.xls':
+                    loader = UnstructuredExcelLoader(file_path, mode="elements")
+                elif ext == '.txt':
+                    loader = TextLoader(file_path, encoding='utf-8')
+                else:
+                    logger.warning(f"不支持的文件格式: {ext}")
+                    continue
+                
+                docs = loader.load()
+                documents.extend(docs)
+                logger.info(f"成功加载文档: {file_path}")
+                
+            except Exception as e:
+                logger.error(f"加载文档失败 {file_path}: {str(e)}")
+        
+        return documents
+    
+    def add_documents(self, documents: List[Document], metadata: Optional[Dict] = None):
+        """
+        添加文档到向量数据库
+        
+        Args:
+            documents: 文档列表
+            metadata: 额外元数据
+        """
+        # 分割文档
+        split_docs = self.text_splitter.split_documents(documents)
+        
+        # 添加元数据
+        if metadata:
+            for doc in split_docs:
+                doc.metadata.update(metadata)
+        
+        # 添加到向量存储
+        self.vectorstore.add_documents(split_docs)
+        logger.info(f"添加了 {len(split_docs)} 个文档块")
+    
+    def add_texts(self, texts: List[str], metadatas: Optional[List[Dict]] = None):
+        """
+        添加文本到向量数据库
+        
+        Args:
+            texts: 文本列表
+            metadatas: 元数据列表
+        """
+        self.vectorstore.add_texts(texts, metadatas)
+        logger.info(f"添加了 {len(texts)} 个文本")
+    
+    def search(
+        self,
+        query: str,
+        k: int = 5,
+        filter_dict: Optional[Dict] = None
+    ) -> List[Dict]:
+        """
+        检索相关文档
+        
+        Args:
+            query: 查询文本
+            k: 返回结果数量
+            filter_dict: 过滤条件
+            
+        Returns:
+            相关文档列表
+        """
+        try:
+            results = self.vectorstore.similarity_search(
+                query=query,
+                k=k,
+                filter=filter_dict
+            )
+            
