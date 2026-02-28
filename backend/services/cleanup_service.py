@@ -249,3 +249,86 @@ class CleanupService:
             logger.error(f"用户 {user_id} 数据清理失败: {e}")
             stats["error"] = str(e)
 
+        return stats
+
+    @staticmethod
+    def get_cleanup_preview(db: Session, retention_days: int = None) -> Dict:
+        """
+        预览即将被清理的数据量（不执行删除）
+        
+        Args:
+            db: 数据库会话
+            retention_days: 保留天数
+        
+        Returns:
+            预览统计
+        """
+        days = retention_days or CleanupService.RETENTION_DAYS
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
+
+        expired_sessions_count = db.query(func.count(WorkflowSession.id)).filter(
+            WorkflowSession.status.in_(["completed", "failed"]),
+            WorkflowSession.completed_at.isnot(None),
+            WorkflowSession.completed_at < cutoff_date,
+        ).scalar() or 0
+
+        expired_files_count = db.query(func.count(ProjectFile.id)).filter(
+            ProjectFile.created_at < cutoff_date,
+        ).scalar() or 0
+
+        expired_reports_count = db.query(func.count(Report.id)).filter(
+            Report.created_at < cutoff_date,
+        ).scalar() or 0
+
+        # 估算磁盘空间
+        files = db.query(ProjectFile.file_path).filter(
+            ProjectFile.created_at < cutoff_date,
+        ).all()
+
+        estimated_size = 0
+        for (fp,) in files:
+            if fp and os.path.exists(fp):
+                try:
+                    estimated_size += os.path.getsize(fp)
+                except OSError:
+                    pass
+
+        return {
+            "retention_days": days,
+            "cutoff_date": cutoff_date.isoformat(),
+            "expired_sessions": expired_sessions_count,
+            "expired_files": expired_files_count,
+            "expired_reports": expired_reports_count,
+            "estimated_disk_mb": round(estimated_size / (1024 * 1024), 2),
+        }
+
+    @staticmethod
+    def cleanup_failed_workflows(db: Session, max_age_hours: int = 24) -> int:
+        """
+        清理卡住的失败工作流（超过指定小时仍未completed的running状态）
+        
+        Args:
+            db: 数据库会话
+            max_age_hours: 最大允许的运行时间（小时）
+        
+        Returns:
+            清理的工作流数量
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+
+        stuck = db.query(WorkflowSession).filter(
+            WorkflowSession.status.in_(["running", "paused"]),
+            WorkflowSession.created_at < cutoff,
+        ).all()
+
+        count = 0
+        for ws in stuck:
+            ws.status = "failed"
+            ws.completed_at = datetime.now(timezone.utc)
+            count += 1
+
+        if count > 0:
+            db.commit()
+            logger.info(f"清理了 {count} 个卡住的工作流")
+
+        return count
