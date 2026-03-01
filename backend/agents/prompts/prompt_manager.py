@@ -329,3 +329,179 @@ class PromptManager:
             )
             step_name = default_data.get("step_name", f"Step {sn}")
 
+            # 删除或更新
+            record = (
+                db_session.query(PromptTemplate)
+                .filter_by(step_number=sn, is_system=False)
+                .first()
+            )
+            if record:
+                record.prompt_content = full_prompt
+                record.step_name = step_name
+                record.version = (record.version or 0) + 1
+                record.change_log = "重置为系统默认模板"
+                record.updated_at = datetime.now()
+            else:
+                record = PromptTemplate(
+                    step_number=sn,
+                    step_name=step_name,
+                    prompt_content=full_prompt,
+                    is_system=False,
+                    version=1,
+                    change_log="重置为系统默认模板",
+                )
+                db_session.add(record)
+
+            # 清除缓存
+            self._cache.pop(sn, None)
+            self._cache_versions.pop(sn, None)
+            reset_count += 1
+
+        db_session.commit()
+        logger.info(f"已重置 {reset_count} 个Prompt为默认模板")
+        return reset_count
+
+    def get_prompt_history(
+        self,
+        db_session,
+        step_number: int,
+    ) -> list[PromptTemplate]:
+        """
+        获取Prompt的版本历史
+
+        Args:
+            db_session: 数据库会话
+            step_number: 步骤号
+
+        Returns:
+            版本历史列表
+        """
+        return (
+            db_session.query(PromptTemplate)
+            .filter_by(step_number=step_number)
+            .order_by(PromptTemplate.version.desc())
+            .all()
+        )
+
+    def compare_prompts(
+        self,
+        step_number: int,
+        db_session,
+    ) -> Dict[str, Any]:
+        """
+        对比当前数据库版本与系统默认版本的差异
+
+        Returns:
+            {
+                "has_difference": bool,
+                "db_version": int,
+                "default_version": str,
+                "diff_summary": str
+            }
+        """
+        db_prompt = None
+        if db_session:
+            db_prompt = self.load_from_database(db_session, step_number, force_refresh=True)
+
+        default_prompt = PromptTemplateFactory.build_raw_system_prompt(step_number)
+
+        if not db_prompt:
+            return {
+                "has_difference": False,
+                "db_version": 0,
+                "default_version": "内置默认",
+                "diff_summary": "数据库中没有自定义Prompt，使用系统默认"
+            }
+
+        db_system_part = db_prompt.split("\n\n---\n\n")[0] if "---" in db_prompt else db_prompt
+
+        if db_system_part.strip() == default_prompt.strip():
+            return {
+                "has_difference": False,
+                "db_version": self._cache_versions.get(step_number, 1),
+                "default_version": "内置默认",
+                "diff_summary": "数据库版本与系统默认一致"
+            }
+
+        return {
+            "has_difference": True,
+            "db_version": self._cache_versions.get(step_number, 1),
+            "default_version": "内置默认",
+            "diff_summary": f"数据库版本长度={len(db_system_part)}字符, 默认版本长度={len(default_prompt)}字符"
+        }
+
+    # ─── 缓存管理 ──────────────────────────────────────
+
+    def _is_cache_valid(self, step_number: int) -> bool:
+        """判断缓存是否有效"""
+        if step_number not in self._cache:
+            return False
+        if self._last_refresh is None:
+            return False
+        if self._refresh_interval <= 0:
+            return False
+        elapsed = (datetime.now() - self._last_refresh).total_seconds()
+        return elapsed < self._refresh_interval
+
+    def clear_cache(self):
+        """清除所有缓存"""
+        self._cache.clear()
+        self._cache_versions.clear()
+        self._last_refresh = None
+        logger.info("Prompt缓存已清除")
+
+    def set_refresh_interval(self, seconds: float):
+        """设置缓存刷新间隔（秒）"""
+        self._refresh_interval = seconds
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """获取缓存统计"""
+        return {
+            "cached_prompts": len(self._cache),
+            "cached_versions": dict(self._cache_versions),
+            "last_refresh": self._last_refresh.isoformat() if self._last_refresh else None,
+            "refresh_interval": self._refresh_interval,
+        }
+
+
+# ==================== 全局单例 + 便捷函数 ====================
+
+# 全局单例
+_prompt_manager_instance: Optional[PromptManager] = None
+
+
+def get_prompt_manager() -> PromptManager:
+    """获取PromptManager全局单例"""
+    global _prompt_manager_instance
+    if _prompt_manager_instance is None:
+        _prompt_manager_instance = PromptManager()
+    return _prompt_manager_instance
+
+
+def get_prompt(
+    step_number: int,
+    db_session = None,
+    temperature: TemperatureProfile = TemperatureProfile.NORMAL,
+    **kwargs,
+) -> Dict[str, str]:
+    """便捷函数：获取指定步骤的完整Prompt"""
+    manager = get_prompt_manager()
+    return manager.get_full_prompt(step_number, db_session, temperature, **kwargs)
+
+
+def seed_default_prompts(
+    db_session,
+    override_existing: bool = False,
+) -> int:
+    """
+    初始化数据库：将14步默认Prompt写入 prompt_templates 表
+    通常在应用首次启动时调用
+
+    Args:
+        db_session: 数据库会话
+        override_existing: 是否覆盖已有记录
+
+    Returns:
+        写入的记录数
+    """
+    return PromptTemplateFactory.seed_to_database(db_session, override_existing)
