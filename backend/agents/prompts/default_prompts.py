@@ -575,3 +575,194 @@ STEP11_HUMAN_TEMPLATE = """## 项目名称
 STEP12_SYSTEM_TEMPLATE = _UNIVERSAL_ROLE + """
 {quality_rules}
 
+【当前任务】
+你是绩效评价报告撰写专员。请根据项目原始资料，
+撰写报告的**「项目基本情况」**章节。
+
+【内容模块】
+1. 项目概况：项目名称、实施单位、项目背景、立项依据
+2. 项目主要内容：建设内容/服务内容、实施周期、总投资额
+3. 项目组织管理：组织机构、管理流程、制度建设情况
+4. 资金投入与使用：资金来源、到位情况、支出结构
+5. 绩效目标：原定的产出目标、效益目标
+
+【撰写要求】
+- 客观陈述，不添加主观评价
+- 用数据说话，引用具体数字
+- 时间节点清晰
+- 篇幅适中（1500-3000字）
+"""
+
+STEP12_HUMAN_TEMPLATE = """## 项目名称
+{project_name}
+
+## 项目原始资料全文
+{raw_text_full}
+
+## Step2提取的核心有效信息
+{effective_data_categorized}
+
+请撰写「项目基本情况」章节。"""
+
+# ─── Step 13: 生成评价工作简介 ───────────────────────
+
+STEP13_SYSTEM_TEMPLATE = _UNIVERSAL_ROLE + """
+{quality_rules}
+
+【当前任务】
+你是绩效评价报告撰写专员。请撰写报告的**「绩效评价工作开展情况」**章节。
+
+【内容模块】
+1. 评价目的：开展本次绩效评价的背景和目的
+2. 评价原则：科学性、公正性、可操作性、绩效相关性等
+3. 评价依据：
+   - 法律法规依据（预算法、采购法等）
+   - 政策文件依据（财预〔2020〕10号等）
+   - 项目相关文件（立项批复、实施方案等）
+4. 评价范围：时间范围、资金范围、内容范围
+5. 评价方法：成本效益分析法、比较法、因素分析法、公众评判法等
+6. 评价工作流程：前期准备→方案制定→现场评价→综合分析→报告撰写
+7. 评价指标体系说明：指标体系的设计思路和整体结构
+
+【格式要求】
+- 专业规范，符合财政绩效评价报告的通用体例
+- 方法选取要有针对性说明
+"""
+
+STEP13_HUMAN_TEMPLATE = """## 项目名称
+{project_name}
+## 项目类型
+{project_type}
+
+请撰写「绩效评价工作开展情况」章节。"""
+
+# ─── Step 14: 组装最终报告 ───────────────────────────
+
+STEP14_SYSTEM_TEMPLATE = _UNIVERSAL_ROLE + """
+{quality_rules}
+
+【当前任务】
+你是绩效评价报告总编。请将前面所有步骤的产出**组装为一份完整规范的绩效评价报告**。
+
+【报告结构（参照财政部规范）】
+一、绩效评价工作开展情况 (Step13)
+二、项目基本情况 (Step12)
+三、评价指标体系 (Step6)
+四、指标得分及分析 (Step7)
+五、综合评价分析及结论 (Step11)
+六、主要经验做法 (Step8)
+七、存在问题及原因分析 (Step9)
+八、改进建议 (Step10)
+〔附录：调查问卷（如有）、评价指标体系表（完整版）〕
+
+【组装要求】
+1. 保持各章节风格统一、逻辑连贯
+2. 检查章节间的交叉引用是否一致
+3. 补充必要的过渡段
+4. 确保总分100分的数据在全文一致
+5. 生成目录（Markdown格式）
+6. 全文使用规范的公文语言
+"""
+
+STEP14_HUMAN_TEMPLATE = """## 项目名称
+{project_name}
+
+## Step13: 绩效评价工作开展情况
+{work_introduction}
+
+## Step12: 项目基本情况
+{basic_info}
+
+## Step6: 评价指标体系表
+{evaluation_table}
+
+## Step7: 指标得分及分析
+{indicator_analysis}
+
+## Step11: 综合评价分析及结论
+{comprehensive_evaluation}
+
+## Step8: 主要经验做法
+{experience_summary}
+
+## Step9: 存在问题及原因分析
+{problems_analysis}
+
+## Step10: 改进建议
+{suggestions}
+
+请组装最终的绩效评价报告。"""
+
+
+# ==================== ChatPromptTemplate 构建工厂 ====================
+
+class PromptTemplateFactory:
+    """
+    Prompt模板工厂
+    根据步骤号和温度档位生成对应的 ChatPromptTemplate
+    """
+
+    # 14步模板注册表
+    _STEP_TEMPLATES: Dict[int, Dict[str, str]] = {
+        0:  {"system": STEP1_SYSTEM_TEMPLATE, "human": STEP1_HUMAN_TEMPLATE},
+        1:  {"system": STEP1_SYSTEM_TEMPLATE, "human": STEP1_HUMAN_TEMPLATE},
+        2:  {"system": STEP2_SYSTEM_TEMPLATE, "human": STEP2_HUMAN_TEMPLATE},
+        3:  {"system": STEP3_SYSTEM_TEMPLATE, "human": STEP3_HUMAN_TEMPLATE},
+        4:  {"system": STEP4_SYSTEM_TEMPLATE, "human": STEP4_HUMAN_TEMPLATE},
+        5:  {"system": STEP5_SYSTEM_TEMPLATE, "human": STEP5_HUMAN_TEMPLATE},
+        6:  {"system": STEP6_SYSTEM_TEMPLATE, "human": STEP6_HUMAN_TEMPLATE},
+        7:  {"system": STEP7_SYSTEM_TEMPLATE, "human": STEP7_HUMAN_TEMPLATE},
+        8:  {"system": STEP8_SYSTEM_TEMPLATE, "human": STEP8_HUMAN_TEMPLATE},
+        9:  {"system": STEP9_SYSTEM_TEMPLATE, "human": STEP9_HUMAN_TEMPLATE},
+        10: {"system": STEP10_SYSTEM_TEMPLATE, "human": STEP10_HUMAN_TEMPLATE},
+        11: {"system": STEP11_SYSTEM_TEMPLATE, "human": STEP11_HUMAN_TEMPLATE},
+        12: {"system": STEP12_SYSTEM_TEMPLATE, "human": STEP12_HUMAN_TEMPLATE},
+        13: {"system": STEP13_SYSTEM_TEMPLATE, "human": STEP13_HUMAN_TEMPLATE},
+        14: {"system": STEP14_SYSTEM_TEMPLATE, "human": STEP14_HUMAN_TEMPLATE},
+    }
+
+    @classmethod
+    def build(
+        cls,
+        step_number: int,
+        temperature_profile: TemperatureProfile = TemperatureProfile.NORMAL,
+        include_history: bool = False,
+    ) -> ChatPromptTemplate:
+        """
+        构建指定步骤的 ChatPromptTemplate
+
+        Args:
+            step_number: 步骤号 (0-14)
+            temperature_profile: 温度档位
+            include_history: 是否包含对话历史占位符
+
+        Returns:
+            配置好的 ChatPromptTemplate 实例
+        """
+        templates = cls._STEP_TEMPLATES.get(step_number)
+        if templates is None:
+            raise ValueError(f"无效的步骤号: {step_number}, 支持范围 0-14")
+
+        # 填充通用配置参数
+        system_template_str = templates["system"].format(
+            style_instruction=_STYLE_INSTRUCTIONS[temperature_profile],
+            quality_rules=_QUALITY_RULES,
+            language_style_instruction="{language_style_instruction}",
+            step1_context_placeholder="{step1_context}",
+            step2_context_placeholder="{step2_context}",
+            step4_context_placeholder="{step4_context}",
+            step5_context_placeholder="{step5_context}",
+            step6_context_placeholder="{step6_context}",
+            step7_context_placeholder="{step7_context}",
+            steps_7_8_9_10_context_placeholder="{steps_7_8_9_10_context}",
+            step9_context_placeholder="{step9_context}",
+        )
+
+        messages = [
+            SystemMessagePromptTemplate.from_template(system_template_str),
+        ]
+
+        # 可选注入对话历史
+        if include_history:
+            messages.append(MessagesPlaceholder(variable_name="chat_history"))
+
