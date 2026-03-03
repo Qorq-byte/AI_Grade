@@ -683,3 +683,172 @@ class PerformanceAgent:
         self._persist_state_backup(state)  # 持久化关键状态，防止服务器重启丢失
         return state
 
+    # Step 4
+    def _node_step4(self, state: PerformanceState) -> PerformanceState:
+        logger.info("[Step 4] 生成指标分值")
+        content = self._execute_step(state, 4)
+        try:
+            j = self._extract_json(content)
+            sd = json.loads(j) if j else {}
+            state["indicator_scores"] = sd.get("scores", sd)
+        except Exception:
+            state["indicator_scores"] = {}
+
+        try:
+            isys2 = state.get("indicator_system", {})
+            if isys2.get("level1_indicators"):
+                val = validate_indicator_scores(isys2)
+                state["score_validation"] = val
+                if not val.get("overall_passed"):
+                    wl = state.setdefault("warnings", [])
+                    for vv in val.get("validations", []):
+                        if not vv.get("passed"):
+                            wl.append(vv.get("message", ""))
+        except Exception as e:
+            logger.warning(f"[Step 4] 分值校验失败: {e}")
+
+        self._record_step_result(state, 4, content)
+        return state
+
+    # Step 5
+    def _node_step5(self, state: PerformanceState) -> PerformanceState:
+        logger.info("[Step 5] 生成评分标准")
+        content = self._execute_step(state, 5)
+        state["scoring_standards"] = {"raw": content}
+        self._record_step_result(state, 5, content)
+        return state
+
+    # Step 6
+    def _node_step6(self, state: PerformanceState) -> PerformanceState:
+        logger.info("[Step 6] 生成评价指标体系表")
+        content = self._execute_step(state, 6)
+        state["evaluation_table"] = content
+        # 标记问卷可生成：指标体系表完成后可触发问卷生成
+        state["questionnaire_ready"] = True
+        self._record_step_result(state, 6, content)
+        return state
+
+    # Step 7
+    def _node_step7(self, state: PerformanceState) -> PerformanceState:
+        logger.info("[Step 7] 生成指标得分分析")
+        content = self._execute_step(state, 7)
+        state["indicator_analysis"] = content
+        self._record_step_result(state, 7, content)
+        return state
+
+    # Step 8
+    def _node_step8(self, state: PerformanceState) -> PerformanceState:
+        logger.info("[Step 8] 总结经验做法")
+        content = self._execute_step(state, 8)
+        state["experience_summary"] = content
+        self._record_step_result(state, 8, content)
+        return state
+
+    # Step 9
+    def _node_step9(self, state: PerformanceState) -> PerformanceState:
+        logger.info("[Step 9] 分析问题及原因")
+        # 自动从步骤7的指标分析中提取扣分点，传递给LLM作为参考
+        indicator_analysis = state.get("indicator_analysis") or ""
+        if indicator_analysis:
+            # 提取扣分点：从指标分析中识别得分低于满分的指标
+            deduction_points = self._extract_deduction_points(state)
+            state["deduction_points"] = deduction_points
+            # 将扣分点信息附加给步骤9的prompt（通过临时存储）
+            state["_step9_deduction_context"] = "\n".join(
+                f"- {d.get('name', '?')}: 满分{d.get('full_score', '?')}，得分{d.get('score', '?')}，扣分原因：{d.get('reason', '资料不足')}"
+                for d in deduction_points[:10]
+            ) if deduction_points else "（未检测到明确扣分项）"
+        content = self._execute_step(state, 9)
+        state["problems_analysis"] = content
+        self._record_step_result(state, 9, content)
+        return state
+
+    def _extract_deduction_points(self, state: PerformanceState) -> list:
+        """从步骤7的指标得分分析中提取扣分点列表"""
+        deduction_points = []
+        indicator_scores = state.get("indicator_scores", {})
+        indicator_system = state.get("indicator_system", {})
+
+        # 从indicator_system中提取各级指标
+        def _extract_from_tree(indicators, parent_name="", level=1):
+            for ind in (indicators or []):
+                name = ind.get("name", "未命名")
+                full_name = f"{parent_name}>{name}" if parent_name else name
+                score_val = ind.get("score", ind.get("max_score", 0)) or 0
+                actual_score = ind.get("actual_score")
+                if actual_score is not None and actual_score < score_val:
+                    deduction_points.append({
+                        "name": full_name,
+                        "level": level,
+                        "full_score": score_val,
+                        "score": actual_score,
+                        "deduction": round(score_val - actual_score, 2),
+                        "reason": ind.get("deduction_reason", f"指标「{name}」得分低于满分"),
+                    })
+                children = ind.get("children", []) or []
+                _extract_from_tree(children, full_name, level + 1)
+
+        level1 = indicator_system.get("level1_indicators", [])
+        _extract_from_tree(level1)
+        return deduction_points
+
+    # Step 10
+    def _node_step10(self, state: PerformanceState) -> PerformanceState:
+        logger.info("[Step 10] 提出改进建议")
+        content = self._execute_step(state, 10)
+        state["suggestions"] = content
+        self._record_step_result(state, 10, content)
+        return state
+
+    # Step 11
+    def _node_step11(self, state: PerformanceState) -> PerformanceState:
+        logger.info("[Step 11] 综合评价分析及结论")
+        content = self._execute_step(state, 11)
+        state["comprehensive_evaluation"] = content
+
+        # ── 自动提取评价等级和综合得分 ──
+        try:
+            m = re.search(r'评价等级[：:]\s*(优秀|良好|中等|合格|差|\w)', content)
+            if m:
+                state["evaluation_grade"] = m.group(1)
+            m2 = re.search(r'综合得分[：:]\s*([\d.]+)\s*分', content)
+            if m2:
+                state["evaluation_total_score"] = float(m2.group(1))
+        except Exception:
+            pass
+
+        # ── 自动计算指标得分汇总 ──
+        try:
+            score_summary = self._compute_score_summary(state)
+            state["score_summary"] = score_summary
+        except Exception as e:
+            logger.warning(f"[Step 11] 评分汇总计算失败（非致命）: {e}")
+
+        self._record_step_result(state, 11, content)
+        return state
+
+    def _compute_score_summary(self, state: PerformanceState) -> dict:
+        """根据指标体系中的实际得分，汇总计算各级指标得分"""
+        indicator_system = state.get("indicator_system", {})
+        summary = {
+            "total_score": 0,
+            "level1_scores": [],
+            "level2_scores": [],
+            "level3_scores": [],
+            "deduction_details": [],
+        }
+
+        def _traverse(indicators, parent_name="", level=1, is_leaf=True):
+            for ind in (indicators or []):
+                name = ind.get("name", "未命名")
+                full_name = f"{parent_name}>{name}" if parent_name else name
+                max_score = ind.get("score", ind.get("max_score", 0)) or 0
+                actual = ind.get("actual_score", max_score)  # 默认满分
+                try:
+                    actual = float(actual) if actual is not None else float(max_score)
+                except (ValueError, TypeError):
+                    actual = float(max_score) if max_score else 0
+
+                children = ind.get("children", []) or []
+                has_children = len(children) > 0
+
