@@ -516,3 +516,170 @@ class PerformanceAgent:
             "updated_at": now,
         }
 
+        sc = state["step_control"]
+        sc["current_step"] = step_number
+        sc["step_statuses"][step_number] = StepStatusEnum.COMPLETED.value
+        sc["can_proceed"] = True
+
+        if "completed_steps" in state:
+            if step_number not in state["completed_steps"]:
+                state["completed_steps"].append(step_number)
+        if "errors" not in state:
+            state["errors"] = []
+
+        # 发布进度到全局字典，供SSE轮询端点读取
+        try:
+            from backend.routes.agent_routes import _WORKFLOW_PROGRESS
+            sid = state.get("session_id", "")
+            if sid and sid in _WORKFLOW_PROGRESS:
+                p = _WORKFLOW_PROGRESS[sid]
+                p["last_step"] = step_number
+                p["step_results"][str(step_number)] = {
+                    "step_name": step_name,
+                    "content": content,
+                    "status": StepStatusEnum.COMPLETED.value,
+                }
+        except Exception as e:
+            logger.debug(f"无法写入工作流进度(非关键): {e}")
+
+    def _persist_state_backup(self, state: PerformanceState):
+        """持久化关键状态到文件，防止服务器重启丢失"""
+        try:
+            sid = state.get("session_id", "") or self.session_id
+            if not sid:
+                return
+            backup_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "state_backups")
+            os.makedirs(backup_dir, exist_ok=True)
+            backup = {
+                "session_id": sid,
+                "indicator_system": state.get("indicator_system", {}),
+                "effective_data": state.get("effective_data", "") or "",
+                "project_name": state.get("project_name", ""),
+                "indicator_scores": state.get("indicator_scores", {}),
+                "indicator_standards": state.get("indicator_standards", {}),
+                "step_results": {k: {"step_name": v.get("step_name", ""), "content": v.get("content", "")}
+                                 for k, v in state.get("step_results", {}).items()},
+            }
+            with open(os.path.join(backup_dir, f"{sid}.json"), "w", encoding="utf-8") as f:
+                json.dump(backup, f, ensure_ascii=False, indent=2)
+            logger.info(f"状态备份已保存: {sid}")
+        except Exception as e:
+            logger.warning(f"状态备份失败(非关键): {e}")
+
+    @staticmethod
+    def load_state_backup(session_id: str) -> Dict[str, Any]:
+        """从文件恢复关键状态"""
+        try:
+            backup_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "state_backups")
+            backup_path = os.path.join(backup_dir, f"{session_id}.json")
+            if not os.path.exists(backup_path):
+                return {}
+            with open(backup_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _maybe_interrupt(self, state: PerformanceState, step_number: int) -> Optional[Any]:
+        """(已禁用) 原步骤审批中断点 — 全部自动执行"""
+        return None
+
+    # ==================== 节点实现 ========================
+
+    def _node_init(self, state: PerformanceState) -> PerformanceState:
+        logger.info(f"[Init] session={state.get('session_id')}")
+
+        file_paths = state.get("file_paths", [])
+        if file_paths:
+            try:
+                from backend.services.file_processor import FileProcessor
+                results = FileProcessor.process_multiple_files(file_paths)
+                extracted = {}
+                for r in results:
+                    if r.get("success"):
+                        name = r.get("original_name", r.get("file_path", ""))
+                        extracted[name] = r.get("content", "")
+                state["raw_text"] = "\n\n".join(extracted.values())
+                state["all_raw_texts"] = extracted
+                logger.info(f"[Init] 处理了 {len(results)} 个文件")
+            except Exception as e:
+                logger.error(f"[Init] 文件处理失败: {e}")
+                state["raw_text"] = ""
+                state["all_raw_texts"] = {}
+                state.setdefault("errors", []).append(f"文件处理失败: {e}")
+
+        _ensure_step_control(state)
+        _ensure_step_results(state)
+        _ensure_system_config(state)
+
+        sc = state["step_control"]
+        sc["current_step"] = 0
+        sc["step_statuses"] = {}
+        sc["can_proceed"] = True
+        sc["requires_approval"] = False
+        sc["comparison_mode"] = self.comparison_mode.value if hasattr(self.comparison_mode, 'value') else str(self.comparison_mode)
+        sc["temperature_profile"] = self.temperature_profile.value if hasattr(self.temperature_profile, 'value') else str(self.temperature_profile)
+
+        state.setdefault("completed_steps", []).clear()
+        state.setdefault("errors", [])
+        state.setdefault("warnings", [])
+        state.setdefault("token_usage", {})
+        state.setdefault("comparison_history", {})
+
+        logger.info("[Init] 完成")
+        return state
+
+    # Step 1
+    def _node_step1(self, state: PerformanceState) -> PerformanceState:
+        logger.info("[Step 1] 整理资料清单")
+        content = self._execute_step(state, 1)
+        state["cost_list"] = content
+        self._record_step_result(state, 1, content)
+        return state
+
+    # Step 2
+    def _node_step2(self, state: PerformanceState) -> PerformanceState:
+        logger.info("[Step 2] 核心有效信息提取与索引")
+        content = self._execute_step(state, 2)
+        state["effective_data"] = content
+
+        try:
+            raw_texts = state.get("all_raw_texts", {})
+            if not raw_texts and state.get("raw_text"):
+                raw_texts = {"原始资料": state["raw_text"]}
+            if raw_texts:
+                self.content_indexer.index(raw_texts)
+                state["content_index"] = self.content_indexer.get_index()
+                state["effective_data_categorized"] = self.content_indexer.get_categorized_content()
+                contradictions = self.content_indexer.get_contradictions()
+                if contradictions:
+                    wl = state.setdefault("warnings", [])
+                    for c in contradictions[:5]:
+                        wl.append(f"[内容矛盾] {c.get('category','')}: {c.get('description','')}")
+        except Exception as e:
+            logger.warning(f"[Step 2] 内容索引失败（非致命）: {e}")
+
+        self._record_step_result(state, 2, content)
+        return state
+
+    # Step 3
+    def _node_step3(self, state: PerformanceState) -> PerformanceState:
+        logger.info("[Step 3] 构建指标体系")
+        itype = state.get("indicator_type") or "项目支出指标体系"
+        content = self._execute_step(state, 3)
+        try:
+            j = self._extract_json(content)
+            isys = json.loads(j) if j else {"raw_text": content}
+        except Exception:
+            isys = {"raw_text": content, "indicator_type": itype, "level1_indicators": []}
+        if isinstance(isys, dict):
+            isys.setdefault("indicator_type", itype)
+        state["indicator_system"] = isys
+        try:
+            self.indicator_manager.import_custom_system(isys)
+            state["indicator_system"] = self.indicator_manager.to_dict()
+        except Exception:
+            pass
+        self._record_step_result(state, 3, content)
+        self._persist_state_backup(state)  # 持久化关键状态，防止服务器重启丢失
+        return state
+
