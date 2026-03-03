@@ -331,3 +331,188 @@ class PerformanceAgent:
                         return res.get("message", "") if res.get("success") else f"[调用失败: {res.get('message', str(e2))}]"
             return "[模型未初始化]"
 
+        # ── 多模型对比 ──
+        if mode in (
+            ComparisonModeEnum.MULTI_COMPARE.value,
+            ComparisonModeEnum.MULTI_DIALOGUE.value,
+        ):
+            from backend.agents.tools.multi_model_compare import MultiModelCompareService
+            models_list = state.get("system_config", {}).get("enabled_models", [self.model_name])
+            cmp = MultiModelCompareService(
+                model_names=models_list,
+                temperature=self.temperature,
+                top_p=self.top_p,
+            )
+            result = cmp.compare(prompt=full_human_prompt, system_prompt=system_prompt)
+            # 保存到 comparison_history
+            if "comparison_history" not in state:
+                state["comparison_history"] = {}
+            state["comparison_history"][step_number] = {
+                "step_number": step_number,
+                "step_name": STEP_META.get(step_number, {}).get("name", ""),
+                "models_used": result.get("models_used", []),
+                "individual_outputs": result.get("individual_outputs", {}),
+                "comparison_analysis": result.get("comparison_analysis", ""),
+                "selected_best": None,
+            }
+            outputs = result.get("individual_outputs", {})
+            return next(iter(outputs.values()), "") if outputs else ""
+
+        # 回退
+        if self.base_agent:
+            try:
+                from langchain_core.messages import SystemMessage, HumanMessage
+                messages = [
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=full_human_prompt),
+                ]
+                response = self.base_agent.llm.invoke(messages, config={"timeout": 300})
+                self._record_token(response, step_number, state)
+                return response.content if hasattr(response, 'content') else str(response)
+            except Exception:
+                return "[模型调用失败]"
+
+        return "[模型调用失败]"
+
+    def _record_token(self, response, step_number: int, state: PerformanceState):
+        """从LLM响应中提取并记录token消耗"""
+        try:
+            from backend.services.token_service import extract_token_usage_from_response, record_token_usage
+            from backend.database import SessionLocal as SL
+            from backend.models.user_models import WorkflowSession
+
+            usage = extract_token_usage_from_response(response)
+            total = usage.get("total_tokens", 0)
+            if total <= 0:
+                return
+
+            # 从WorkflowSession获取user_id和project_id
+            db2 = SL()
+            try:
+                ws = db2.query(WorkflowSession).filter(
+                    WorkflowSession.session_id == self.session_id
+                ).first()
+                if ws and ws.user_id:
+                    project_id = getattr(ws, "project_id", None) or (
+                        state.get("project_id") if "project_id" in state else None
+                    )
+                    record_token_usage(
+                        db=db2,
+                        user_id=ws.user_id,
+                        model_name=self.model_name,
+                        prompt_tokens=usage["prompt_tokens"],
+                        completion_tokens=usage["completion_tokens"],
+                        total_tokens=total,
+                        session_id=self.session_id,
+                        project_id=project_id,
+                        step_number=step_number,
+                    )
+                    logger.info(
+                        f"[Token] step={step_number}, user={ws.user_id}, "
+                        f"prompt={usage['prompt_tokens']}, completion={usage['completion_tokens']}, "
+                        f"total={total}"
+                    )
+            finally:
+                db2.close()
+        except Exception as e:
+            logger.debug(f"Token记录失败(非关键): {e}")
+
+    def _build_human_vars(self, state: PerformanceState, step_number: int) -> Dict[str, Any]:
+        """为Human Prompt模板构建变量"""
+        v = {
+            "project_name": state.get("project_name", "未命名项目"),
+            "project_type": state.get("project_type", "部门评价"),
+            "raw_text_preview": (state.get("raw_text") or "")[:8000],
+            "raw_text_full": state.get("raw_text") or "",
+        }
+
+        # 数据充足性检测：如果文档为空或极少，在prompt中添加醒目警告
+        raw_full = state.get("raw_text") or ""
+        raw_len = len(raw_full.strip()) if raw_full else 0
+        if raw_len < 100:
+            data_warning = (
+                "\n\n### ⚠️⚠️⚠️ 数据严重不足警告 ⚠️⚠️⚠️\n"
+                f"当前提供的原始文本仅 {raw_len} 个字符。\n"
+                "**严禁编造任何具体信息！** 对于缺乏资料支撑的内容，\n"
+                "必须逐条标注：「⚠️ 现有资料中未提供该信息，无法判断」。\n"
+                "如果无法完成有意义的分析，请直接说明资料不足，不要输出虚假报告。\n"
+            )
+        elif raw_len < 1000:
+            data_warning = (
+                "\n\n### ⚠️ 数据不足警告 ⚠️\n"
+                f"当前提供的原始文本仅 {raw_len} 个字符，信息量有限。\n"
+                "请仅基于已有内容进行分析，缺失信息处标注「资料不足」。\n"
+            )
+        else:
+            data_warning = ""
+
+        uploaded = state.get("uploaded_files", [])
+        v["uploaded_files_summary"] = (
+            "\n".join(f"- {f.get('original_name', f.get('file_path', '?'))}" for f in uploaded)
+            if uploaded else "暂无上传文件"
+        )
+
+        v["cost_list_summary"] = (state.get("cost_list") or "")[:2000]
+        v["effective_data_categorized"] = json.dumps(
+            state.get("effective_data_categorized", {}), ensure_ascii=False, indent=2
+        )
+        cp_idx = state.get("content_index", {})
+        v["content_index_summary"] = "\n".join(
+            f"- {k[:80]}: {v1}" for k, v1 in list(cp_idx.items())[:30]
+        ) if cp_idx else "暂无索引"
+
+        isys = state.get("indicator_system", {})
+        isys_json = json.dumps(isys, ensure_ascii=False, indent=2)
+        v["indicator_system_json"] = isys_json
+        v["indicator_system_with_scores_json"] = isys_json
+        v["indicator_system_full_json"] = isys_json
+
+        v["evaluation_table_markdown"] = state.get("evaluation_table", "")
+        v["indicator_analysis_summary"] = (state.get("indicator_analysis") or "")[:3000]
+        v["indicator_analysis_full"] = state.get("indicator_analysis") or ""
+        v["experience_summary"] = (state.get("experience_summary") or "")[:2000]
+        v["problems_analysis_summary"] = (state.get("problems_analysis") or "")[:2000]
+        v["problems_analysis_full"] = state.get("problems_analysis") or ""
+        v["suggestions_summary"] = (state.get("suggestions") or "")[:2000]
+
+        # 步骤9扣分点上下文
+        v["deduction_context"] = state.get("_step9_deduction_context", "")
+        # 步骤11评分汇总
+        score_summary = state.get("score_summary", {})
+        v["score_summary_json"] = json.dumps(score_summary, ensure_ascii=False, indent=2) if score_summary else ""
+
+        ed = state.get("effective_data") or state.get("raw_text") or ""
+        v["effective_data_summary"] = ed[:3000]
+
+        v["work_introduction"] = state.get("work_introduction") or ""
+        v["basic_info"] = state.get("basic_info") or ""
+        v["evaluation_table"] = state.get("evaluation_table") or ""
+        v["indicator_analysis"] = state.get("indicator_analysis") or ""
+        v["comprehensive_evaluation"] = state.get("comprehensive_evaluation") or ""
+        v["problems_analysis"] = state.get("problems_analysis") or ""
+        v["suggestions"] = state.get("suggestions") or ""
+
+        return v
+
+    # ─── 结果记录 ────────────────────────────────────────
+
+    def _record_step_result(self, state: PerformanceState, step_number: int, content: str):
+        _ensure_step_results(state)
+        _ensure_step_control(state)
+
+        step_name = STEP_META.get(step_number, {}).get("name", f"Step {step_number}")
+        now = datetime.now()
+
+        state["step_results"][step_number] = {
+            "step_number": step_number,
+            "step_name": step_name,
+            "status": StepStatusEnum.COMPLETED.value,
+            "content": content,
+            "raw_outputs": {"default": content},
+            "comparison_results": None,
+            "selected_model": self.model_name,
+            "version": 1,
+            "created_at": now,
+            "updated_at": now,
+        }
+
