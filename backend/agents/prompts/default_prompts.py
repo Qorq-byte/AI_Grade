@@ -766,3 +766,195 @@ class PromptTemplateFactory:
         if include_history:
             messages.append(MessagesPlaceholder(variable_name="chat_history"))
 
+        messages.append(
+            HumanMessagePromptTemplate.from_template(templates["human"])
+        )
+
+        return ChatPromptTemplate.from_messages(messages)
+
+    @classmethod
+    def build_system_message(
+        cls,
+        step_number: int,
+        temperature_profile: TemperatureProfile = TemperatureProfile.NORMAL,
+        **kwargs,
+    ) -> SystemMessage:
+        """
+        仅构建 SystemMessage（用于直接调用，无需 ChatPromptTemplate）
+
+        Args:
+            step_number: 步骤号
+            temperature_profile: 温度档位
+            **kwargs: 额外的模板变量
+
+        Returns:
+            SystemMessage 实例
+        """
+        templates = cls._STEP_TEMPLATES.get(step_number)
+        if templates is None:
+            raise ValueError(f"无效的步骤号: {step_number}")
+
+        system_template_str = templates["system"].format(
+            style_instruction=_STYLE_INSTRUCTIONS[temperature_profile],
+            quality_rules=_QUALITY_RULES,
+            language_style_instruction="",
+            step1_context_placeholder="",
+            step2_context_placeholder="",
+            step4_context_placeholder="",
+            step5_context_placeholder="",
+            step6_context_placeholder="",
+            step7_context_placeholder="",
+            steps_7_8_9_10_context_placeholder="",
+            step9_context_placeholder="",
+        )
+
+        # 填充kwargs中的额外变量
+        try:
+            system_template_str = system_template_str.format(**kwargs)
+        except KeyError:
+            pass  # 某些占位符可能在具体调用时才填充
+
+        return SystemMessage(content=system_template_str)
+
+    @classmethod
+    def get_step_name(cls, step_number: int) -> str:
+        """获取步骤名称"""
+        return STEP_META.get(step_number, {}).get("name", f"Step {step_number}")
+
+    @classmethod
+    def get_all_step_names(cls) -> Dict[int, str]:
+        """获取所有步骤名称映射"""
+        return {k: v["name"] for k, v in STEP_META.items()}
+
+    @classmethod
+    def build_raw_system_prompt(
+        cls,
+        step_number: int,
+        temperature_profile: TemperatureProfile = TemperatureProfile.NORMAL,
+    ) -> str:
+        """
+        构建原始System Prompt字符串（用于保存到数据库 prompt_templates 表）
+
+        Args:
+            step_number: 步骤号
+            temperature_profile: 温度档位
+
+        Returns:
+            完整的System Prompt字符串
+        """
+        templates = cls._STEP_TEMPLATES.get(step_number)
+        if templates is None:
+            return ""
+
+        return templates["system"].format(
+            style_instruction=_STYLE_INSTRUCTIONS[temperature_profile],
+            quality_rules=_QUALITY_RULES,
+            language_style_instruction="{language_style_instruction}",
+            step1_context_placeholder="{step1_context}",
+            step2_context_placeholder="{step2_context}",
+            step4_context_placeholder="{step4_context}",
+            step5_context_placeholder="{step5_context}",
+            step6_context_placeholder="{step6_context}",
+            step7_context_placeholder="{step7_context}",
+            steps_7_8_9_10_context_placeholder="{steps_7_8_9_10_context}",
+            step9_context_placeholder="{step9_context}",
+        )
+
+    @classmethod
+    def build_raw_human_prompt(cls, step_number: int) -> str:
+        """
+        构建原始Human Prompt模板字符串（用于保存到数据库）
+
+        Args:
+            step_number: 步骤号
+
+        Returns:
+            完整的Human Prompt模板字符串
+        """
+        templates = cls._STEP_TEMPLATES.get(step_number)
+        if templates is None:
+            return ""
+        return templates["human"]
+
+    @classmethod
+    def seed_to_database(
+        cls,
+        db_session,
+        override_existing: bool = False,
+    ) -> int:
+        """
+        将14步默认Prompt写入数据库 prompt_templates 表
+
+        Args:
+            db_session: SQLAlchemy数据库会话
+            override_existing: 是否覆盖已有记录
+
+        Returns:
+            写入的记录总数
+        """
+        from backend.models.user_models import PromptTemplate
+
+        inserted_count = 0
+        for step_number in range(15):
+            meta = STEP_META.get(step_number, {})
+            step_name = meta.get("name", f"Step {step_number}")
+
+            # 检查是否已存在
+            existing = (
+                db_session.query(PromptTemplate)
+                .filter_by(step_number=step_number, is_system=True)
+                .first()
+            )
+            if existing and not override_existing:
+                continue
+
+            system_prompt = cls.build_raw_system_prompt(step_number)
+            human_prompt = cls.build_raw_human_prompt(step_number)
+            full_prompt = f"{system_prompt}\n\n---\n\n{human_prompt}"
+
+            if existing:
+                existing.prompt_content = full_prompt
+                existing.version += 1
+                existing.change_log = "系统默认模板更新"
+            else:
+                template = PromptTemplate(
+                    step_number=step_number,
+                    step_name=step_name,
+                    prompt_content=full_prompt,
+                    is_system=True,
+                    version=1,
+                    change_log="系统初始化默认模板",
+                )
+                db_session.add(template)
+
+            inserted_count += 1
+
+        db_session.commit()
+        return inserted_count
+
+
+# ==================== 便捷函数 ====================
+
+def get_step_prompt(
+    step_number: int,
+    temperature: TemperatureProfile = TemperatureProfile.NORMAL,
+    as_template: bool = True,
+) -> ChatPromptTemplate | SystemMessage:
+    """便捷获取步骤Prompt"""
+    if as_template:
+        return PromptTemplateFactory.build(step_number, temperature)
+    return PromptTemplateFactory.build_system_message(step_number, temperature)
+
+
+def get_all_default_prompts_as_dict() -> Dict[int, Dict[str, str]]:
+    """以字典形式返回所有14步默认Prompt"""
+    result = {}
+    for step_number in range(15):
+        meta = STEP_META.get(step_number, {})
+        result[step_number] = {
+            "step_name": meta.get("name", ""),
+            "short_name": meta.get("short_name", ""),
+            "system_prompt": PromptTemplateFactory.build_raw_system_prompt(step_number),
+            "human_prompt": PromptTemplateFactory.build_raw_human_prompt(step_number),
+        }
+    return result
