@@ -1019,3 +1019,183 @@ class PerformanceAgent:
         elif "thread_id" not in config["configurable"]:
             config["configurable"]["thread_id"] = self.session_id
 
+        try:
+            result = self.app.invoke(initial_state, config)
+            elapsed = time.time() - t0
+            logger.info(f"<=== 工作流完成: {elapsed:.2f}s")
+            return {
+                "success": True,
+                "session_id": self.session_id,
+                "completed_steps": result.get("completed_steps", []),
+                "current_step": result.get("step_control", {}).get("current_step", 0),
+                "final_report": result.get("final_report", ""),
+                "errors": result.get("errors", []),
+                "warnings": result.get("warnings", []),
+                "data": result,
+            }
+        except Exception as e:
+            # GraphInterrupt 是正常中断（审批点），不是错误
+            if "Interrupt" in type(e).__name__:
+                logger.info(f"工作流在审批点中断: {e}")
+                state = self.get_state(config)
+                values = getattr(state, 'values', {}) if state else {}
+                return {
+                    "success": True,
+                    "interrupted": True,
+                    "session_id": self.session_id,
+                    "completed_steps": values.get("completed_steps", []),
+                    "current_step": values.get("step_control", {}).get("current_step", 0),
+                    "final_report": values.get("final_report", ""),
+                    "errors": values.get("errors", []),
+                    "warnings": values.get("warnings", []),
+                    "data": values,
+                }
+            logger.error(f"工作流失败: {e}")
+            return {"success": False, "session_id": self.session_id, "error": str(e)}
+
+    def run_step_by_step(
+        self,
+        initial_state: Dict[str, Any],
+        config: Optional[RunnableConfig] = None,
+    ):
+        """流式逐步执行 (astream)，生成器 yield 每一步状态"""
+        logger.info(f"===> 开始流式执行: session={self.session_id}")
+        if config is None:
+            config = {"configurable": {"thread_id": self.session_id}}
+
+        async def _stream():
+            try:
+                async for event in self.app.astream(initial_state, config):
+                    yield event
+            except Exception as e:
+                logger.error(f"流式执行失败: {e}")
+                yield {"error": str(e)}
+
+        return _stream()
+
+    def run_with_events(
+        self,
+        initial_state: Dict[str, Any],
+        config: Optional[RunnableConfig] = None,
+    ):
+        """带事件的流式执行 (astream_events)"""
+        logger.info(f"===> 开始事件流: session={self.session_id}")
+        if config is None:
+            config = {"configurable": {"thread_id": self.session_id}}
+
+        async def _stream_events():
+            try:
+                async for event in self.app.astream_events(initial_state, config, version="v2"):
+                    yield {
+                        "event": event.get("event", ""),
+                        "node": event.get("name", ""),
+                        "data": event.get("data", {}),
+                        "timestamp": datetime.now().isoformat(),
+                    }
+            except Exception as e:
+                logger.error(f"事件流失败: {e}")
+                yield {"event": "error", "error": str(e)}
+
+        return _stream_events()
+
+    def resume_from_checkpoint(
+        self,
+        resume_value: Any = None,
+        config: Optional[RunnableConfig] = None,
+    ) -> Dict[str, Any]:
+        """从 checkpoint 恢复（人工确认后继续）"""
+        if config is None:
+            config = {"configurable": {"thread_id": self.session_id}}
+        logger.info(f"===> 从checkpoint恢复: {config.get('configurable',{}).get('thread_id')}")
+        try:
+            if resume_value is not None:
+                result = self.app.invoke(Command(resume=resume_value), config)
+            else:
+                result = self.app.invoke(None, config)
+            return {
+                "success": True,
+                "session_id": self.session_id,
+                "completed_steps": result.get("completed_steps", []),
+                "current_step": result.get("step_control", {}).get("current_step", 0),
+                "final_report": result.get("final_report", ""),
+                "data": result,
+            }
+        except Exception as e:
+            # GraphInterrupt 是 LangGraph 正常中断（步骤3/6/11审批点），不是错误
+            if "Interrupt" in type(e).__name__:
+                logger.info(f"恢复后在工作流中遇到中断: {e}")
+                state = self.get_state(config)
+                values = getattr(state, 'values', {}) if state else {}
+                sc = values.get("step_control", {})
+                approval_step = sc.get("approval_step")
+                return {
+                    "success": True,
+                    "interrupted": True,
+                    "session_id": self.session_id,
+                    "completed_steps": values.get("completed_steps", []),
+                    "current_step": sc.get("current_step", 0),
+                    "approval_step": approval_step,
+                    "approval_step_name": STEP_META.get(approval_step or 0, {}).get("name", ""),
+                    "final_report": values.get("final_report", ""),
+                    "data": values,
+                }
+            logger.error(f"恢复失败: {e}")
+            return {"success": False, "error": str(e)}
+
+    def get_state(self, config: Optional[RunnableConfig] = None):
+        if config is None:
+            config = {"configurable": {"thread_id": self.session_id}}
+        try:
+            return self.app.get_state(config)
+        except Exception as e:
+            logger.error(f"get_state失败: {e}")
+            return None
+
+    def resume_through_all(
+        self,
+        resume_value: Any = None,
+        config: Optional[RunnableConfig] = None,
+    ) -> Dict[str, Any]:
+        """
+        自动穿越所有中断点，一次性完成剩余全部步骤。
+        首次resume后如果遇到步骤6/11的GraphInterrupt，自动以 approved=True 继续，直到全部14步完成。
+        """
+        if config is None:
+            config = {"configurable": {"thread_id": self.session_id}}
+
+        total_loops = 0
+        max_loops = 5  # 最多3个审批点 + 2次容错
+
+        result = self.resume_from_checkpoint(resume_value=resume_value, config=config)
+        total_loops += 1
+
+        while result.get("interrupted") and total_loops < max_loops:
+            logger.info(f"自动穿越中断点，第{total_loops}次自动审批后继续...")
+            result = self.resume_from_checkpoint(
+                resume_value={"approved": True, "feedback": "系统自动审批"},
+                config=config,
+            )
+            total_loops += 1
+
+        return result
+
+    def get_state_history(self, config: Optional[RunnableConfig] = None) -> list:
+        if config is None:
+            config = {"configurable": {"thread_id": self.session_id}}
+        try:
+            return list(self.app.get_state_history(config))
+        except Exception as e:
+            logger.error(f"get_state_history失败: {e}")
+            return []
+
+    def switch_model(self, model_name: str, temperature: Optional[float] = None):
+        self.model_name = model_name
+        if temperature is not None:
+            self.temperature = temperature
+        if self.base_agent:
+            self.base_agent.switch_model(model_name, temperature)
+
+    def close(self):
+        if self.base_agent:
+            self.base_agent.close()
+        logger.info(f"PerformanceAgent closed: session={self.session_id}")
