@@ -852,3 +852,170 @@ class PerformanceAgent:
                 children = ind.get("children", []) or []
                 has_children = len(children) > 0
 
+                # 有子指标：递归处理子指标（一级指标总分 = 子指标总分之和，不重复计）
+                if has_children:
+                    _traverse(children, full_name, level + 1, False)
+                else:
+                    # 叶子节点：只记录叶子节点的实际分值
+                    entry = {
+                        "name": full_name,
+                        "level": level,
+                        "max_score": max_score,
+                        "actual_score": actual,
+                        "deduction": round(max_score - actual, 2) if actual < max_score else 0,
+                    }
+                    if level == 1:
+                        summary["level1_scores"].append(entry)
+                    elif level == 2:
+                        summary["level2_scores"].append(entry)
+                    else:
+                        summary["level3_scores"].append(entry)
+
+                    if actual < max_score:
+                        summary["deduction_details"].append(entry)
+
+                    summary["total_score"] += actual
+
+        level1 = indicator_system.get("level1_indicators", [])
+        _traverse(level1)
+
+        # 四舍五入保留两位小数
+        summary["total_score"] = round(summary["total_score"], 2)
+
+        # 根据得分判定等级（使用三等九级制）
+        ts = summary["total_score"]
+        if ts >= 90:
+            summary["grade"] = "优秀"
+        elif ts >= 80:
+            summary["grade"] = "良好"
+        elif ts >= 70:
+            summary["grade"] = "中等"
+        elif ts >= 60:
+            summary["grade"] = "合格"
+        else:
+            summary["grade"] = "不合格"
+
+        return summary
+
+    # Step 12
+    def _node_step12(self, state: PerformanceState) -> PerformanceState:
+        logger.info("[Step 12] 生成基本情况")
+        content = self._execute_step(state, 12)
+        state["basic_info"] = content
+        self._record_step_result(state, 12, content)
+        return state
+
+    # Step 13
+    def _node_step13(self, state: PerformanceState) -> PerformanceState:
+        logger.info("[Step 13] 生成评价工作简介")
+        content = self._execute_step(state, 13)
+        state["work_introduction"] = content
+        self._record_step_result(state, 13, content)
+        return state
+
+    # Step 14
+    def _node_step14(self, state: PerformanceState) -> PerformanceState:
+        logger.info("[Step 14] 组装最终报告")
+        # 不依赖LLM，直接从各步骤结果拼装完整报告
+        # 支持自定义章节排序（通过 state 中的 report_section_order）
+        content = self._assemble_final_report(state)
+        state["final_report"] = content
+        self._record_step_result(state, 14, content)
+        self._persist_state_backup(state)  # 关键节点保存最终备份
+        logger.info("[Step 14] 报告生成完成")
+        return state
+
+    def _assemble_final_report(self, state: PerformanceState) -> str:
+        """从各步骤结果拼装最终绩效评价报告，支持自定义章节排序"""
+        sections = []
+
+        # 标题
+        project_name = state.get("project_name", "绩效评价报告")
+        sections.append(f"# {project_name}\n")
+
+        # 默认章节映射（章节编号 → 标题 → 内容key）
+        DEFAULT_CHAPTERS = [
+            ("一", "绩效评价工作开展情况", "work_introduction"),
+            ("二", "项目基本情况", "basic_info"),
+            ("三", "评价指标体系", "evaluation_table"),
+            ("四", "指标得分及分析", "indicator_analysis"),
+            ("五", "综合评价分析及结论", "comprehensive_evaluation"),
+            ("六", "主要经验做法", "experience_summary"),
+            ("七", "存在问题及原因分析", "problems_analysis"),
+            ("八", "改进建议", "suggestions"),
+        ]
+
+        # 检查是否有自定义章节排序
+        custom_order = state.get("report_section_order")
+        if custom_order and isinstance(custom_order, list):
+            # 使用自定义排序
+            ordered_chapters = []
+            for key in custom_order:
+                for num, name, content_key in DEFAULT_CHAPTERS:
+                    if content_key == key or f"{num}、{name}" == key:
+                        ordered_chapters.append((f"{num}、{name}", state.get(content_key)))
+                        break
+            chapter_map = ordered_chapters if ordered_chapters else [
+                (f"{num}、{name}", state.get(content_key))
+                for num, name, content_key in DEFAULT_CHAPTERS
+            ]
+        else:
+            chapter_map = [
+                (f"{num}、{name}", state.get(content_key))
+                for num, name, content_key in DEFAULT_CHAPTERS
+            ]
+
+        # 目录
+        toc = ["## 目 录\n"]
+        for title, _ in chapter_map:
+            toc.append(title)
+        sections.append("\n".join(toc))
+        sections.append("\n---\n")
+
+        for title, content_section in chapter_map:
+            clean_content = (content_section or "").strip()
+            # 过滤掉明显的错误消息
+            if "[调用失败" in clean_content or "[模型" in clean_content:
+                clean_content = "（本部分内容尚未生成，请检查AI模型配置后重新运行工作流）"
+            if not clean_content:
+                clean_content = "（本部分内容尚未生成）"
+
+            # 如果内容不以标题开头，添加标题
+            if not clean_content.startswith("#"):
+                sections.append(f"## {title}\n\n{clean_content}\n")
+            else:
+                sections.append(f"{clean_content}\n")
+
+        sections.append("\n---\n")
+        sections.append(f"*报告由云海睿评AI生成系统自动生成*")
+
+        return "\n".join(sections)
+
+    # ─── 工具 ───────────────────────────────────────────
+
+    def _extract_json(self, text: str) -> Optional[str]:
+        m = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', text, re.DOTALL)
+        if m:
+            return m.group(1).strip()
+        start = text.find('{')
+        end = text.rfind('}')
+        if start >= 0 and end > start:
+            return text[start:end + 1]
+        return None
+
+    # ==================== 执行方法 ========================
+
+    def run_workflow(
+        self,
+        initial_state: Dict[str, Any],
+        config: Optional[RunnableConfig] = None,
+    ) -> Dict[str, Any]:
+        logger.info(f"===> 开始执行工作流: session={self.session_id}")
+        t0 = time.time()
+        if config is None:
+            config = {"configurable": {"thread_id": self.session_id}}
+        elif "configurable" not in config:
+            config["configurable"] = {"thread_id": self.session_id}
+        elif "thread_id" not in config["configurable"]:
+            config["configurable"]["thread_id"] = self.session_id
+
