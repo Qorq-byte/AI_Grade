@@ -230,3 +230,116 @@ class IndicatorManager:
         """
         更新指标信息
 
+        Args:
+            indicator_id: 指标ID
+            updates: 要更新的字段
+
+        Returns:
+            更新后的指标，未找到返回None
+        """
+        indicator = self._find_by_id(indicator_id)
+        if indicator:
+            allowed_fields = ["name", "score", "explanation", "scoring_standard", "order"]
+            for key, value in updates.items():
+                if key in allowed_fields:
+                    indicator[key] = value
+            logger.info(f"已更新指标: {indicator_id}, fields={list(updates.keys())}")
+            return indicator
+        logger.warning(f"未找到要更新的指标: {indicator_id}")
+        return None
+
+    def move_indicator(
+        self,
+        indicator_id: str,
+        new_order: int,
+        same_level_only: bool = True
+    ) -> bool:
+        """
+        调整指标在同一父级下的顺序
+
+        Args:
+            indicator_id: 指标ID
+            new_order: 新序号（1-based）
+            same_level_only: 是否只允许同级移动（默认True）
+
+        Returns:
+            是否成功
+        """
+        parent_list, _ = self._find_parent_by_child_id(indicator_id)
+        if parent_list is None:
+            return False
+
+        # 找到目标指标
+        current_idx = None
+        for i, ind in enumerate(parent_list):
+            if ind.get("id") == indicator_id:
+                current_idx = i
+                break
+
+        if current_idx is None:
+            return False
+
+        target = parent_list.pop(current_idx)
+        insert_pos = max(0, min(new_order - 1, len(parent_list)))
+        parent_list.insert(insert_pos, target)
+
+        # 重新编号
+        for i, ind in enumerate(parent_list):
+            ind["order"] = i + 1
+
+        logger.info(f"已移动指标: {indicator_id} -> order={insert_pos + 1}")
+        return True
+
+    def move_indicator_with_children(
+        self,
+        indicator_id: str,
+        new_order: int
+    ) -> bool:
+        """
+        移动指标及其所有子指标（保持子指标跟随）
+        用于一级指标拖拽排序
+
+        Args:
+            indicator_id: 指标ID
+            new_order: 新序号
+
+        Returns:
+            是否成功
+        """
+        return self.move_indicator(indicator_id, new_order, same_level_only=True)
+
+    # ─── 批量操作 ────────────────────────────────────
+
+    def batch_set_scores(self, score_map: Dict[str, float]) -> int:
+        """批量设置分值"""
+        count = 0
+        for indicator_id, score in score_map.items():
+            if self.update_indicator(indicator_id, {"score": score}):
+                count += 1
+        logger.info(f"批量设置分值: {count}个指标")
+        return count
+
+    def get_indicator_by_id(self, indicator_id: str) -> Optional[IndicatorInfo]:
+        """根据ID获取指标"""
+        return self._find_by_id(indicator_id)
+
+    def get_all_level2_indicators(self) -> List[IndicatorInfo]:
+        """获取所有二级指标（用于逐个生成三级指标）"""
+        return self._collect_level(self.system.get("level1_indicators", []), 2)
+
+    def get_all_level3_indicators(self) -> List[IndicatorInfo]:
+        """获取所有三级指标"""
+        return self._collect_level(self.system.get("level1_indicators", []), 3)
+
+    def get_level1_indicators(self) -> List[IndicatorInfo]:
+        """获取所有一级指标"""
+        return self.system.get("level1_indicators", [])
+
+    def to_dict(self) -> IndicatorSystem:
+        """导出为字典"""
+        return self.system
+
+    def to_json(self) -> str:
+        """导出为JSON"""
+        return json.dumps(self.system, ensure_ascii=False, indent=2)
+
