@@ -117,3 +117,116 @@ class IndicatorManager:
             "metadata": {}
         }
 
+    # ─── 模板操作 ────────────────────────────────────
+
+    def load_template(self, indicator_type: str) -> IndicatorSystem:
+        """
+        加载内置模板
+
+        Args:
+            indicator_type: 指标体系类型
+
+        Returns:
+            加载后的指标体系
+        """
+        template = BUILTIN_TEMPLATES.get(indicator_type)
+        if template:
+            self.system = deepcopy(template)
+            logger.info(f"已加载模板: {indicator_type}")
+        else:
+            logger.warning(f"未找到模板: {indicator_type}，返回空体系")
+            self.system = {
+                "indicator_type": indicator_type,
+                "template_id": None,
+                "level1_indicators": [],
+                "metadata": {}
+            }
+        return self.system
+
+    def import_custom_system(self, custom_data: IndicatorSystem) -> IndicatorSystem:
+        """
+        导入自定义指标体系
+
+        Args:
+            custom_data: 用户自定义的指标体系
+
+        Returns:
+            导入后的指标体系
+        """
+        # 标准化导入的数据
+        custom_data = self._normalize_system(custom_data)
+        self.system = custom_data
+        logger.info("已导入自定义指标体系")
+        return self.system
+
+    def get_templates(self) -> List[Dict[str, str]]:
+        """获取所有可用模板列表"""
+        return [
+            {"value": key, "label": key}
+            for key in BUILTIN_TEMPLATES.keys()
+        ]
+
+    # ─── 指标CRUD ────────────────────────────────────
+
+    def add_indicator(
+        self,
+        parent_id: Optional[str],
+        name: str,
+        score: Optional[float] = None,
+        level: Optional[int] = None
+    ) -> IndicatorInfo:
+        """
+        添加新指标
+
+        Args:
+            parent_id: 父级指标ID（None则添加为一级指标）
+            name: 指标名称
+            score: 分值
+            level: 层级（None则根据父级自动推断）
+
+        Returns:
+            新创建的指标
+        """
+        target_list, actual_level = self._find_parent(parent_id, level)
+
+        new_id = str(uuid.uuid4())
+        children = [] if actual_level <= 3 else []
+
+        new_indicator: IndicatorInfo = {
+            "id": new_id,
+            "level": actual_level,
+            "name": name,
+            "parent_id": parent_id,
+            "order": len(target_list) + 1,
+            "score": score,
+            "explanation": None,
+            "scoring_standard": None,
+            "source": "user_added",
+            "children": children
+        }
+
+        target_list.append(new_indicator)
+        logger.info(f"添加指标: L{actual_level} '{name}' (id={new_id})")
+        return new_indicator
+
+    def remove_indicator(self, indicator_id: str) -> bool:
+        """删除指标（含其所有子指标）"""
+        parent_list, _ = self._find_parent_by_child_id(indicator_id)
+        if parent_list is not None:
+            # 从父级的children列表中移除
+            for i, ind in enumerate(parent_list):
+                if ind.get("id") == indicator_id:
+                    parent_list.pop(i)
+                    logger.info(f"已删除指标: {indicator_id}")
+                    return True
+        logger.warning(f"未找到要删除的指标: {indicator_id}")
+        return False
+
+    def update_indicator(
+        self,
+        indicator_id: str,
+        updates: Dict[str, Any]
+    ) -> Optional[IndicatorInfo]:
+        """
+        更新指标信息
+
