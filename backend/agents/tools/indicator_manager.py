@@ -343,3 +343,120 @@ class IndicatorManager:
         """导出为JSON"""
         return json.dumps(self.system, ensure_ascii=False, indent=2)
 
+    def count_indicators_by_level(self) -> Dict[int, int]:
+        """统计各层级指标数量"""
+        counts = {1: 0, 2: 0, 3: 0, 4: 0}
+        level1 = self.system.get("level1_indicators", [])
+        counts[1] = len(level1)
+        for l1 in level1:
+            children = l1.get("children", []) or []
+            counts[2] += len(children)
+            for l2 in children:
+                sub_children = l2.get("children", []) or []
+                counts[3] += len(sub_children)
+                for l3 in sub_children:
+                    counts[4] += len(l3.get("children", []) or [])
+        return counts
+
+    # ─── 内部工具方法 ────────────────────────────────
+
+    def _find_parent(
+        self,
+        parent_id: Optional[str],
+        level: Optional[int] = None
+    ) -> Tuple[List[IndicatorInfo], int]:
+        """找到父级列表和层级"""
+        if parent_id is None:
+            return self.system.get("level1_indicators", []), 1
+
+        parent = self._find_by_id(parent_id)
+        if parent:
+            if "children" not in parent:
+                parent["children"] = []
+            children = parent.get("children", [])
+            return children, parent.get("level", 1) + 1
+
+        logger.warning(f"未找到父级指标: {parent_id}，默认返回一级列表")
+        return self.system.get("level1_indicators", []), 1
+
+    def _find_by_id(self, indicator_id: str) -> Optional[IndicatorInfo]:
+        """递归查找指标"""
+        def search(indicators: List[IndicatorInfo]) -> Optional[IndicatorInfo]:
+            for ind in indicators:
+                if ind.get("id") == indicator_id:
+                    return ind
+                children = ind.get("children", []) or []
+                result = search(children)
+                if result:
+                    return result
+            return None
+
+        return search(self.system.get("level1_indicators", []))
+
+    def _find_parent_by_child_id(
+        self,
+        child_id: str
+    ) -> Tuple[Optional[List[IndicatorInfo]], Optional[str]]:
+        """查找子指标的父级列表和父级ID"""
+        def search(
+            indicators: List[IndicatorInfo],
+            parent_list: List[IndicatorInfo],
+            parent_id: str
+        ) -> Tuple[Optional[List[IndicatorInfo]], Optional[str]]:
+            for ind in indicators:
+                if ind.get("id") == child_id:
+                    return parent_list, parent_id
+                children = ind.get("children", []) or []
+                result = search(children, children, ind.get("id", ""))
+                if result[0] is not None:
+                    return result
+            return None, None
+
+        return search(
+            self.system.get("level1_indicators", []),
+            self.system.get("level1_indicators", []),
+            None
+        )
+
+    def _collect_level(
+        self,
+        indicators: List[IndicatorInfo],
+        target_level: int
+    ) -> List[IndicatorInfo]:
+        """收集指定层级的所有指标"""
+        result = []
+        for ind in indicators:
+            if ind.get("level") == target_level:
+                result.append(ind)
+            children = ind.get("children", []) or []
+            result.extend(self._collect_level(children, target_level))
+        return result
+
+    def _normalize_system(self, data: IndicatorSystem) -> IndicatorSystem:
+        """标准化导入的指标体系，确保字段完整"""
+        # 递归ensure id
+        def ensure_ids(indicators: List[IndicatorInfo], parent_id: Optional[str] = None):
+            for ind in indicators:
+                if not ind.get("id"):
+                    ind["id"] = str(uuid.uuid4())
+                if "level" not in ind:
+                    ind["level"] = 1
+                ind["parent_id"] = parent_id
+                ind["source"] = ind.get("source", "user_imported")
+                children = ind.get("children", []) or []
+                ensure_ids(children, ind["id"])
+
+        ensure_ids(data.get("level1_indicators", []))
+        data["indicator_type"] = data.get("indicator_type", "自定义")
+        data["metadata"] = data.get("metadata", {})
+        return data
+
+
+# 便捷函数
+def create_indicator_manager(
+    indicator_type: str = "项目支出指标体系"
+) -> IndicatorManager:
+    """创建指标体系管理器并加载对应模板"""
+    manager = IndicatorManager()
+    manager.load_template(indicator_type)
+    return manager
