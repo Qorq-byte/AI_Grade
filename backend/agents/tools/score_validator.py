@@ -139,3 +139,146 @@ class ScoreValidator:
                     f"「{name}」一级={l1_score} ≠ 三级和={l3_sum}"
                 )
 
+        if passed:
+            details_parts.append("所有一级指标等于其二级/三级指标分值之和 ✓")
+
+        self._add_validation(
+            2, passed,
+            "每个一级指标=其二级之和=其三级之和",
+            "; ".join(details_parts) if details_parts else "全部通过"
+        )
+
+    # ─── 三维度 ──────────────────────────────────────
+    def _validate_dimension_3(self, level1: List[IndicatorInfo]):
+        """三维度：每个二级=其三级之和"""
+        passed = True
+        details_parts = []
+
+        all_l2 = self._collect_all_level(level1, 2)
+        for l2 in all_l2:
+            name = l2.get("name", "未命名")
+            l2_score = l2.get("score", 0) or 0
+            children = l2.get("children", []) or []
+            l3_sum = self._sum_scores(children)
+
+            if l3_sum > 0 and not self._approx_equal(l2_score, l3_sum):
+                passed = False
+                details_parts.append(
+                    f"「{name}」二级={l2_score} ≠ 三级和={l3_sum}"
+                )
+
+        if passed:
+            details_parts.append("所有二级指标等于其三级指标分值之和 ✓")
+
+        self._add_validation(
+            3, passed,
+            "每个二级指标=其三级之和",
+            "; ".join(details_parts) if details_parts else "全部通过"
+        )
+
+    # ─── 四维度 ──────────────────────────────────────
+    def _validate_dimension_4(self, level1: List[IndicatorInfo]):
+        """四维度：产出+效益指标分值<60时预警"""
+        all_l1 = level1
+        all_l2 = self._collect_all_level(level1, 2)
+        all_l3 = self._collect_all_level(level1, 3)
+
+        output_benefit_l1 = sum(
+            s for ind in all_l1
+            if self._is_output_or_benefit(ind.get("name", ""))
+            for s in [ind.get("score", 0) or 0]
+        )
+        output_benefit_l2 = sum(
+            s for ind in all_l2
+            if self._is_output_or_benefit(ind.get("name", ""))
+            for s in [ind.get("score", 0) or 0]
+        )
+        output_benefit_l3 = sum(
+            s for ind in all_l3
+            if self._is_output_or_benefit(ind.get("name", ""))
+            for s in [ind.get("score", 0) or 0]
+        )
+
+        warnings_generated = []
+        if output_benefit_l1 >= 60:
+            warnings_generated.append(
+                f"一级指标中产出+效益分值={output_benefit_l1}≥60，建议<60分"
+            )
+        if output_benefit_l2 >= 60:
+            warnings_generated.append(
+                f"二级指标中产出+效益分值={output_benefit_l2}≥60，建议<60分"
+            )
+        if output_benefit_l3 >= 60:
+            warnings_generated.append(
+                f"三级指标中产出+效益分值={output_benefit_l3}≥60，建议<60分"
+            )
+
+        self.warnings.extend(warnings_generated)
+
+        details = (
+            f"一级产出+效益={output_benefit_l1}, "
+            f"二级产出+效益={output_benefit_l2}, "
+            f"三级产出+效益={output_benefit_l3}"
+        )
+        passed = len(warnings_generated) == 0
+
+        self._add_validation(
+            4, passed,
+            "产出+效益指标分值<60分预警",
+            details
+        )
+
+    # ─── 工具方法 ────────────────────────────────────
+    def _sum_scores(self, indicators: List[IndicatorInfo]) -> float:
+        """计算指标列表的分值总和"""
+        return round(
+            sum(ind.get("score", 0) or 0 for ind in indicators), 2
+        )
+
+    def _collect_all_level(
+        self,
+        indicators: List[IndicatorInfo],
+        target_level: int
+    ) -> List[IndicatorInfo]:
+        """收集指定层级的所有指标（递归）"""
+        result = []
+        for ind in indicators:
+            if ind.get("level") == target_level:
+                result.append(ind)
+            children = ind.get("children", []) or []
+            result.extend(self._collect_all_level(children, target_level))
+        return result
+
+    def _is_output_or_benefit(self, name: str) -> bool:
+        """判断指标名称是否属于产出或效益类"""
+        name_lower = name.lower()
+        return any(
+            kw in name_lower for kw in self.OUTPUT_KEYWORDS + self.BENEFIT_KEYWORDS
+        )
+
+    def _approx_equal(self, a: float, b: float, tolerance: float = 0.01) -> bool:
+        """浮点数近似相等判断"""
+        return abs(a - b) <= tolerance
+
+    def _add_validation(
+        self,
+        dimension: int,
+        passed: bool,
+        message: str,
+        details: Optional[str] = None
+    ):
+        self.validations.append(
+            ScoreValidationDetail(
+                dimension=dimension,
+                passed=passed,
+                message=message,
+                details=details
+            )
+        )
+
+
+# 便捷函数
+def validate_indicator_scores(indicator_system: IndicatorSystem) -> ScoreValidationResult:
+    """便捷校验函数"""
+    validator = ScoreValidator()
+    return validator.validate(indicator_system)
