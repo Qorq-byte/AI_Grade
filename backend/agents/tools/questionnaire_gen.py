@@ -122,3 +122,129 @@ class QuestionnaireGenerator:
         if start >= 0 and end > start:
             text = text[start:end + 1]
 
+        raw_questions = json.loads(text)
+        questions = []
+        for i, rq in enumerate(raw_questions):
+            q = {
+                "question_id": rq.get("id", f"q_{i}"),
+                "question_text": rq.get("question", rq.get("question_text", f"题目{i+1}")),
+                "question_type": "likert",
+                "scale_levels": rq.get("levels", DEFAULT_LIKERT_LEVELS),
+                "related_indicator_id": rq.get("id", ""),
+                "related_indicator_name": rq.get("question", "")[:50],
+                "template_type": "benefit",
+            }
+            questions.append(q)
+        return questions
+
+    def _generate_structured_questions(
+        self,
+        indicator_system: Dict[str, Any],
+        project_core_content: str = "",
+        custom_indicators: Optional[List[str]] = None,
+        max_questions: int = 30,
+    ) -> List[Dict[str, Any]]:
+        """从指标体系结构化生成问题（不需要LLM）"""
+        questions = []
+
+        # 收集需要生成问卷的指标
+        target_indicators = self._identify_survey_indicators(
+            indicator_system, custom_indicators
+        )
+
+        logger.info(f"识别到 {len(target_indicators)} 个可生成问卷的指标")
+
+        # 为每个指标生成题目
+        for idx, indicator in enumerate(target_indicators[:max_questions]):
+            question = self._generate_single_question(indicator, idx + 1)
+            questions.append(question)
+
+        logger.info(f"已生成 {len(questions)} 个问卷题目")
+        return questions
+
+    def _identify_survey_indicators(
+        self,
+        indicator_system: Dict[str, Any],
+        custom_indicators: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        识别需要生成问卷的指标
+
+        规则：
+        1. 如果指定了custom_indicators，则使用指定的指标
+        2. 否则自动识别效益类、满意度类等需要调查问卷的指标
+        """
+        if custom_indicators:
+            # 根据ID查找指标
+            result = []
+            for ind_id in custom_indicators:
+                ind = self._find_indicator_by_id(
+                    indicator_system.get("level1_indicators", []), ind_id
+                )
+                if ind:
+                    result.append(ind)
+            return result
+
+        # 自动识别：三级指标中名称包含效益/满意度/效果等关键词的
+        all_l3 = self._collect_level3_indicators(
+            indicator_system.get("level1_indicators", [])
+        )
+
+        benefit_l3 = [
+            ind for ind in all_l3
+            if self._is_survey_indicator(ind.get("name", ""))
+        ]
+
+        # 如果没有三级指标，检查二级指标
+        if not all_l3:
+            all_l2 = self._collect_level2_indicators(
+                indicator_system.get("level1_indicators", [])
+            )
+            benefit_l3 = [
+                ind for ind in all_l2
+                if self._is_survey_indicator(ind.get("name", ""))
+            ]
+            # 如果二级也没有匹配的，回退到所有二级指标
+            if not benefit_l3 and all_l2:
+                benefit_l3 = all_l2
+                logger.info("未找到问卷类指标，回退到全部二级指标")
+
+        # 如果过滤后为空但有三/二级指标，回退到全部指标
+        if not benefit_l3 and all_l3:
+            benefit_l3 = all_l3
+            logger.info("未找到问卷类指标，回退到全部三级指标")
+
+        # 按顺序返回
+        return sorted(benefit_l3, key=lambda x: (
+            x.get("parent_id", ""),
+            x.get("order", 0)
+        ))
+
+    def _generate_single_question(
+        self,
+        indicator: Dict[str, Any],
+        index: int
+    ) -> Dict[str, Any]:
+        """为单个指标生成问卷题目"""
+        indicator_name = indicator.get("name", "")
+        indicator_id = indicator.get("id", str(uuid.uuid4()))
+
+        # 选择问句模板
+        template_key = self._select_template(indicator_name)
+        template = self.question_templates.get(
+            template_key, self.question_templates["default"]
+        )
+
+        question_text = template.format(indicator_name=indicator_name)
+
+        return {
+            "question_id": str(uuid.uuid4()),
+            "index": index,
+            "question_text": question_text,
+            "related_indicator_id": indicator_id,
+            "related_indicator_name": indicator_name,
+            "scale_levels": list(self.scale_levels),
+            "question_type": "likert",
+            "created_by": "system",
+        }
+
