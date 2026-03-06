@@ -116,3 +116,116 @@ class ContentIndexer:
         self.use_semantic = use_semantic and _HAS_SENTENCE_TRANSFORMERS
         self.similarity_threshold = similarity_threshold
 
+        # 语料存储
+        self.chunks: List[ContentChunk] = []
+        self.index: Dict[str, IndexEntry] = {}  # chunk_id -> IndexEntry
+        self.category_index: Dict[str, List[str]] = defaultdict(list)  # category -> chunk_ids
+        self.contradictions: List[Dict[str, Any]] = []  # 内容矛盾检测结果
+        self.raw_texts: Dict[str, str] = {}  # {filename: full_text}
+
+        # 延迟加载语义模型
+        self._embedding_model = None
+
+    def _get_embedding_model(self):
+        """延迟加载 embedding 模型"""
+        if self._embedding_model is None and self.use_semantic:
+            try:
+                self._embedding_model = SentenceTransformer(
+                    "paraphrase-multilingual-MiniLM-L12-v2"
+                )
+                logger.info("ContentIndexer: 语义模型加载成功")
+            except Exception as e:
+                logger.warning(f"语义模型加载失败: {e}，降级为关键词匹配")
+                self.use_semantic = False
+        return self._embedding_model
+
+    def index(
+        self,
+        raw_texts: Dict[str, str],
+        existing_categories: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, IndexEntry]:
+        """
+        对原始文本建立索引
+
+        Args:
+            raw_texts: {文件名: 完整文本内容}
+            existing_categories: 已有的分类信息 {chunk_id: category}
+
+        Returns:
+            索引字典 {core_content_key: IndexEntry}
+        """
+        self.raw_texts = raw_texts
+        self.chunks = []
+        self.index = {}
+        self.category_index = defaultdict(list)
+        self.contradictions = []
+
+        # 第1步：切分段落并创建chunk
+        for filename, text in raw_texts.items():
+            paragraphs = self._split_paragraphs(text)
+            for para_idx, para in enumerate(paragraphs):
+                if self._is_invalid(para):
+                    continue
+
+                chunk_id = self._generate_chunk_id(filename, para_idx, para)
+                is_effective = not self._is_template_jargon(para)
+
+                chunk = ContentChunk(
+                    id=chunk_id,
+                    text=para,
+                    source_file=filename,
+                    source_location=f"第{para_idx + 1}段",
+                    category=existing_categories.get(chunk_id, "")
+                    if existing_categories else "",
+                    is_effective=is_effective,
+                )
+                self.chunks.append(chunk)
+
+        logger.info(f"已切分 {len(self.chunks)} 个内容块 (来自 {len(raw_texts)} 个文件)")
+
+        # 第2步：自动分类
+        self._auto_categorize()
+
+        # 第3步：建立核心内容 → 原文出处索引
+        effective_chunks = [c for c in self.chunks if c.is_effective]
+        for chunk in effective_chunks:
+            entry = IndexEntry(
+                core_content=self._summarize(chunk.text, max_len=120),
+                source_refs=[f"{chunk.source_file}::{chunk.source_location}"],
+                category=chunk.category or "未分类",
+                confidence=self._calculate_confidence(chunk),
+            )
+            self.index[chunk.id] = entry
+            self.category_index[chunk.category or "未分类"].append(chunk.id)
+
+        # 第4步：语义关联（可选）
+        if self.use_semantic and len(effective_chunks) >= 2:
+            self._build_semantic_relations()
+
+        # 第5步：矛盾检测
+        self._detect_contradictions()
+
+        logger.info(
+            f"索引构建完成: 有效chunk={len(effective_chunks)}, "
+            f"分类={len(self.category_index)}, 矛盾={len(self.contradictions)}"
+        )
+        return self.index
+
+    def get_index(self) -> Dict[str, str]:
+        """
+        获取简化的索引映射：{核心内容: 原文出处}
+
+        Returns:
+            Dict[核心内容片段, 原文出处字符串]
+        """
+        result = {}
+        for chunk_id, entry in self.index.items():
+            source_str = "; ".join(entry.source_refs)
+            key = f"[{entry.category}] {entry.core_content}"
+            result[key] = source_str
+        return result
+
+    def get_index_structured(self) -> List[Dict[str, Any]]:
+        """
+        获取结构化的索引列表（用于Step2输出）
+
