@@ -229,3 +229,123 @@ class ContentIndexer:
         """
         获取结构化的索引列表（用于Step2输出）
 
+        Returns:
+            [
+                {
+                    "序号": 1,
+                    "核心内容摘要": "...",
+                    "所属类别": "...",
+                    "原文出处": "...",
+                    "置信度": 0.95,
+                    "备注": ""
+                }
+            ]
+        """
+        result = []
+        for i, (chunk_id, entry) in enumerate(sorted(
+            self.index.items(),
+            key=lambda x: (x[1].category, x[0])
+        ), 1):
+            result.append({
+                "序号": i,
+                "核心内容摘要": entry.core_content,
+                "所属类别": entry.category,
+                "原文出处": "; ".join(entry.source_refs),
+                "置信度": round(entry.confidence, 2),
+                "备注": "",
+            })
+        return result
+
+    def get_categorized_content(self) -> Dict[str, str]:
+        """
+        获取按类别整理的核心内容
+
+        Returns:
+            {类别名: 该类别所有核心内容的合并文本}
+        """
+        result = {}
+        for category, chunk_ids in self.category_index.items():
+            texts = []
+            for cid in chunk_ids:
+                chunk = self._find_chunk(cid)
+                if chunk:
+                    texts.append(chunk.text)
+            result[category] = "\n\n".join(texts)
+        return result
+
+    def get_contradictions(self) -> List[Dict[str, Any]]:
+        """获取检测到的内容矛盾"""
+        return self.contradictions
+
+    def search(
+        self,
+        query: str,
+        top_k: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """
+        搜索相关的内容块
+
+        Args:
+            query: 搜索关键词
+            top_k: 返回结果数量
+
+        Returns:
+            相关结果列表
+        """
+        results = []
+
+        # 关键词匹配
+        query_lower = query.lower()
+        for chunk in self.chunks:
+            if not chunk.is_effective:
+                continue
+            score = self._keyword_match_score(query_lower, chunk.text.lower())
+            if score > 0:
+                results.append({
+                    "chunk_id": chunk.id,
+                    "text": chunk.text[:200],
+                    "source": f"{chunk.source_file}::{chunk.source_location}",
+                    "category": chunk.category,
+                    "score": score,
+                })
+
+        # 按分数排序
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results[:top_k]
+
+    # ─── 内部方法 ────────────────────────────────────
+
+    def _split_paragraphs(self, text: str) -> List[str]:
+        """将文本切分为段落"""
+        if not text:
+            return []
+        # 按空行、换行符切分
+        raw_paragraphs = re.split(r'\n\s*\n|\r\n\s*\r\n', text)
+        # 过滤纯空行并清理首尾空白
+        return [
+            p.strip() for p in raw_paragraphs
+            if p.strip() and len(p.strip()) > 5
+        ]
+
+    def _is_invalid(self, text: str) -> bool:
+        """判断文本是否为无效内容"""
+        for pattern in self.INVALID_PATTERNS:
+            if re.search(pattern, text):
+                return True
+        # 过短的内容也视为无效
+        if len(text.strip()) < 10:
+            return True
+        return False
+
+    def _is_template_jargon(self, text: str) -> bool:
+        """判断是否为模板套话"""
+        for pattern in self.TEMPLATE_PATTERNS:
+            if re.search(pattern, text):
+                return True
+        return False
+
+    def _generate_chunk_id(self, filename: str, idx: int, text: str) -> str:
+        """生成内容块的唯一ID"""
+        raw = f"{filename}_{idx}_{text[:50]}"
+        return hashlib.md5(raw.encode()).hexdigest()[:12]
+
