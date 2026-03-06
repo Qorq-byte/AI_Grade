@@ -349,3 +349,112 @@ class ContentIndexer:
         raw = f"{filename}_{idx}_{text[:50]}"
         return hashlib.md5(raw.encode()).hexdigest()[:12]
 
+    def _auto_categorize(self):
+        """自动为内容块分类"""
+        for chunk in self.chunks:
+            if chunk.category:
+                continue  # 已有分类，跳过
+
+            text = chunk.text
+            scores = {}
+            for category, keywords in self.CATEGORY_KEYWORDS.items():
+                score = sum(1 for kw in keywords if kw in text)
+                if score > 0:
+                    scores[category] = score
+
+            if scores:
+                # 选择得分最高的类别
+                best_category = max(scores, key=scores.get)
+                chunk.category = best_category
+            else:
+                chunk.category = "其他"
+
+    def _calculate_confidence(self, chunk: ContentChunk) -> float:
+        """计算内容块的置信度"""
+        base = 0.7
+        # 长度适中加分
+        text_len = len(chunk.text)
+        if 50 <= text_len <= 500:
+            base += 0.1
+        # 有明确的分类加分
+        if chunk.category and chunk.category != "其他":
+            base += 0.1
+        # 不是模板套话加分
+        if not self._is_template_jargon(chunk.text):
+            base += 0.1
+        return min(base, 1.0)
+
+    def _summarize(self, text: str, max_len: int = 120) -> str:
+        """生成文本摘要（简单截取）"""
+        text = text.strip()
+        if len(text) <= max_len:
+            return text
+        # 找到合适的截断位置
+        truncated = text[:max_len]
+        # 尝试在句号处截断
+        last_period = truncated.rfind("。")
+        last_comma = truncated.rfind("，")
+        cut_pos = max(last_period, last_comma, max_len - 10)
+        return truncated[:cut_pos + 1] + "..." if cut_pos > 0 else truncated + "..."
+
+    def _keyword_match_score(self, query: str, text: str) -> float:
+        """计算关键词匹配得分"""
+        query_terms = query.split()
+        if not query_terms:
+            return 0.0
+
+        # 完全匹配
+        if query in text:
+            return 1.0
+
+        # 部分匹配
+        matches = sum(1 for term in query_terms if term in text)
+        if matches == 0:
+            return 0.0
+
+        return matches / len(query_terms) * 0.8
+
+    def _find_chunk(self, chunk_id: str) -> Optional[ContentChunk]:
+        """根据ID查找chunk"""
+        for chunk in self.chunks:
+            if chunk.id == chunk_id:
+                return chunk
+        return None
+
+    def _build_semantic_relations(self):
+        """使用语义相似度建立chunk间的关联"""
+        model = self._get_embedding_model()
+        if model is None:
+            return
+
+        effective_chunks = [c for c in self.chunks if c.is_effective]
+        if len(effective_chunks) < 2:
+            return
+
+        texts = [c.text for c in effective_chunks]
+        try:
+            embeddings = model.encode(texts, convert_to_tensor=True)
+            for i in range(len(embeddings)):
+                for j in range(i + 1, len(embeddings)):
+                    similarity = float(st_util.cos_sim(embeddings[i], embeddings[j]))
+                    if similarity >= self.similarity_threshold:
+                        effective_chunks[i].related_chunks.append(effective_chunks[j].id)
+                        effective_chunks[j].related_chunks.append(effective_chunks[i].id)
+        except Exception as e:
+            logger.warning(f"语义关联构建失败: {e}")
+
+    def _detect_contradictions(self):
+        """检测内容中的矛盾"""
+        # 按类别分组检测
+        for category, chunk_ids in self.category_index.items():
+            if len(chunk_ids) < 2:
+                continue
+
+            chunks = [self._find_chunk(cid) for cid in chunk_ids]
+            chunks = [c for c in chunks if c is not None]
+
+            # 检测数值矛盾（资金额、日期等）
+            self._detect_numeric_contradictions(chunks, category)
+            # 检测事实矛盾（项目状态等）
+            self._detect_factual_contradictions(chunks, category)
+
