@@ -458,3 +458,124 @@ class ContentIndexer:
             # 检测事实矛盾（项目状态等）
             self._detect_factual_contradictions(chunks, category)
 
+    def _detect_numeric_contradictions(
+        self, chunks: List[ContentChunk], category: str
+    ):
+        """检测数值矛盾"""
+        # 提取所有数值
+        number_pattern = re.compile(
+            r'(\d+(?:\.\d+)?)\s*(万元|元|亿|百万|千万|%)?'
+        )
+        num_map: Dict[str, List[Tuple[float, ContentChunk]]] = {}
+
+        for chunk in chunks:
+            matches = number_pattern.findall(chunk.text)
+            for num_str, unit in matches:
+                try:
+                    value = float(num_str)
+                    key = f"{unit}" if unit else "数值"
+                    if key not in num_map:
+                        num_map[key] = []
+                    num_map[key].append((value, chunk))
+                except ValueError:
+                    continue
+
+        # 检测同一单位下数值差异过大的情况
+        for unit, values in num_map.items():
+            if len(values) >= 2:
+                vals = [v[0] for v in values]
+                max_val = max(vals)
+                min_val = min(vals)
+                # 如果最大值是最小值的2倍以上，可能存在矛盾
+                if min_val > 0 and max_val / min_val >= 2:
+                    self.contradictions.append({
+                        "type": "数值矛盾",
+                        "category": category,
+                        "description": f"同一类数据差异较大 ({unit})",
+                        "values": [f"{v[0]}{unit}" for v in values[:3]],
+                        "sources": [
+                            f"{v[1].source_file}::{v[1].source_location}"
+                            for v in values[:3]
+                        ],
+                    })
+
+    def _detect_factual_contradictions(
+        self, chunks: List[ContentChunk], category: str
+    ):
+        """检测事实矛盾"""
+        status_keywords = {
+            "已完成": True,
+            "已完工": True,
+            "已验收": True,
+            "进行中": False,
+            "在建": False,
+            "尚未完成": False,
+            "未完成": False,
+            "已开工": True,
+            "尚未开工": False,
+        }
+
+        found_statuses: Dict[str, List[ContentChunk]] = {}
+        for chunk in chunks:
+            for kw in status_keywords:
+                if kw in chunk.text:
+                    if kw not in found_statuses:
+                        found_statuses[kw] = []
+                    found_statuses[kw].append(chunk)
+
+        # 检查是否存在互斥的状态描述
+        contradictory_pairs = []
+        for kw1 in found_statuses:
+            for kw2 in found_statuses:
+                if kw1 != kw2 and kw1 in status_keywords and kw2 in status_keywords:
+                    if status_keywords[kw1] != status_keywords[kw2]:
+                        contradictory_pairs.append((kw1, kw2))
+
+        for kw1, kw2 in contradictory_pairs[:3]:
+            self.contradictions.append({
+                "type": "事实矛盾",
+                "category": category,
+                "description": f"项目状态描述不一致: 「{kw1}」vs「{kw2}」",
+                "sources": [
+                    f"{found_statuses[kw1][0].source_file}::{found_statuses[kw1][0].source_location}",
+                    f"{found_statuses[kw2][0].source_file}::{found_statuses[kw2][0].source_location}",
+                ],
+            })
+
+
+# ==================== 便捷函数 ====================
+
+def build_content_index(
+    raw_texts: Dict[str, str],
+    use_semantic: bool = True,
+) -> Dict[str, str]:
+    """
+    便捷函数：对原始文本建立内容索引
+
+    Args:
+        raw_texts: {文件名: 文本内容}
+        use_semantic: 是否使用语义相似度
+
+    Returns:
+        {核心内容: 原文出处} 索引字典
+    """
+    indexer = ContentIndexer(use_semantic=use_semantic)
+    indexer.index(raw_texts)
+    return indexer.get_index()
+
+
+def categorize_content(
+    raw_texts: Dict[str, str],
+) -> Dict[str, str]:
+    """
+    便捷函数：对原始文本进行分类整理
+
+    Args:
+        raw_texts: {文件名: 文本内容}
+
+    Returns:
+        {类别: 该类别下的内容合并文本}
+    """
+    indexer = ContentIndexer()
+    indexer.index(raw_texts)
+    return indexer.get_categorized_content()
