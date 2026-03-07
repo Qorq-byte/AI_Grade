@@ -129,3 +129,138 @@ class ExportService:
         # 设置默认字体
         cls._setup_default_font(doc, style)
 
+        # 封面页
+        if include_title_page:
+            cls._add_title_page(doc, title or file_name, style)
+            doc.add_page_break()
+
+        # 解析Markdown内容并添加
+        cls._render_content(doc, content, style)
+
+        doc.save(file_path)
+        logger.info(f"Word文档已导出: {file_path}")
+        return file_path
+
+    @classmethod
+    def export_indicator_table_to_word(
+        cls,
+        indicator_system: Dict[str, Any],
+        file_name: str,
+        style: ExportStyle,
+        base_dir: str = ".",
+        title: Optional[str] = None,
+    ) -> str:
+        """
+        导出指标体系表格到Word
+
+        表格列：一级指标、二级指标、三级指标、分值、指标解释、评分标准
+        """
+        export_dir = cls.ensure_export_dir(base_dir)
+        safe_name = cls._sanitize_filename(file_name)
+        file_path = os.path.join(export_dir, f"{safe_name}.docx")
+
+        doc = Document()
+        cls._setup_page(doc, style)
+        cls._setup_default_font(doc, style)
+
+        # 标题
+        if title:
+            cls._add_heading(doc, title, style, level=0)
+
+        # 构建指标体系表格
+        level1_indicators = indicator_system.get("level1_indicators", [])
+        rows_data = []
+        for l1 in level1_indicators:
+            l1_name = f"{l1.get('name', '')}（{l1.get('score', '')}分）"
+            for l2 in (l1.get("children", []) or []):
+                l2_name = f"{l2.get('name', '')}（{l2.get('score', '')}分）"
+                l3_list = l2.get("children", []) or []
+                if l3_list:
+                    for l3 in l3_list:
+                        rows_data.append([
+                            l1_name,
+                            l2_name,
+                            l3.get("name", ""),
+                            str(l3.get("score", "")),
+                            l3.get("explanation", "") or "",
+                            l3.get("scoring_standard", "") or "",
+                        ])
+                        l1_name = ""  # 合并单元格用（简化处理）
+                        l2_name = ""
+                else:
+                    rows_data.append([
+                        l1_name, l2_name, "", "", "", ""
+                    ])
+                    l1_name = ""
+
+        # 创建表格
+        headers = ["一级指标", "二级指标", "三级指标", "分值", "指标解释", "评分标准"]
+        cls._create_formatted_table(doc, headers, rows_data, style)
+
+        doc.save(file_path)
+        logger.info(f"指标体系表格已导出: {file_path}")
+        return file_path
+
+    @classmethod
+    def export_score_table_to_word(
+        cls,
+        score_data: List[Dict[str, Any]],
+        file_name: str,
+        style: ExportStyle,
+        base_dir: str = ".",
+        title: Optional[str] = None,
+    ) -> str:
+        """
+        导出评分表到Word
+
+        表格列：一级指标、二级指标、三级指标、分值、得分、扣分原因
+        """
+        export_dir = cls.ensure_export_dir(base_dir)
+        safe_name = cls._sanitize_filename(file_name)
+        file_path = os.path.join(export_dir, f"{safe_name}.docx")
+
+        doc = Document()
+        cls._setup_page(doc, style)
+        cls._setup_default_font(doc, style)
+
+        if title:
+            cls._add_heading(doc, title, style, level=0)
+
+        headers = ["一级指标", "二级指标", "三级指标", "分值", "得分", "扣分原因"]
+        rows_data = []
+        for item in score_data:
+            rows_data.append([
+                item.get("level1_name", ""),
+                item.get("level2_name", ""),
+                item.get("level3_name", ""),
+                str(item.get("score", "")),
+                str(item.get("score_obtained", "")),
+                item.get("score_reason", "") or "",
+            ])
+
+        cls._create_formatted_table(doc, headers, rows_data, style)
+
+        doc.save(file_path)
+        logger.info(f"评分表已导出: {file_path}")
+        return file_path
+
+    @classmethod
+    def export_to_pdf(
+        cls,
+        content: str,
+        file_name: str,
+        style: ExportStyle,
+        base_dir: str = ".",
+        title: Optional[str] = None,
+    ) -> str:
+        """
+        导出PDF文档（reportlab 实现，中文使用内置 STSong-Light 字体）
+        """
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import cm
+        from reportlab.lib import colors
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak,
+        )
+
