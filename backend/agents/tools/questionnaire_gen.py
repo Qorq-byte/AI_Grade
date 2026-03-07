@@ -248,3 +248,126 @@ class QuestionnaireGenerator:
             "created_by": "system",
         }
 
+    def _select_template(self, indicator_name: str) -> str:
+        """根据指标名称选择合适的问句模板"""
+        for keyword, template_key in INDICATOR_TEMPLATE_MAP.items():
+            if keyword in indicator_name:
+                return template_key
+        return "default"
+
+    def _is_survey_indicator(self, name: str) -> bool:
+        """判断指标是否需要问卷"""
+        keywords = [
+            "效益", "满意度", "影响", "效果", "质量", "时效",
+            "利益", "获得感", "认可", "知晓率", "覆盖率"
+        ]
+        return any(kw in name for kw in keywords)
+
+    def _collect_level3_indicators(
+        self, indicators: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """收集所有三级指标 — 支持嵌套结构 level2_indicators/level3_indicators"""
+        result = []
+        for ind in indicators:
+            # 三级指标：在 level3_indicators 列表中
+            l3_list = ind.get("level3_indicators", []) or ind.get("children", []) or []
+            for l3 in l3_list:
+                result.append(l3)
+            # 二级指标：继续递归其下级
+            l2_list = ind.get("level2_indicators", []) or ind.get("children", []) or []
+            result.extend(self._collect_level3_indicators(l2_list))
+        return result
+
+    def _collect_level2_indicators(
+        self, indicators: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """收集所有二级指标 — 支持嵌套结构"""
+        result = []
+        for ind in indicators:
+            # 二级指标：在 level2_indicators 列表中
+            l2_list = ind.get("level2_indicators", []) or ind.get("children", []) or []
+            for l2 in l2_list:
+                result.append(l2)
+            # 一级指标：继续递归其下级
+            result.extend(self._collect_level2_indicators(l2_list))
+        return result
+
+    def _find_indicator_by_id(
+        self, indicators: List[Dict[str, Any]], target_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """根据ID递归查找指标"""
+        for ind in indicators:
+            if ind.get("id") == target_id:
+                return ind
+            children = ind.get("children", []) or []
+            result = self._find_indicator_by_id(children, target_id)
+            if result:
+                return result
+        return None
+
+    def add_open_ended_question(
+        self,
+        questions: List[Dict[str, Any]],
+        question_text: str,
+    ) -> Dict[str, Any]:
+        """
+        添加开放性填空问题
+
+        Args:
+            questions: 现有问卷列表
+            question_text: 问题文本
+
+        Returns:
+            新添加的问题
+        """
+        new_question = {
+            "question_id": str(uuid.uuid4()),
+            "index": len(questions) + 1,
+            "question_text": question_text,
+            "related_indicator_id": "",
+            "related_indicator_name": "",
+            "scale_levels": [],
+            "question_type": "open_ended",
+            "created_by": "user",
+        }
+        questions.append(new_question)
+        return new_question
+
+    def format_questionnaire_for_display(
+        self,
+        questions: List[Dict[str, Any]],
+        title: str = "调查问卷"
+    ) -> str:
+        """格式化问卷为Markdown显示文本"""
+        lines = [f"# {title}", ""]
+
+        for q in questions:
+            lines.append(f"**{q.get('index', '')}. {q.get('question_text', q.get('question', ''))}**")
+            if q["question_type"] == "likert":
+                levels = q.get("scale_levels", [])
+                lines.append(f"  {' | '.join(levels)} |")
+            else:
+                lines.append(f"  [请填写：______________________]")
+            lines.append("")
+
+        lines.append(f"\n*共 {len(questions)} 题*")
+        return "\n".join(lines)
+
+    def to_dict(self, questions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """导出为题列表"""
+        return questions
+
+
+# 便捷函数
+def generate_default_questionnaire(
+    indicator_system: Dict[str, Any],
+    project_core_content: str = "",
+    max_questions: int = 30,
+) -> List[Dict[str, Any]]:
+    """便捷生成默认问卷"""
+    generator = QuestionnaireGenerator()
+    return generator.generate_questions(
+        indicator_system,
+        project_core_content,
+        max_questions=max_questions
+    )
