@@ -127,3 +127,132 @@ class MultiModelCompareService:
         if not outputs:
             return "无有效输出可对比"
 
+        if len(outputs) == 1:
+            model_name = list(outputs.keys())[0]
+            return f"仅有一个模型 ({model_name}) 成功输出结果。"
+
+        # 构建总结的分析文本
+        parts = []
+        parts.append(f"## 多模型对比分析")
+        parts.append(f"- 成功参与的模型：{', '.join(outputs.keys())}")
+        parts.append(f"- 总共 {len(outputs)} 个模型产生了有效输出")
+
+        if comparison_result.get("errors"):
+            parts.append(f"- 失败的模型：{', '.join(comparison_result['errors'].keys())}")
+
+        parts.append("")
+        parts.append("### 各模型输出")
+
+        for model_name, output in outputs.items():
+            preview = output[:300] + "..." if len(output) > 300 else output
+            parts.append(f"**{model_name}**: {preview}")
+            parts.append("")
+
+        return "\n".join(parts)
+
+
+class ModelDialogueManager:
+    """
+    对比后单独对话管理器
+    允许用户在多模型对比完成后，与任意模型单独继续对话
+    """
+
+    def __init__(self):
+        self.active_dialogues: Dict[str, Any] = {}
+
+    def start_dialogue(
+        self,
+        model_name: str,
+        context: str,
+        session_id: str,
+    ) -> Dict[str, Any]:
+        """
+        与指定模型开始单独对话
+
+        Args:
+            model_name: 模型名称
+            context: 对话上下文（来自多模型对比的输出）
+            session_id: 会话ID
+
+        Returns:
+            对话信息
+        """
+        dialogue_info = {
+            "model_name": model_name,
+            "session_id": session_id,
+            "context": context,
+            "started_at": datetime.now().isoformat(),
+            "message_count": 0,
+        }
+
+        key = f"{session_id}_{model_name}"
+        self.active_dialogues[key] = dialogue_info
+
+        logger.info(f"开始单独对话: model={model_name}, session={session_id}")
+        return dialogue_info
+
+    def send_message(
+        self,
+        model_name: str,
+        session_id: str,
+        message: str,
+        chat_function: Callable,
+    ) -> str:
+        """
+        在单独对话中发送消息
+
+        Args:
+            model_name: 模型名称
+            session_id: 会话ID
+            message: 用户消息
+            chat_function: 对话函数
+
+        Returns:
+            模型回复
+        """
+        key = f"{session_id}_{model_name}"
+        if key not in self.active_dialogues:
+            raise ValueError(f"未找到对话: model={model_name}, session={session_id}")
+
+        response = chat_function(model_name, message)
+        self.active_dialogues[key]["message_count"] += 1
+
+        return response
+
+    def end_dialogue(self, model_name: str, session_id: str):
+        """结束单独对话"""
+        key = f"{session_id}_{model_name}"
+        self.active_dialogues.pop(key, None)
+        logger.info(f"结束单独对话: model={model_name}, session={session_id}")
+
+
+# 便捷函数
+def compare_models(
+    model_names: List[str],
+    prompt: str,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
+    system_prompt: Optional[str] = None,
+    chat_function: Optional[Callable] = None,
+) -> Dict[str, Any]:
+    """
+    便捷多模型对比函数
+
+    Args:
+        model_names: 模型名称列表
+        prompt: 提示词
+        temperature: 温度
+        top_p: Top-P
+        system_prompt: 系统提示
+        chat_function: 自定义对话函数
+
+    Returns:
+        对比结果
+    """
+    service = MultiModelCompareService(
+        model_names=model_names,
+        temperature=temperature,
+        top_p=top_p,
+    )
+    return service.compare(prompt, system_prompt, chat_function)
+"
