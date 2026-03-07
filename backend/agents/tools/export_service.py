@@ -264,3 +264,130 @@ class ExportService:
             SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak,
         )
 
+        cls._register_pdf_font()
+
+        export_dir = cls.ensure_export_dir(base_dir)
+        safe_name = cls._sanitize_filename(file_name)
+        file_path = os.path.join(export_dir, f"{safe_name}.pdf")
+
+        doc = SimpleDocTemplate(
+            file_path,
+            pagesize=A4,
+            topMargin=style.page_margin_top * cm,
+            bottomMargin=style.page_margin_bottom * cm,
+            leftMargin=style.page_margin_left * cm,
+            rightMargin=style.page_margin_right * cm,
+            title=title or file_name,
+        )
+
+        body = ParagraphStyle(
+            "Body", fontName=cls.PDF_FONT, fontSize=style.body_font_size,
+            leading=style.body_font_size * style.line_spacing,
+            spaceAfter=style.paragraph_spacing,
+        )
+        h1 = ParagraphStyle("H1", parent=body, fontSize=style.heading1_font_size,
+                            leading=style.heading1_font_size * 1.3, spaceBefore=14, spaceAfter=8)
+        h2 = ParagraphStyle("H2", parent=body, fontSize=style.heading2_font_size,
+                            leading=style.heading2_font_size * 1.3, spaceBefore=10, spaceAfter=6)
+        h3 = ParagraphStyle("H3", parent=body, fontSize=style.body_font_size + 1,
+                            leading=(style.body_font_size + 1) * 1.3, spaceBefore=8, spaceAfter=4)
+        title_style = ParagraphStyle(
+            "DocTitle", fontName=cls.PDF_FONT, fontSize=style.title_font_size,
+            leading=style.title_font_size * 1.4, alignment=1, spaceAfter=24,
+        )
+        center = ParagraphStyle("Center", parent=body, alignment=1)
+
+        elements = []
+
+        # 封面页
+        if title:
+            elements.append(Spacer(1, 6 * cm))
+            elements.append(Paragraph(cls._md_escape(title), title_style))
+            elements.append(Spacer(1, 1 * cm))
+            elements.append(Paragraph(datetime.now().strftime("%Y年%m月%d日"), center))
+            elements.append(PageBreak())
+
+        # 渲染 Markdown 内容
+        lines = content.split("\n")
+        i = 0
+        while i < len(lines):
+            line = lines[i].rstrip()
+            stripped = line.strip()
+            if not stripped:
+                i += 1
+                continue
+
+            if stripped.startswith("# "):
+                elements.append(Paragraph(cls._md_escape(stripped[2:]), h1))
+            elif stripped.startswith("## "):
+                elements.append(Paragraph(cls._md_escape(stripped[3:]), h2))
+            elif stripped.startswith("### "):
+                elements.append(Paragraph(cls._md_escape(stripped[4:]), h3))
+            elif stripped.startswith("|") and i + 1 < len(lines) and "---" in lines[i + 1]:
+                # Markdown 表格
+                table_lines = [stripped]
+                i += 2  # 跳过表头分隔行
+                while i < len(lines) and lines[i].strip().startswith("|"):
+                    table_lines.append(lines[i].strip())
+                    i += 1
+                elements.extend(cls._pdf_table(table_lines, style))
+                continue
+            elif stripped.startswith(("- ", "* ")) or re.match(r"^\d+\.\s", stripped):
+                text = re.sub(r"^(\d+\.\s)", "• ", stripped)
+                text = re.sub(r"^(-\s|\*\s)", "• ", text)
+                elements.append(Paragraph(
+                    "&nbsp;&nbsp;" + cls._md_escape(text), body))
+            else:
+                elements.append(Paragraph(cls._md_escape(cls._md_plain(stripped)), body))
+            i += 1
+
+        doc.build(elements)
+        logger.info(f"PDF文档已导出: {file_path}")
+        return file_path
+
+    PDF_FONT = "STSong-Light"
+    _pdf_font_registered = False
+
+    @classmethod
+    def _register_pdf_font(cls):
+        """注册中文字体（幂等）"""
+        if cls._pdf_font_registered:
+            return
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+        pdfmetrics.registerFont(UnicodeCIDFont(cls.PDF_FONT))
+        cls._pdf_font_registered = True
+
+    @staticmethod
+    def _md_escape(text: str) -> str:
+        """转义XML特殊字符，避免Paragraph解析错误"""
+        return (
+            text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+        )
+
+    @staticmethod
+    def _md_plain(text: str) -> str:
+        """去除Markdown强调标记（CID字体不支持加粗，避免出现星号）"""
+        text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+        text = re.sub(r"\*([^*\n]+)\*", r"\1", text)
+        text = re.sub(r"`([^`]+)`", r"\1", text)
+        return text
+
+    @classmethod
+    def _pdf_table(cls, lines: List[str], style: ExportStyle) -> List[Any]:
+        """将Markdown表格行转换为 reportlab Table flowable"""
+        from reportlab.lib import colors
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.platypus import Table, TableStyle, Paragraph, Spacer
+
+        rows = []
+        for line in lines:
+            if re.match(r"^\|?[\s:|-]+\|?$", line):
+                continue
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            rows.append(cells)
+        if not rows:
+            return []
+
