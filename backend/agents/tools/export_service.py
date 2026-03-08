@@ -527,3 +527,134 @@ class ExportService:
                 para_format.line_spacing = style.line_spacing
                 para_format.space_after = Pt(style.paragraph_spacing)
 
+            i += 1
+
+    @classmethod
+    def _render_table(cls, doc: Document, lines: List[str], style: ExportStyle):
+        """渲染Markdown表格"""
+        if len(lines) < 2:
+            return
+
+        rows = []
+        for line in lines:
+            if line.strip().startswith('|---'):
+                continue
+            cells = [cell.strip() for cell in line.strip('|').split('|')]
+            rows.append(cells)
+
+        if not rows:
+            return
+
+        headers = rows[0] if rows else []
+        data = rows[1:] if len(rows) > 1 else []
+
+        cls._create_formatted_table(doc, headers, data, style)
+
+    @classmethod
+    def _create_formatted_table(
+        cls,
+        doc: Document,
+        headers: List[str],
+        data: List[List[str]],
+        style: ExportStyle,
+    ):
+        """创建格式化表格"""
+        if not headers:
+            return
+
+        cols = len(headers)
+        table = doc.add_table(rows=1 + len(data), cols=cols)
+        table.style = 'Table Grid'
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+
+        # 表头
+        header_cells = table.rows[0].cells
+        for j, header in enumerate(headers):
+            cell = header_cells[j]
+            cell.text = header
+            cls._format_cell(cell, style, is_header=True)
+
+        # 数据行
+        for i, row_data in enumerate(data):
+            row_cells = table.rows[i + 1].cells
+            for j, value in enumerate(row_data):
+                if j >= cols:
+                    break
+                cell = row_cells[j]
+                cell.text = value if value else ""
+                cls._format_cell(cell, style, is_header=False)
+
+    @classmethod
+    def _format_cell(
+        cls, cell, style: ExportStyle, is_header: bool = False
+    ):
+        """格式化单元格"""
+        for paragraph in cell.paragraphs:
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            paragraph.paragraph_format.space_before = Pt(2)
+            paragraph.paragraph_format.space_after = Pt(2)
+            for run in paragraph.runs:
+                run.font.size = Pt(style.table_font_size)
+                run.font.name = style.font_name
+                if is_header:
+                    run.font.color.rgb = RGBColor(*style.table_header_color)
+                    run.bold = True
+
+        # 设置表头背景色
+        if is_header:
+            tc = cell._tc
+            tcPr = tc.get_or_add_tcPr()
+            shading = OxmlElement('w:shd')
+            shading.set(qn('w:fill'), cls._rgb_to_hex(style.table_header_bg))
+            shading.set(qn('w:val'), 'clear')
+            tcPr.append(shading)
+
+    @classmethod
+    def _sanitize_filename(cls, name: str) -> str:
+        """清理文件名中的非法字符"""
+        illegal_chars = r'[\\/*?:"<>|]'
+        safe = re.sub(illegal_chars, '_', name)
+        return safe.strip()[:200]
+
+    @classmethod
+    def _rgb_to_hex(cls, rgb: Tuple[int, int, int]) -> str:
+        """RGB转十六进制"""
+        return f"{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
+
+
+# 便捷函数
+def export_report(
+    content: str,
+    project_name: str,
+    report_type: str = "绩效评价报告",
+    style_mode: str = "classic",
+    custom_style: Optional[Dict[str, Any]] = None,
+    format: str = "word",
+    base_dir: str = ".",
+) -> str:
+    """
+    便捷导出函数
+
+    Args:
+        content: 报告内容
+        project_name: 项目名称
+        report_type: 报告类型（用于文件命名）
+        style_mode: 排版模式 "classic" 或 "custom"
+        custom_style: 自定义样式配置
+        format: 导出格式 "word" 或 "pdf"
+        base_dir: 基础目录
+
+    Returns:
+        导出文件路径
+    """
+    if style_mode == "classic" or not custom_style:
+        style = ExportStyle.classic()
+    else:
+        style = ExportStyle.from_dict(custom_style)
+
+    file_name = f"{project_name}{report_type}"
+
+    if format == "pdf":
+        return ExportService.export_to_pdf(content, file_name, style, base_dir, title=report_type)
+    else:
+        return ExportService.export_to_word(content, file_name, style, base_dir, title=report_type)
