@@ -391,3 +391,139 @@ class ExportService:
         if not rows:
             return []
 
+        cell_style = ParagraphStyle(
+            "Cell", fontName=cls.PDF_FONT, fontSize=style.table_font_size,
+            leading=style.table_font_size * 1.3,
+        )
+        header_style = ParagraphStyle(
+            "CellHeader", parent=cell_style, textColor=colors.HexColor("#003366"),
+        )
+        data = []
+        for r_i, row in enumerate(rows):
+            data.append([
+                Paragraph(cls._md_escape(cls._md_plain(c)), header_style if r_i == 0 else cell_style)
+                for c in row
+            ])
+
+        # 固定列宽：避免表格总宽超过可用宽度导致 negative availWidth 布局错误
+        from reportlab.lib.units import cm
+        usable_width = 21.0 * cm - (style.page_margin_left + style.page_margin_right) * cm
+        col_count = max(len(r) for r in rows) or 1
+        col_widths = [usable_width / col_count] * col_count
+
+        table = Table(data, colWidths=col_widths, hAlign="CENTER")
+        table.setStyle(TableStyle([
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(
+                "#%02X%02X%02X" % style.table_header_bg)),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ]))
+        return [table, Spacer(1, 8)]
+
+    # ─── 内部方法 ────────────────────────────────────
+
+    @classmethod
+    def _setup_page(cls, doc: Document, style: ExportStyle):
+        """设置页面边距"""
+        section = doc.sections[0]
+        section.top_margin = Cm(style.page_margin_top)
+        section.bottom_margin = Cm(style.page_margin_bottom)
+        section.left_margin = Cm(style.page_margin_left)
+        section.right_margin = Cm(style.page_margin_right)
+
+    @classmethod
+    def _setup_default_font(cls, doc: Document, style: ExportStyle):
+        """设置文档默认字体"""
+        style_obj = doc.styles['Normal']
+        font = style_obj.font
+        font.name = style.font_name
+        font.size = Pt(style.body_font_size)
+        # 设置中文字体
+        rPr = style_obj.element.get_or_add_rPr()
+        rFonts = OxmlElement('w:rFonts')
+        rFonts.set(qn('w:eastAsia'), style.font_name)
+        rPr.insert(0, rFonts)
+
+    @classmethod
+    def _add_title_page(cls, doc: Document, title: str, style: ExportStyle):
+        """添加封面页"""
+        # 空行占位
+        for _ in range(6):
+            doc.add_paragraph()
+
+        # 主标题
+        title_para = doc.add_paragraph()
+        title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        title_run = title_para.add_run(title)
+        title_run.font.size = Pt(style.title_font_size)
+        title_run.font.name = style.font_name
+        title_run.font.color.rgb = RGBColor(*style.title_color)
+        title_run.bold = True
+        rPr = title_run._element.get_or_add_rPr()
+        rFonts = OxmlElement('w:rFonts')
+        rFonts.set(qn('w:eastAsia'), style.font_name)
+        rPr.insert(0, rFonts)
+
+        doc.add_paragraph()
+
+        # 日期
+        date_para = doc.add_paragraph()
+        date_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        date_run = date_para.add_run(datetime.now().strftime("%Y年%m月%d日"))
+        date_run.font.size = Pt(14)
+        date_run.font.name = style.font_name
+
+    @classmethod
+    def _add_heading(
+        cls, doc: Document, text: str, style: ExportStyle, level: int = 1
+    ):
+        """添加标题"""
+        heading = doc.add_heading(text, level=level)
+        for run in heading.runs:
+            run.font.name = style.font_name
+            run.font.color.rgb = RGBColor(*style.heading_color)
+            rPr = run._element.get_or_add_rPr()
+            rFonts = OxmlElement('w:rFonts')
+            rFonts.set(qn('w:eastAsia'), style.font_name)
+            rPr.insert(0, rFonts)
+
+    @classmethod
+    def _render_content(cls, doc: Document, content: str, style: ExportStyle):
+        """渲染Markdown内容到Word文档"""
+        lines = content.split('\n')
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            if not line:
+                i += 1
+                continue
+
+            # 标题
+            if line.startswith('# '):
+                cls._add_heading(doc, line[2:], style, level=1)
+            elif line.startswith('## '):
+                cls._add_heading(doc, line[3:], style, level=2)
+            elif line.startswith('### '):
+                cls._add_heading(doc, line[4:], style, level=3)
+            # 表格
+            elif line.startswith('|') and '---' in lines[i + 1] if i + 1 < len(lines) else False:
+                table_lines = [line]
+                i += 1
+                # 分隔行
+                if i < len(lines):
+                    table_lines.append(lines[i])
+                    i += 1
+                # 数据行
+                while i < len(lines) and lines[i].strip().startswith('|'):
+                    table_lines.append(lines[i])
+                    i += 1
+                cls._render_table(doc, table_lines, style)
+                continue
+            else:
+                para = doc.add_paragraph(line)
+                para_format = para.paragraph_format
+                para_format.line_spacing = style.line_spacing
+                para_format.space_after = Pt(style.paragraph_spacing)
+
