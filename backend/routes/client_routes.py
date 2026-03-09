@@ -243,3 +243,244 @@ def delete_account(current_user: User = Depends(get_current_user), db: Session =
     user_id = current_user.id
     logger.info(f"开始注销用户账号: username={username}, user_id={user_id}")
 
+    # 1. 删除用户上传的文件（头像等）
+    if current_user.avatar_url:
+        avatar_path = Path(__file__).parent.parent.parent / "frontend" / current_user.avatar_url.lstrip("/")
+        if avatar_path.exists():
+            avatar_path.unlink()
+
+    # 2. 删除项目的上传文件（从文件系统清理）
+    projects = db.query(Project).filter(Project.user_id == user_id).all()
+    for proj in projects:
+        if proj.uploaded_files:
+            try:
+                files = json.loads(proj.uploaded_files) if isinstance(proj.uploaded_files, str) else proj.uploaded_files
+                for f in (files or []):
+                    fname = f.get("file_path") or f.get("path") or f.get("name", "")
+                    if fname:
+                        fpath = Path(__file__).parent.parent.parent / "uploads" / Path(fname).name
+                        if fpath.exists():
+                            fpath.unlink()
+            except Exception:
+                pass
+
+    # 3. 删除项目关联文件记录
+    db.query(ProjectFile).filter(ProjectFile.project_id.in_(
+        db.query(Project.id).filter(Project.user_id == user_id).subquery()
+    )).delete(synchronize_session=False)
+
+    # 4. 删除项目文件（file_processor上传路径）
+    upload_dir = Path(__file__).parent.parent.parent / "uploads"
+    for proj in projects:
+        # 删除与项目相关的所有上传文件
+        for f in upload_dir.glob(f"*_{user_id}_*"):
+            try:
+                f.unlink()
+            except Exception:
+                pass
+
+    # 5. 删除工作流会话（问卷答案、报告等关联数据）
+    sessions = db.query(WorkflowSession).filter(WorkflowSession.user_id == user_id).all()
+    for sess in sessions:
+        db.query(QuestionnaireAnswer).filter(QuestionnaireAnswer.session_id == sess.session_id).delete(synchronize_session=False)
+    db.query(WorkflowSession).filter(WorkflowSession.user_id == user_id).delete(synchronize_session=False)
+
+    # 6. 删除AI聊天数据
+    conversations = db.query(AiConversation).filter(AiConversation.user_id == user_id).all()
+    for conv in conversations:
+        db.query(AiMessage).filter(AiMessage.conversation_id == conv.id).delete(synchronize_session=False)
+    db.query(AiConversation).filter(AiConversation.user_id == user_id).delete(synchronize_session=False)
+
+    # 7. 删除Token使用记录
+    db.query(TokenUsage).filter(TokenUsage.user_id == user_id).delete(synchronize_session=False)
+
+    # 8. 删除通知记录
+    db.query(Notification).filter(Notification.user_id == user_id).delete(synchronize_session=False)
+
+    # 9. 删除操作日志
+    db.query(OperationLog).filter(OperationLog.user_id == user_id).delete(synchronize_session=False)
+
+    # 10. 删除记忆数据（通过 UserSession 的 session_id 关联）
+    user_sessions = db.query(UserSession).filter(UserSession.user_id == str(user_id)).all()
+    session_ids = [s.session_id for s in user_sessions]
+    if session_ids:
+        db.query(ShortTermMemory).filter(ShortTermMemory.session_id.in_(session_ids)).delete(synchronize_session=False)
+        db.query(LongTermMemory).filter(LongTermMemory.session_id.in_(session_ids)).delete(synchronize_session=False)
+        db.query(ConversationSummary).filter(ConversationSummary.session_id.in_(session_ids)).delete(synchronize_session=False)
+
+    # 11. 删除报告的提示词模板（用户自定义的，非系统默认）
+    db.query(PromptTemplate).filter(
+        PromptTemplate.modified_by == user_id, PromptTemplate.is_system == False
+    ).delete(synchronize_session=False)
+
+    # 12. 删除项目
+    db.query(Project).filter(Project.user_id == user_id).delete(synchronize_session=False)
+    db.query(Report).filter(Report.user_id == user_id).delete(synchronize_session=False)
+    db.query(ProjectFile).filter(ProjectFile.user_id == user_id).delete(synchronize_session=False)
+
+    # 13. 删除用户会话
+    db.query(UserSession).filter(UserSession.user_id == str(user_id)).delete(synchronize_session=False)
+
+    # 14. 最后删除用户本身
+    db.delete(current_user)
+    db.commit()
+
+    logger.info(f"用户账号及全部数据已注销: username={username}, user_id={user_id}")
+    return {"success": True, "message": "账号及所有关联数据已成功注销"}
+
+
+@router.post("/ai/conversations")
+def create_conversation(req: CreateConversationRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    conv = AiConversation(user_id=current_user.id, title=req.title or "新对话")
+    db.add(conv)
+    db.commit()
+    db.refresh(conv)
+    return {
+        "success": True,
+        "data": {
+            "id": conv.id,
+            "title": conv.title,
+            "created_at": conv.created_at.isoformat(),
+            "updated_at": conv.updated_at.isoformat(),
+        }
+    }
+
+
+@router.get("/ai/conversations")
+def list_conversations(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from sqlalchemy import func
+    conversations = db.query(AiConversation).filter(AiConversation.user_id == current_user.id).order_by(AiConversation.updated_at.desc()).all()
+    conv_ids = [c.id for c in conversations]
+    msg_counts = {}
+    if conv_ids:
+        rows = db.query(AiMessage.conversation_id, func.count(AiMessage.id)).filter(
+            AiMessage.conversation_id.in_(conv_ids)
+        ).group_by(AiMessage.conversation_id).all()
+        msg_counts = dict(rows)
+    return {
+        "success": True,
+        "data": [
+            {
+                "id": c.id,
+                "title": c.title,
+                "created_at": c.created_at.isoformat(),
+                "updated_at": c.updated_at.isoformat(),
+                "message_count": msg_counts.get(c.id, 0),
+            }
+            for c in conversations
+        ]
+    }
+
+
+@router.get("/ai/conversations/{conversation_id}")
+def get_conversation(conversation_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    conv = db.query(AiConversation).options(joinedload(AiConversation.messages)).filter(AiConversation.id == conversation_id, AiConversation.user_id == current_user.id).first()
+    if not conv:
+        raise HTTPException(status_code=404, detail="对话不存在")
+    return {
+        "success": True,
+        "data": {
+            "id": conv.id,
+            "title": conv.title,
+            "created_at": conv.created_at.isoformat(),
+            "updated_at": conv.updated_at.isoformat(),
+            "messages": [
+                {"id": m.id, "role": m.role, "content": m.content, "created_at": m.created_at.isoformat()}
+                for m in conv.messages
+            ]
+        }
+    }
+
+
+@router.put("/ai/conversations/{conversation_id}")
+def update_conversation_title(conversation_id: int, req: UpdateConversationTitleRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    conv = db.query(AiConversation).filter(AiConversation.id == conversation_id, AiConversation.user_id == current_user.id).first()
+    if not conv:
+        raise HTTPException(status_code=404, detail="对话不存在")
+    conv.title = req.title or "未命名对话"
+    conv.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(conv)
+    return {"success": True, "data": {"id": conv.id, "title": conv.title}}
+
+
+@router.delete("/ai/conversations/{conversation_id}")
+def delete_conversation(conversation_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    conv = db.query(AiConversation).filter(AiConversation.id == conversation_id, AiConversation.user_id == current_user.id).first()
+    if not conv:
+        raise HTTPException(status_code=404, detail="对话不存在")
+    conv_title = conv.title
+    db.delete(conv)
+    db.commit()
+    return {"success": True, "message": f"对话 '{conv_title}' 已删除"}
+
+
+@router.post("/ai/chat")
+async def ai_chat(req: AiChatRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not _get_ai_chat_enabled(db):
+        raise HTTPException(status_code=403, detail="AI聊天功能已被管理员禁用")
+    if not req.message or not req.message.strip():
+        raise HTTPException(status_code=400, detail="消息不能为空")
+
+    conv, conversation_id = _get_or_create_conversation(req.conversation_id, current_user.id, db)
+
+    user_msg = AiMessage(conversation_id=conversation_id, role="user", content=req.message)
+    db.add(user_msg)
+    db.commit()
+    db.refresh(user_msg)
+
+    try:
+        reply, token_info, used_model = _call_ai_chat(conversation_id, db, req.model)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"AI聊天请求失败: {e}")
+        # 返回友好的错误消息，不暴露原始错误细节（可能含敏感关键字）
+        error_msg = str(e).lower()
+        if "quota" in error_msg or "free tier" in error_msg or "freetier" in error_msg or "free quota" in error_msg:
+            raise HTTPException(status_code=503, detail="AI服务配额已用完，请充值或更换模型")
+        if "api_key" in error_msg or "authentication" in error_msg or "unauthorized" in error_msg:
+            raise HTTPException(status_code=500, detail="AI服务认证失败，请检查API密钥配置")
+        if "rate" in error_msg and "limit" in error_msg:
+            raise HTTPException(status_code=429, detail="AI服务请求过于频繁，请稍后重试")
+        if "model" in error_msg and ("not" in error_msg or "invalid" in error_msg):
+            raise HTTPException(status_code=500, detail="AI模型配置异常，请联系管理员")
+        raise HTTPException(status_code=500, detail="AI服务暂时不可用，请稍后重试")
+
+    assistant_msg = AiMessage(conversation_id=conversation_id, role="assistant", content=reply)
+    db.add(assistant_msg)
+
+    if conv.title == "新对话":
+        title = req.message[:20].replace("\n", " ").strip() or "新对话"
+        conv.title = title
+    conv.updated_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(assistant_msg)
+
+    # 记录token消耗
+    if token_info["total_tokens"] > 0:
+        try:
+            from backend.services.token_service import record_token_usage
+            record_token_usage(
+                db, current_user.id,
+                model_name=used_model,
+                prompt_tokens=token_info["prompt_tokens"],
+                completion_tokens=token_info["completion_tokens"],
+                total_tokens=token_info["total_tokens"],
+            )
+        except Exception as te:
+            logger.warning(f"AI聊天Token记录失败: {te}")
+
+    return {
+        "success": True,
+        "data": {
+            "conversation_id": conversation_id,
+            "conversation_title": conv.title,
+            "reply": reply,
+            "model": used_model,
+            "user_message_id": user_msg.id,
+            "assistant_message_id": assistant_msg.id,
+        }
+    }
+
