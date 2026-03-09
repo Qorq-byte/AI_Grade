@@ -734,3 +734,237 @@ def get_user_reports(current_user: User = Depends(get_current_user), db: Session
     except Exception as e:
         logger.warning(f"get_user_reports: 备份读取失败: {e}")
 
+    return {"success": True, "data": result}
+
+
+@router.delete("/reports/{session_id}")
+def delete_report(session_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """删除指定 session 的报告及相关数据"""
+    try:
+        # 删除数据库中的 WorkflowSession
+        ws = db.query(WorkflowSession).filter(
+            WorkflowSession.session_id == session_id,
+            WorkflowSession.user_id == current_user.id
+        ).first()
+        if ws:
+            # 删除关联的短/长期记忆、对话摘要
+            from backend.models.memory_models import ShortTermMemory, LongTermMemory, ConversationSummary
+            db.query(ShortTermMemory).filter(ShortTermMemory.session_id == session_id).delete(synchronize_session=False)
+            db.query(LongTermMemory).filter(LongTermMemory.session_id == session_id).delete(synchronize_session=False)
+            db.query(ConversationSummary).filter(ConversationSummary.session_id == session_id).delete(synchronize_session=False)
+            # 删除问卷答案
+            db.query(QuestionnaireAnswer).filter(QuestionnaireAnswer.session_id == session_id).delete(synchronize_session=False)
+            db.delete(ws)
+
+        # 清理内存中的活跃工作流和问卷缓存
+        try:
+            from backend.routes.agent_routes import active_agents, active_workflows, active_workflow_configs, _QUESTIONNAIRE_CACHE, _WORKFLOW_PROGRESS
+            if session_id in active_agents: del active_agents[session_id]
+            if session_id in active_workflows: del active_workflows[session_id]
+            if session_id in active_workflow_configs: del active_workflow_configs[session_id]
+            if session_id in _QUESTIONNAIRE_CACHE: del _QUESTIONNAIRE_CACHE[session_id]
+            if session_id in _WORKFLOW_PROGRESS: del _WORKFLOW_PROGRESS[session_id]
+        except Exception:
+            pass
+
+        db.commit()
+        # 同时删除磁盘备份文件，防止重新登录时从备份恢复已删除的记录
+        try:
+            backup_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                "state_backups"
+            )
+            backup_file = os.path.join(backup_dir, f"{session_id}.json")
+            if os.path.exists(backup_file):
+                os.remove(backup_file)
+                logger.info(f"已删除备份文件: {backup_file}")
+        except Exception as e:
+            logger.warning(f"删除备份文件失败: {e}")
+        logger.info(f"报告已删除: {session_id}")
+        return {"success": True, "message": "报告已删除"}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"删除报告失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class BatchDeleteRequest(BaseModel):
+    session_ids: list[str]
+
+@router.post("/reports/batch-delete")
+def batch_delete_reports(req: BatchDeleteRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """批量删除报告"""
+    deleted_count = 0
+    errors = []
+    for session_id in req.session_ids:
+        try:
+            ws = db.query(WorkflowSession).filter(
+                WorkflowSession.session_id == session_id,
+                WorkflowSession.user_id == current_user.id
+            ).first()
+            if ws:
+                from backend.models.memory_models import ShortTermMemory, LongTermMemory, ConversationSummary
+                db.query(ShortTermMemory).filter(ShortTermMemory.session_id == session_id).delete(synchronize_session=False)
+                db.query(LongTermMemory).filter(LongTermMemory.session_id == session_id).delete(synchronize_session=False)
+                db.query(ConversationSummary).filter(ConversationSummary.session_id == session_id).delete(synchronize_session=False)
+                db.query(QuestionnaireAnswer).filter(QuestionnaireAnswer.session_id == session_id).delete(synchronize_session=False)
+                db.delete(ws)
+                deleted_count += 1
+                try:
+                    from backend.routes.agent_routes import active_agents, active_workflows, active_workflow_configs, _QUESTIONNAIRE_CACHE, _WORKFLOW_PROGRESS
+                    for cache in [active_agents, active_workflows, active_workflow_configs, _QUESTIONNAIRE_CACHE, _WORKFLOW_PROGRESS]:
+                        if session_id in cache: del cache[session_id]
+                except Exception:
+                    pass
+            else:
+                errors.append(f"{session_id}: 未找到或无权限")
+            # 无论DB中是否存在，都尝试删除磁盘备份文件
+            try:
+                backup_dir = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                    "state_backups"
+                )
+                backup_file = os.path.join(backup_dir, f"{session_id}.json")
+                if os.path.exists(backup_file):
+                    os.remove(backup_file)
+                    logger.info(f"已删除备份文件: {backup_file}")
+            except Exception:
+                pass
+        except Exception as e:
+            errors.append(f"{session_id}: {str(e)}")
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"批量删除失败: {str(e)}")
+    return {"success": True, "data": {"deleted": deleted_count, "errors": errors}, "message": f"成功删除 {deleted_count} 条记录"}
+
+
+from backend.utils.log_utils import log_operation as _log_operation
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+
+
+@router.put("/password")
+def change_password(req: ChangePasswordRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from backend.services.auth_service import verify_password, hash_password
+
+    if not req.old_password or not req.new_password:
+        raise HTTPException(status_code=400, detail="旧密码和新密码不能为空")
+    if len(req.new_password) < 6:
+        raise HTTPException(status_code=400, detail="新密码长度不能少于6位")
+
+    stored_value = current_user.password_hash
+    if ":" not in stored_value:
+        raise HTTPException(status_code=500, detail="密码格式错误")
+
+    salt, stored_hash = stored_value.split(":", 1)
+    if not verify_password(req.old_password, stored_hash, salt):
+        raise HTTPException(status_code=400, detail="旧密码不正确")
+
+    new_hash, new_salt = hash_password(req.new_password)
+    current_user.password_hash = f"{new_salt}:{new_hash}"
+    current_user.updated_at = datetime.now(timezone.utc)
+    db.commit()
+
+    _log_operation(db, current_user.id, current_user.username, "change_password", resource_type="user", resource_id=str(current_user.id), detail="用户修改密码")
+
+    return {"success": True, "message": "密码修改成功"}
+
+
+# ─── 通知相关 ───
+
+@router.get("/notifications")
+def get_notifications(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    limit: int = 50,
+    unread_only: bool = False,
+):
+    """获取当前用户的通知列表"""
+    q = db.query(Notification).filter(Notification.user_id == current_user.id)
+    if unread_only:
+        q = q.filter(Notification.is_read == False)
+    notifications = q.order_by(Notification.created_at.desc()).limit(limit).all()
+    unread_count = db.query(Notification).filter(
+        Notification.user_id == current_user.id, Notification.is_read == False
+    ).count()
+    return {
+        "success": True,
+        "data": {
+            "unread_count": unread_count,
+            "notifications": [
+                {
+                    "id": n.id,
+                    "title": n.title,
+                    "content": n.content,
+                    "is_read": n.is_read,
+                    "created_at": n.created_at.isoformat(),
+                }
+                for n in notifications
+            ],
+        }
+    }
+
+
+@router.put("/notifications/{notification_id}/read")
+def mark_notification_read(
+    notification_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """标记单条通知为已读"""
+    n = db.query(Notification).filter(
+        Notification.id == notification_id, Notification.user_id == current_user.id
+    ).first()
+    if not n:
+        raise HTTPException(status_code=404, detail="通知不存在")
+    n.is_read = True
+    db.commit()
+    return {"success": True, "message": "已标记为已读"}
+
+
+@router.put("/notifications/read-all")
+def mark_all_notifications_read(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """标记所有通知为已读"""
+    db.query(Notification).filter(
+        Notification.user_id == current_user.id, Notification.is_read == False
+    ).update({"is_read": True}, synchronize_session=False)
+    db.commit()
+    return {"success": True, "message": "所有通知已标记为已读"}
+
+
+@router.delete("/notifications/{notification_id}")
+def delete_notification(
+    notification_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """删除单条通知 — 仅能删除本人的通知"""
+    n = db.query(Notification).filter(
+        Notification.id == notification_id, Notification.user_id == current_user.id
+    ).first()
+    if not n:
+        raise HTTPException(status_code=404, detail="通知不存在")
+    db.delete(n)
+    db.commit()
+    return {"success": True, "message": "通知已删除"}
+
+
+@router.delete("/notifications")
+def clear_all_notifications(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """清空当前用户的所有通知"""
+    count = db.query(Notification).filter(
+        Notification.user_id == current_user.id
+    ).delete(synchronize_session=False)
+    db.commit()
+    return {"success": True, "message": f"已清空 {count} 条通知"}
