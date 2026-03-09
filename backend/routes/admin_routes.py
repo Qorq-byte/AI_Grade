@@ -249,3 +249,276 @@ def admin_update_user(user_id: int, req: AdminUpdateUserRequest, db: Session = D
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
 
+    changed = []
+    if req.username and req.username != user.username:
+        existing = db.query(User).filter(User.username == req.username).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="用户名已存在")
+        user.username = req.username
+        changed.append("username")
+    if req.phone is not None:
+        user.phone = req.phone
+        changed.append("phone")
+    if req.is_active is not None:
+        user.is_active = req.is_active
+        changed.append(f"is_active={req.is_active}")
+    if req.password:
+        # 修改密码
+        password_hash, salt = hash_password(req.password)
+        user.password_hash = f"{salt}:{password_hash}"
+        changed.append("password")
+
+    db.commit()
+    db.refresh(user)
+
+    _log_operation(
+        db, user_id=user_id, username=user.username,
+        action="admin_update_user", resource_type="user",
+        detail=f"管理员更新用户 {user.username}: {', '.join(changed)}",
+    )
+    return {"success": True, "message": f"用户 {user_id} 已更新: {', '.join(changed)}"}
+
+
+@router.delete("/users/{user_id}")
+def admin_delete_user(user_id: int, db: Session = Depends(get_db)):
+    """管理员删除用户（软删除 — 禁用账户）"""
+    user = get_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if user.role == UserRole.ADMIN:
+        raise HTTPException(status_code=400, detail="不能删除管理员账户")
+
+    username = user.username
+    user.is_active = False
+    db.commit()
+
+    _log_operation(
+        db, user_id=user_id, username=username,
+        action="admin_delete_user", resource_type="user",
+        detail=f"管理员禁用用户 {username}",
+    )
+    return {"success": True, "message": f"用户 '{username}' 已被禁用"}
+
+
+@router.post("/users/{user_id}/deactivate")
+def admin_deactivate_user(user_id: int, db: Session = Depends(get_db)):
+    """管理员注销用户（硬删除 — 彻底删除用户及所有关联数据）"""
+    username = ""
+    session_ids = []
+    try:
+        user = get_user_by_id(db, user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        if user.role == UserRole.ADMIN:
+            raise HTTPException(status_code=400, detail="不能注销管理员账户")
+
+        username = user.username
+
+        # 提前获取session_ids
+        try:
+            session_ids = [
+                s[0] for s in db.query(WorkflowSession.session_id)
+                .filter(WorkflowSession.user_id == user_id).all()
+            ]
+        except Exception:
+            session_ids = []
+
+        # 提前获取对话ID
+        conv_ids = []
+        try:
+            conv_ids = [
+                c[0] for c in db.query(AiConversation.id)
+                .filter(AiConversation.user_id == user_id).all()
+            ]
+        except Exception:
+            conv_ids = []
+
+        # ── 按依赖顺序逐表删除（使用ORM，失败不回滚整个事务） ──
+
+        # 1. AiMessage → AiConversation（外键依赖）
+        if conv_ids:
+            db.query(AiMessage).filter(AiMessage.conversation_id.in_(conv_ids)).delete(synchronize_session=False)
+        db.query(AiConversation).filter(AiConversation.user_id == user_id).delete(synchronize_session=False)
+
+        # 2. Notification, TokenUsage, Report（都有 user_id）
+        db.query(Notification).filter(Notification.user_id == user_id).delete()
+        db.query(TokenUsage).filter(TokenUsage.user_id == user_id).delete()
+        db.query(Report).filter(Report.user_id == user_id).delete()
+
+        # 3. QuestionnaireAnswer（没有 user_id，用 session_id 关联）
+        if session_ids and HAS_QUESTIONNAIRE_TABLES:
+            try:
+                db.query(QuestionnaireAnswer).filter(
+                    QuestionnaireAnswer.session_id.in_(session_ids)
+                ).delete(synchronize_session=False)
+            except Exception as e:
+                logger.warning("删除问卷答案失败: {}", str(e))
+
+        # 4. 记忆表（FK → user_sessions.session_id）
+        if session_ids and HAS_MEMORY_TABLES:
+            for cls in [ShortTermMemory, LongTermMemory, ConversationSummary]:
+                try:
+                    db.query(cls).filter(cls.session_id.in_(session_ids)).delete(synchronize_session=False)
+                except Exception:
+                    pass
+
+        # 5. WorkflowSession
+        db.query(WorkflowSession).filter(WorkflowSession.user_id == user_id).delete(synchronize_session=False)
+
+        # 6. OperationLog（FK → users.id，必须在User前删除）
+        db.query(OperationLog).filter(OperationLog.user_id == user_id).delete()
+
+        # 7. User（ORM cascade → Project → Report/ProjectFile）
+        db.delete(user)
+        db.commit()
+        logger.info("用户注销成功: {} (id={})", username, user_id)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error("注销用户 {} (id={}) 失败: {}", username, user_id, str(e))
+        raise HTTPException(status_code=500, detail=f"注销失败: {str(e)}")
+
+    # ── 提交后清理 ──
+
+    # 磁盘备份
+    try:
+        backup_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "state_backups"
+        )
+        for sid in session_ids:
+            f = os.path.join(backup_dir, f"{sid}.json")
+            if os.path.exists(f):
+                os.remove(f)
+    except Exception:
+        pass
+
+    # 问卷缓存
+    try:
+        from backend.routes.agent_routes import _QUESTIONNAIRE_CACHE, active_workflows, _WORKFLOW_PROGRESS
+        for sid in session_ids:
+            _QUESTIONNAIRE_CACHE.pop(sid, None)
+            if sid in active_workflows:
+                try: active_workflows[sid].close()
+                except Exception: pass
+                active_workflows.pop(sid, None)
+            _WORKFLOW_PROGRESS.pop(sid, None)
+    except Exception:
+        pass
+
+    # 操作日志
+    try:
+        _log_operation(
+            db, user_id=user_id, username=username,
+            action="admin_deactivate_user", resource_type="user",
+            detail=f"管理员注销并删除用户 {username} 及其所有关联数据",
+        )
+    except Exception:
+        pass
+
+    return {"success": True, "message": f"用户 '{username}' 已注销，所有关联数据已删除"}
+
+
+# ═══════════════════════════════════════════════════════
+#  审计日志
+# ═══════════════════════════════════════════════════════
+
+@router.get("/audit-logs")
+def admin_audit_logs(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    action: Optional[str] = None,
+    user_id: Optional[int] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """管理员查看审计日志（分页 + 筛选）"""
+    q = db.query(OperationLog)
+
+    if action:
+        q = q.filter(OperationLog.action == action)
+    if user_id:
+        q = q.filter(OperationLog.user_id == user_id)
+    if start_date:
+        try:
+            sd = datetime.fromisoformat(start_date)
+            q = q.filter(OperationLog.created_at >= sd)
+        except ValueError:
+            pass
+    if end_date:
+        try:
+            ed = datetime.fromisoformat(end_date)
+            q = q.filter(OperationLog.created_at <= ed)
+        except ValueError:
+            pass
+
+    total = q.count()
+    logs = q.order_by(OperationLog.created_at.desc()).offset(
+        (page - 1) * page_size
+    ).limit(page_size).all()
+
+    return {
+        "success": True,
+        "data": {
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "logs": [
+                {
+                    "id": l.id,
+                    "user_id": l.user_id,
+                    "username": l.username,
+                    "action": l.action,
+                    "resource_type": l.resource_type,
+                    "resource_id": l.resource_id,
+                    "detail": l.detail,
+                    "ip_address": l.ip_address,
+                    "created_at": l.created_at.isoformat(),
+                }
+                for l in logs
+            ],
+        }
+    }
+
+
+@router.get("/audit-logs/summary")
+def admin_audit_summary(db: Session = Depends(get_db)):
+    """审计日志摘要 — 按操作类型聚合"""
+    results = db.query(
+        OperationLog.action,
+        func.count(OperationLog.id).label("count"),
+        func.max(OperationLog.created_at).label("last_time"),
+    ).group_by(OperationLog.action).order_by(func.count(OperationLog.id).desc()).all()
+
+    return {
+        "success": True,
+        "data": [
+            {
+                "action": r.action,
+                "count": r.count,
+                "last_time": r.last_time.isoformat() if r.last_time else None,
+            }
+            for r in results
+        ]
+    }
+
+
+# ═══════════════════════════════════════════════════════
+#  工作流管理
+# ═══════════════════════════════════════════════════════
+
+@router.get("/workflows")
+def admin_list_workflows(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    status: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """管理员查看所有工作流"""
+    q = db.query(WorkflowSession)
+    if status:
+        q = q.filter(WorkflowSession.status == status)
+
