@@ -484,3 +484,253 @@ async def ai_chat(req: AiChatRequest, current_user: User = Depends(get_current_u
         }
     }
 
+
+@router.post("/ai/voice-chat")
+async def ai_voice_chat(request: Request, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not _get_ai_chat_enabled(db):
+        raise HTTPException(status_code=403, detail="AI聊天功能已被管理员禁用")
+    form = await request.form()
+    text = form.get("text", "")
+    conversation_id_str = form.get("conversation_id", "0")
+    conversation_id = int(conversation_id_str) if conversation_id_str and conversation_id_str != "0" else None
+    if not text or not text.strip():
+        raise HTTPException(status_code=400, detail="语音识别文本不能为空")
+
+    conv, conversation_id = _get_or_create_conversation(conversation_id, current_user.id, db)
+
+    user_msg = AiMessage(conversation_id=conversation_id, role="user", content=text)
+    db.add(user_msg)
+    db.commit()
+    db.refresh(user_msg)
+
+    model_name = form.get("model", "") or None
+    try:
+        reply, token_info, used_model = _call_ai_chat(conversation_id, db, model_name)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"AI语音聊天请求失败: {e}")
+        error_msg = str(e).lower()
+        if "quota" in error_msg or "free tier" in error_msg or "freetier" in error_msg or "free quota" in error_msg:
+            raise HTTPException(status_code=503, detail="AI服务配额已用完，请充值或更换模型")
+        if "api_key" in error_msg or "authentication" in error_msg or "unauthorized" in error_msg:
+            raise HTTPException(status_code=500, detail="AI服务认证失败，请检查API密钥配置")
+        if "rate" in error_msg and "limit" in error_msg:
+            raise HTTPException(status_code=429, detail="AI服务请求过于频繁，请稍后重试")
+        raise HTTPException(status_code=500, detail="AI服务暂时不可用，请稍后重试")
+
+    assistant_msg = AiMessage(conversation_id=conversation_id, role="assistant", content=reply)
+    db.add(assistant_msg)
+
+    if conv.title == "新对话":
+        title = text[:20].replace("\n", " ").strip() or "新对话"
+        conv.title = title
+    conv.updated_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(assistant_msg)
+
+    # 记录token消耗
+    if token_info["total_tokens"] > 0:
+        try:
+            from backend.services.token_service import record_token_usage
+            record_token_usage(
+                db, current_user.id,
+                model_name=used_model,
+                prompt_tokens=token_info["prompt_tokens"],
+                completion_tokens=token_info["completion_tokens"],
+                total_tokens=token_info["total_tokens"],
+            )
+        except Exception as te:
+            logger.warning(f"AI语音聊天Token记录失败: {te}")
+
+    return {
+        "success": True,
+        "data": {
+            "conversation_id": conversation_id,
+            "conversation_title": conv.title,
+            "reply": reply,
+            "model": used_model,
+        }
+    }
+
+
+@router.get("/ai/chat-status")
+def get_ai_chat_status(db: Session = Depends(get_db)):
+    return {"success": True, "data": {"enabled": _get_ai_chat_enabled(db)}}
+
+
+@router.get("/ai/models")
+def get_available_models(current_user: User = Depends(get_current_user)):
+    """获取可用的AI模型列表，根据API密钥配置情况过滤"""
+    from backend.utils.llm_helper import get_supported_models
+    all_models = get_supported_models()
+    available = []
+    for m in all_models:
+        cat = m.get("category")
+        if cat == "qwen":
+            if settings.DASHSCOPE_API_KEY and not settings.DASHSCOPE_API_KEY.startswith("your_"):
+                available.append({**m, "configured": True})
+        elif cat == "deepseek":
+            if settings.DEEPSEEK_API_KEY and not settings.DEEPSEEK_API_KEY.startswith("your_"):
+                available.append({**m, "configured": True})
+        elif cat == "openai":
+            if settings.OPENAI_API_KEY and not settings.OPENAI_API_KEY.startswith("your_"):
+                available.append({**m, "configured": True})
+        elif cat == "anthropic":
+            if settings.ANTHROPIC_API_KEY and not settings.ANTHROPIC_API_KEY.startswith("your_"):
+                available.append({**m, "configured": True})
+    return {
+        "success": True,
+        "data": {
+            "models": available,
+            "default_model": settings.DEFAULT_MODEL,
+        }
+    }
+
+
+@router.get("/dashboard")
+def get_client_dashboard(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """客户端仪表盘数据"""
+    from backend.models.user_models import WorkflowSession, Report
+    completed_workflows = db.query(WorkflowSession).filter(
+        WorkflowSession.user_id == current_user.id,
+        WorkflowSession.status == "completed"
+    ).count()
+    total_reports = db.query(Report).filter(Report.user_id == current_user.id).count()
+    ai_dialog_count = db.query(AiConversation).filter(AiConversation.user_id == current_user.id).count()
+    return {
+        "success": True,
+        "data": {
+            "completed_workflows": completed_workflows,
+            "total_reports": total_reports,
+            "tokens_used": current_user.tokens_used or 0,
+            "ai_dialog_count": ai_dialog_count,
+            "username": current_user.username,
+        }
+    }
+
+
+@router.get("/activity")
+def get_recent_activity(current_user: User = Depends(get_current_user), db: Session = Depends(get_db), limit: int = 10):
+    logs = db.query(OperationLog).filter(
+        OperationLog.user_id == current_user.id
+    ).order_by(OperationLog.created_at.desc()).limit(limit).all()
+    return {
+        "success": True,
+        "data": [
+            {
+                "action": log.action,
+                "description": log.detail or log.action,
+                "time": log.created_at.strftime("%Y-%m-%d %H:%M") if log.created_at else "",
+            }
+            for log in logs
+        ]
+    }
+
+
+@router.get("/reports")
+def get_user_reports(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    # 从数据库查询已持久化的 WorkflowSession 记录
+    from backend.models.user_models import WorkflowSession
+    records = db.query(WorkflowSession).filter(
+        WorkflowSession.user_id == current_user.id
+    ).order_by(WorkflowSession.updated_at.desc()).all()
+
+    seen_sids = {r.session_id for r in records}
+    status_map = {"completed": "已完成", "running": "运行中", "awaiting_approval": "待审批", "cancelled": "已取消"}
+    result = [
+        {
+            "session_id": r.session_id,
+            "project_name": r.project_name,
+            "status": status_map.get(r.status, r.status or "已完成"),
+            "created_at": r.created_at.isoformat() if r.created_at else "",
+            "updated_at": r.updated_at.isoformat() if r.updated_at else "",
+        }
+        for r in records
+    ]
+
+    # 补充内存中的活跃工作流（未持久化到DB的session）
+    try:
+        from backend.routes.agent_routes import active_workflows, _WORKFLOW_PROGRESS, _QUESTIONNAIRE_CACHE
+        for sid, wf in active_workflows.items():
+            if sid in seen_sids:
+                continue
+            try:
+                config = {"configurable": {"thread_id": sid}}
+                state_obj = wf.get_state(config)
+                pn = ""
+                status = "运行中"
+                if state_obj and getattr(state_obj, 'values', None):
+                    pn = state_obj.values.get("project_name", "")
+                    status_key = state_obj.values.get("workflow_status", "")
+                    if status_key == "completed":
+                        status = "已完成"
+                    elif status_key == "error":
+                        status = "已取消"
+                prog = _WORKFLOW_PROGRESS.get(sid)
+                if prog and prog.get("status") == "done":
+                    status = "已完成"
+                if not pn:
+                    pn = "未命名项目"
+                result.append({
+                    "session_id": sid,
+                    "project_name": pn,
+                    "status": status,
+                    "created_at": "",
+                    "updated_at": "",
+                })
+                seen_sids.add(sid)
+            except Exception:
+                pass
+
+        for sid, qdata in _QUESTIONNAIRE_CACHE.items():
+            if sid in seen_sids:
+                continue
+            result.append({
+                "session_id": sid,
+                "project_name": qdata.get("project_name", "未命名项目"),
+                "status": "已完成",
+                "created_at": "",
+                "updated_at": qdata.get("updated_at", ""),
+            })
+            seen_sids.add(sid)
+    except Exception as e:
+        logger.warning(f"get_user_reports: 内存数据加载失败: {e}")
+
+    # 独立从 state_backups 磁盘备份恢复记录（不依赖 agent_routes 导入）
+    try:
+        backup_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "state_backups"
+        )
+        logger.info(f"get_user_reports: 检查备份目录 {backup_dir}, exists={os.path.exists(backup_dir)}")
+        if os.path.exists(backup_dir):
+            for fname in os.listdir(backup_dir):
+                if not fname.endswith(".json"):
+                    continue
+                sid = fname[:-5]
+                if sid in seen_sids:
+                    continue
+                try:
+                    fpath = os.path.join(backup_dir, fname)
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        backup = json.load(f)
+                    step_results = backup.get("step_results", {})
+                    qdata = backup.get("questionnaire", {})
+                    project_name = backup.get("project_name", "") or qdata.get("project_name", "") or "未命名项目"
+                    status = "已完成" if step_results else "待生成"
+                    result.append({
+                        "session_id": sid,
+                        "project_name": project_name,
+                        "status": status,
+                        "created_at": "",
+                        "updated_at": backup.get("updated_at", ""),
+                    })
+                    seen_sids.add(sid)
+                except Exception as e:
+                    logger.warning(f"get_user_reports: 读取备份文件 {fname} 失败: {e}")
+            logger.info(f"get_user_reports: 从备份恢复了 {len(result) - len(records)} 条记录, 总计 {len(result)} 条")
+    except Exception as e:
+        logger.warning(f"get_user_reports: 备份读取失败: {e}")
+
