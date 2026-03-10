@@ -1291,3 +1291,272 @@ class BatchModuleSequenceRequest(BaseModel):
     modules: list[ModuleSequenceRequest]
 
 
+@router.get("/module-sequences")
+def admin_list_module_sequences(
+    step_number: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """获取报告模块顺序配置"""
+    q = db.query(ReportModuleSequence)
+    if step_number is not None:
+        q = q.filter(ReportModuleSequence.step_number == step_number)
+    modules = q.order_by(ReportModuleSequence.step_number, ReportModuleSequence.sort_order).all()
+    return {
+        "success": True,
+        "data": [
+            {
+                "id": m.id, "step_number": m.step_number,
+                "module_key": m.module_key, "module_name": m.module_name,
+                "sort_order": m.sort_order, "is_visible": m.is_visible,
+                "client_editable": m.client_editable,
+                "updated_at": m.updated_at.isoformat() if m.updated_at else None,
+            }
+            for m in modules
+        ]
+    }
+
+
+@router.post("/module-sequences")
+def admin_create_module_sequence(
+    req: ModuleSequenceRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_admin_user),
+):
+    """创建模块顺序配置"""
+    existing = db.query(ReportModuleSequence).filter(
+        ReportModuleSequence.step_number == req.step_number,
+        ReportModuleSequence.module_key == req.module_key,
+    ).first()
+    if existing:
+        existing.module_name = req.module_name
+        existing.sort_order = req.sort_order
+        existing.is_visible = req.is_visible
+        existing.client_editable = req.client_editable
+        existing.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        return {"success": True, "message": "模块顺序已更新", "data": {"id": existing.id}}
+
+    module = ReportModuleSequence(
+        step_number=req.step_number, module_key=req.module_key,
+        module_name=req.module_name, sort_order=req.sort_order,
+        is_visible=req.is_visible, client_editable=req.client_editable,
+    )
+    db.add(module)
+    db.commit()
+    db.refresh(module)
+    _log_operation(db, admin.id, admin.username, "create_module_sequence",
+                   resource_type="module_sequence", resource_id=str(module.id),
+                   detail=f"创建模块顺序 step={req.step_number} key={req.module_key}")
+    return {"success": True, "data": {"id": module.id}, "message": "模块顺序创建成功"}
+
+
+@router.put("/module-sequences/batch")
+def admin_batch_update_module_sequences(
+    req: BatchModuleSequenceRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_admin_user),
+):
+    """批量更新模块顺序（支持拖拽排序）"""
+    updated = 0
+    for m in req.modules:
+        existing = db.query(ReportModuleSequence).filter(
+            ReportModuleSequence.step_number == m.step_number,
+            ReportModuleSequence.module_key == m.module_key,
+        ).first()
+        if existing:
+            existing.sort_order = m.sort_order
+            existing.module_name = m.module_name
+            existing.is_visible = m.is_visible
+            existing.client_editable = m.client_editable
+            existing.updated_at = datetime.now(timezone.utc)
+        else:
+            new_m = ReportModuleSequence(
+                step_number=m.step_number, module_key=m.module_key,
+                module_name=m.module_name, sort_order=m.sort_order,
+                is_visible=m.is_visible, client_editable=m.client_editable,
+            )
+            db.add(new_m)
+        updated += 1
+    db.commit()
+    _log_operation(db, admin.id, admin.username, "batch_update_module_sequence",
+                   resource_type="module_sequence",
+                   detail=f"批量更新 {updated} 个模块顺序")
+    return {"success": True, "message": f"已更新 {updated} 个模块顺序"}
+
+
+@router.delete("/module-sequences/{module_id}")
+def admin_delete_module_sequence(
+    module_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_admin_user),
+):
+    """删除模块顺序配置"""
+    module = db.query(ReportModuleSequence).filter(ReportModuleSequence.id == module_id).first()
+    if not module:
+        raise HTTPException(status_code=404, detail="模块顺序不存在")
+    db.delete(module)
+    db.commit()
+    return {"success": True, "message": "模块顺序已删除"}
+
+
+# ═══════════════════════════════════════════════════════
+#  知识库管理（增强：支持按 parent_indicator 筛选）
+# ═══════════════════════════════════════════════════════
+
+
+@router.put("/knowledge/{kb_id}/granular")
+def admin_update_granular_knowledge(
+    kb_id: int,
+    req: KnowledgeBaseRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_admin_user),
+):
+    """更新知识库条目（含 parent_indicator 字段）"""
+    kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
+    if not kb:
+        raise HTTPException(status_code=404, detail="知识库条目不存在")
+    kb.name = req.name
+    kb.content = req.content
+    kb.category = req.category
+    kb.step_number = req.step_number
+    kb.indicator_level = req.indicator_level
+    kb.is_active = req.is_active
+    kb.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    _log_operation(db, admin.id, admin.username, "update_granular_knowledge",
+                   resource_type="knowledge", resource_id=str(kb_id),
+                   detail=f"更新知识库: {req.name}")
+    return {"success": True, "message": "知识库条目已更新"}
+
+
+# ═══════════════════════════════════════════════════════
+#  步骤配置摘要（管理端概览用）
+# ═══════════════════════════════════════════════════════
+
+@router.get("/step-config")
+def admin_get_step_config(db: Session = Depends(get_db)):
+    """获取所有步骤的配置摘要（Prompt数量 + 知识库数量 + 模块序列）"""
+    steps = []
+    for step_number in range(1, 15):
+        prompt_count = db.query(func.count(PromptTemplate.id)).filter(
+            PromptTemplate.step_number == step_number
+        ).scalar() or 0
+        kb_count = db.query(func.count(KnowledgeBase.id)).filter(
+            KnowledgeBase.step_number == step_number
+        ).scalar() or 0
+        module_count = db.query(func.count(ReportModuleSequence.id)).filter(
+            ReportModuleSequence.step_number == step_number
+        ).scalar() or 0
+        steps.append({
+            "step_number": step_number,
+            "prompt_count": prompt_count,
+            "kb_count": kb_count,
+            "module_count": module_count,
+        })
+    return {"success": True, "data": steps}
+
+
+# ═══════════════════════════════════════════════════════
+#  数据清理管理（文件保留策略）
+# ═══════════════════════════════════════════════════════
+
+
+class CleanupRequest(BaseModel):
+    retention_days: Optional[int] = None
+
+
+@router.get("/cleanup/preview")
+def admin_cleanup_preview(
+    retention_days: Optional[int] = Query(None, ge=1, le=365),
+    db: Session = Depends(get_db),
+):
+    """预览即将被清理的数据量（不执行删除）"""
+    from backend.services.cleanup_service import CleanupService
+    return {"success": True, "data": CleanupService.get_cleanup_preview(db, retention_days)}
+
+
+@router.post("/cleanup/execute")
+def admin_execute_cleanup(
+    req: CleanupRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_admin_user),
+):
+    """手动执行数据清理"""
+    from backend.services.cleanup_service import CleanupService
+    result = CleanupService.cleanup_expired_files(db, req.retention_days)
+    _log_operation(
+        db, admin.id, admin.username, "execute_cleanup",
+        resource_type="system",
+        detail=f"执行清理: 删除{result['deleted_files']}文件, 释放{result['freed_disk_bytes']/1024/1024:.2f}MB",
+    )
+    return {"success": True, "data": result}
+
+
+@router.post("/cleanup/fix-failed")
+def admin_cleanup_stuck_workflows(
+    max_age_hours: int = Query(24, ge=1, le=168),
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_admin_user),
+):
+    """清理卡住的失败工作流"""
+    from backend.services.cleanup_service import CleanupService
+    count = CleanupService.cleanup_failed_workflows(db, max_age_hours)
+    _log_operation(
+        db, admin.id, admin.username, "cleanup_stuck_workflows",
+        resource_type="system",
+        detail=f"清理了 {count} 个卡住的工作流",
+    )
+    return {"success": True, "data": {"cleaned_count": count}}
+
+
+# ═══════════════════════════════════════════════════════
+#  文件管理统计
+# ═══════════════════════════════════════════════════════
+
+@router.get("/file-stats")
+def admin_file_stats(db: Session = Depends(get_db)):
+    """获取文件存储统计信息"""
+    total_files = db.query(func.count(ProjectFile.id)).scalar() or 0
+    total_size_db = db.query(func.sum(ProjectFile.file_size)).scalar() or 0
+
+    # 按文件类型统计
+    by_type = db.query(
+        ProjectFile.file_type,
+        func.count(ProjectFile.id).label("count"),
+        func.sum(ProjectFile.file_size).label("total_size"),
+    ).group_by(ProjectFile.file_type).all()
+
+    # 按上传类型统计
+    by_upload_type = db.query(
+        func.coalesce(ProjectFile.upload_type, "通用").label("upload_type"),
+        func.count(ProjectFile.id).label("count"),
+    ).group_by("upload_type").all()
+
+    # 90天内即将到期文件数
+    cutoff = datetime.now(timezone.utc) + timedelta(days=90)
+    expiring = db.query(func.count(ProjectFile.id)).filter(
+        ProjectFile.expires_at.isnot(None),
+        ProjectFile.expires_at <= cutoff,
+        ProjectFile.expires_at > datetime.now(timezone.utc),
+    ).scalar() or 0
+
+    return {
+        "success": True,
+        "data": {
+            "total_files": total_files,
+            "total_size_mb": round(total_size_db / (1024 * 1024), 2) if total_size_db else 0,
+            "by_type": [
+                {"type": t[0], "count": t[1], "size_mb": round((t[2] or 0) / (1024 * 1024), 2)}
+                for t in by_type
+            ],
+            "by_upload_type": [
+                {"type": t[0], "count": t[1]}
+                for t in by_upload_type
+            ],
+            "expiring_in_90_days": expiring,
+            "retention_days": 90,
+        }
+    }
+
+
+from backend.utils.log_utils import log_operation as _log_operation
