@@ -522,3 +522,254 @@ def admin_list_workflows(
     if status:
         q = q.filter(WorkflowSession.status == status)
 
+    total = q.count()
+    workflows = q.order_by(WorkflowSession.created_at.desc()).offset(
+        (page - 1) * page_size
+    ).limit(page_size).all()
+
+    return {
+        "success": True,
+        "data": {
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "workflows": [
+                {
+                    "id": w.id,
+                    "session_id": w.session_id,
+                    "user_id": w.user_id,
+                    "project_name": w.project_name,
+                    "status": w.status,
+                    "current_step": w.current_step,
+                    "model_name": w.model_name,
+                    "token_used": w.token_used,
+                    "created_at": w.created_at.isoformat(),
+                    "completed_at": w.completed_at.isoformat() if w.completed_at else None,
+                }
+                for w in workflows
+            ],
+        }
+    }
+
+
+# ═══════════════════════════════════════════════════════
+#  模型管理
+# ═══════════════════════════════════════════════════════
+
+
+class ModelConfigRequest(BaseModel):
+    platform: str
+    model_name: str
+    model_id: Optional[str] = None
+    api_key: Optional[str] = None
+    api_base_url: Optional[str] = None
+    is_enabled: bool = True
+    supports_vision: bool = False
+    supports_file: bool = False
+
+
+class ModelToggleRequest(BaseModel):
+    is_enabled: bool
+
+
+@router.get("/models")
+def admin_list_models(db: Session = Depends(get_db)):
+    """获取所有模型配置"""
+    models = db.query(ModelConfig).order_by(ModelConfig.sort_order).all()
+    return {
+        "success": True,
+        "data": [
+            {
+                "id": m.id, "platform": m.platform, "model_name": m.model_name,
+                "model_id": m.model_id, "api_key": m.api_key[:8] + "***" if m.api_key else None,
+                "api_base_url": m.api_base_url, "is_enabled": m.is_enabled,
+                "supports_vision": m.supports_vision, "supports_file": m.supports_file,
+                "sort_order": m.sort_order, "created_at": m.created_at.isoformat(),
+            }
+            for m in models
+        ]
+    }
+
+
+@router.post("/models")
+def admin_create_model(req: ModelConfigRequest, db: Session = Depends(get_db)):
+    """创建模型配置"""
+    existing = db.query(ModelConfig).filter(ModelConfig.model_name == req.model_name).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="模型名称已存在")
+    max_order = db.query(func.max(ModelConfig.sort_order)).scalar() or 0
+    model = ModelConfig(
+        platform=req.platform, model_name=req.model_name, model_id=req.model_id or req.model_name,
+        api_key=req.api_key, api_base_url=req.api_base_url, is_enabled=req.is_enabled,
+        supports_vision=req.supports_vision, supports_file=req.supports_file,
+        sort_order=max_order + 1,
+    )
+    db.add(model)
+    db.commit()
+    db.refresh(model)
+    return {"success": True, "data": {"id": model.id, "model_name": model.model_name}}
+
+
+@router.put("/models/{model_id}")
+def admin_update_model(model_id: int, req: ModelConfigRequest, db: Session = Depends(get_db)):
+    """更新模型配置"""
+    model = db.query(ModelConfig).filter(ModelConfig.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    model.platform = req.platform
+    model.model_name = req.model_name
+    model.model_id = req.model_id or req.model_name
+    if req.api_key:
+        model.api_key = req.api_key
+    model.api_base_url = req.api_base_url
+    model.is_enabled = req.is_enabled
+    model.supports_vision = req.supports_vision
+    model.supports_file = req.supports_file
+    db.commit()
+    return {"success": True, "message": f"模型 '{req.model_name}' 已更新"}
+
+
+@router.patch("/models/{model_id}/toggle")
+def admin_toggle_model(model_id: int, req: ModelToggleRequest, db: Session = Depends(get_db)):
+    """切换模型启用/禁用"""
+    model = db.query(ModelConfig).filter(ModelConfig.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    model.is_enabled = req.is_enabled
+    db.commit()
+    return {"success": True, "message": f"模型已{'启用' if req.is_enabled else '禁用'}"}
+
+
+@router.delete("/models/{model_id}")
+def admin_delete_model(model_id: int, db: Session = Depends(get_db)):
+    """删除模型配置"""
+    model = db.query(ModelConfig).filter(ModelConfig.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    db.delete(model)
+    db.commit()
+    return {"success": True, "message": "模型已删除"}
+
+
+# ═══════════════════════════════════════════════════════
+#  提示词 (Prompt) 管理
+# ═══════════════════════════════════════════════════════
+
+
+class PromptUpdateRequest(BaseModel):
+    prompt_content: str
+    change_log: Optional[str] = None
+    step_name: Optional[str] = None
+    indicator_level: Optional[int] = None
+    parent_indicator: Optional[str] = None
+    dimension: Optional[str] = None
+
+
+class GranularPromptRequest(BaseModel):
+    step_number: int
+    step_name: str
+    prompt_content: str
+    indicator_level: Optional[int] = None          # 1/2/3 级指标
+    parent_indicator: Optional[str] = None          # 所属上级指标
+    dimension: Optional[str] = None                 # 决策/过程/产出/效益
+    change_log: Optional[str] = None
+
+
+@router.get("/prompts")
+def admin_list_prompts(
+    step_number: Optional[int] = None,
+    indicator_level: Optional[int] = None,
+    dimension: Optional[str] = None,
+    parent_indicator: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """获取所有提示词模板（支持按步骤/指标层级/维度筛选）"""
+    q = db.query(PromptTemplate)
+    if step_number is not None:
+        q = q.filter(PromptTemplate.step_number == step_number)
+    if indicator_level is not None:
+        q = q.filter(PromptTemplate.indicator_level == indicator_level)
+    if dimension:
+        q = q.filter(PromptTemplate.dimension == dimension)
+    if parent_indicator:
+        q = q.filter(PromptTemplate.parent_indicator == parent_indicator)
+
+    prompts = q.order_by(
+        PromptTemplate.step_number,
+        func.coalesce(PromptTemplate.indicator_level, 0),
+        PromptTemplate.id,
+    ).all()
+    return {
+        "success": True,
+        "data": [
+            {
+                "id": p.id, "step_number": p.step_number, "step_name": p.step_name,
+                "prompt_content": p.prompt_content, "version": p.version,
+                "indicator_level": p.indicator_level,
+                "parent_indicator": p.parent_indicator,
+                "dimension": p.dimension,
+                "modified_by": p.modified_by, "change_log": p.change_log,
+                "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+                "is_system": p.is_system,
+            }
+            for p in prompts
+        ]
+    }
+
+
+@router.post("/prompts/granular")
+def admin_create_granular_prompt(
+    req: GranularPromptRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_admin_user),
+):
+    """创建细粒度提示词（含指标层级/维度信息）"""
+    prompt = PromptTemplate(
+        step_number=req.step_number,
+        step_name=req.step_name,
+        prompt_content=req.prompt_content,
+        indicator_level=req.indicator_level,
+        parent_indicator=req.parent_indicator,
+        dimension=req.dimension,
+        is_system=False,
+        version=1,
+        modified_by=admin.id,
+        change_log=req.change_log or "管理员创建",
+    )
+    db.add(prompt)
+    db.commit()
+    db.refresh(prompt)
+    _log_operation(db, admin.id, admin.username, "create_granular_prompt",
+                   resource_type="prompt", resource_id=str(prompt.id),
+                   detail=f"创建提示词 step={req.step_number} name={req.step_name}")
+    return {"success": True, "data": {"id": prompt.id, "step_name": prompt.step_name}, "message": "提示词创建成功"}
+
+
+@router.put("/prompts/{prompt_id}/granular")
+def admin_update_granular_prompt(
+    prompt_id: int,
+    req: GranularPromptRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_admin_user),
+):
+    """更新细粒度提示词"""
+    prompt = db.query(PromptTemplate).filter(PromptTemplate.id == prompt_id).first()
+    if not prompt:
+        raise HTTPException(status_code=404, detail="提示词不存在")
+    prompt.step_number = req.step_number
+    prompt.step_name = req.step_name
+    prompt.prompt_content = req.prompt_content
+    prompt.indicator_level = req.indicator_level
+    prompt.parent_indicator = req.parent_indicator
+    prompt.dimension = req.dimension
+    prompt.version = (prompt.version or 0) + 1
+    prompt.modified_by = admin.id
+    prompt.change_log = req.change_log or "管理员更新"
+    prompt.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    _log_operation(db, admin.id, admin.username, "update_granular_prompt",
+                   resource_type="prompt", resource_id=str(prompt_id),
+                   detail=f"更新提示词 v{prompt.version}")
+    return {"success": True, "message": f"提示词 v{prompt.version} 已更新"}
+
+
