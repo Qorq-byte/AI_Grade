@@ -773,3 +773,264 @@ def admin_update_granular_prompt(
     return {"success": True, "message": f"提示词 v{prompt.version} 已更新"}
 
 
+@router.get("/prompts/defaults")
+def admin_get_default_prompts():
+    """获取所有步骤的默认Prompts（用于对比预览）"""
+    from backend.agents.prompts.default_prompts import PromptTemplateFactory, STEP_META
+    result = {}
+    for step_number in range(15):
+        meta = STEP_META.get(step_number, {})
+        result[str(step_number)] = {
+            "step_number": step_number,
+            "step_name": meta.get("name", f"Step {step_number}"),
+            "system_prompt": PromptTemplateFactory.build_raw_system_prompt(step_number),
+            "human_prompt": PromptTemplateFactory.build_raw_human_prompt(step_number),
+        }
+    return {"success": True, "data": result}
+
+
+@router.get("/prompts/{prompt_id}")
+def admin_get_prompt(prompt_id: int, db: Session = Depends(get_db)):
+    """获取单个提示词详情"""
+    prompt = db.query(PromptTemplate).filter(PromptTemplate.id == prompt_id).first()
+    if not prompt:
+        raise HTTPException(status_code=404, detail="提示词不存在")
+    return {
+        "success": True,
+        "data": {
+            "id": prompt.id, "step_number": prompt.step_number,
+            "step_name": prompt.step_name, "prompt_content": prompt.prompt_content,
+            "version": prompt.version, "modified_by": prompt.modified_by,
+            "change_log": prompt.change_log,
+            "updated_at": prompt.updated_at.isoformat() if prompt.updated_at else None,
+        }
+    }
+
+
+@router.put("/prompts/{prompt_id}")
+def admin_update_prompt(
+    prompt_id: int, req: PromptUpdateRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_admin_user),
+):
+    """更新提示词（自动版本递增 + 变更日志）"""
+    prompt = db.query(PromptTemplate).filter(PromptTemplate.id == prompt_id).first()
+    if not prompt:
+        raise HTTPException(status_code=404, detail="提示词不存在")
+    prompt.prompt_content = req.prompt_content
+    prompt.version = (prompt.version or 0) + 1
+    prompt.modified_by = admin.id
+    prompt.change_log = req.change_log or "管理员手动更新"
+    prompt.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"success": True, "message": f"提示词 v{prompt.version} 已更新"}
+
+
+@router.post("/prompts/{prompt_id}/reset")
+def admin_reset_prompt(prompt_id: int, db: Session = Depends(get_db), admin: User = Depends(get_admin_user)):
+    """重置提示词为系统默认"""
+    from backend.services.rag_service import get_default_prompts
+    prompt = db.query(PromptTemplate).filter(PromptTemplate.id == prompt_id).first()
+    if not prompt:
+        raise HTTPException(status_code=404, detail="提示词不存在")
+    defaults = get_default_prompts() if callable(get_default_prompts) else {}
+    default_content = defaults.get(prompt.step_number, "") if isinstance(defaults, dict) else ""
+    if not default_content and hasattr(defaults, 'get'):
+        default_content = defaults.get(str(prompt.step_number), "")
+    prompt.prompt_content = default_content or prompt.prompt_content
+    prompt.version = (prompt.version or 0) + 1
+    prompt.modified_by = admin.id
+    prompt.change_log = "重置为系统默认"
+    prompt.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"success": True, "message": "已重置为系统默认"}
+
+
+@router.delete("/prompts/{prompt_id}")
+def admin_delete_prompt(
+    prompt_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_admin_user),
+):
+    """删除提示词（系统默认提示词不可删除）"""
+    prompt = db.query(PromptTemplate).filter(PromptTemplate.id == prompt_id).first()
+    if not prompt:
+        raise HTTPException(status_code=404, detail="提示词不存在")
+    if prompt.is_system:
+        raise HTTPException(status_code=403, detail="系统默认提示词不可删除")
+    step_name = prompt.step_name
+    _log_operation(
+        db, admin.id, admin.username, "delete_prompt",
+        resource_type="prompt", resource_id=str(prompt_id),
+        detail=f"删除提示词 step={prompt.step_number} name={step_name}",
+    )
+    db.delete(prompt)
+    db.commit()
+    return {"success": True, "message": f"提示词「{step_name}」已删除"}
+
+
+# ═══════════════════════════════════════════════════════
+#  知识库管理
+# ═══════════════════════════════════════════════════════
+
+
+class KnowledgeBaseRequest(BaseModel):
+    name: str
+    content: str
+    category: Optional[str] = None
+    step_number: Optional[int] = None
+    indicator_level: Optional[int] = None
+    is_active: bool = True
+
+
+@router.get("/knowledge")
+def admin_list_knowledge(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    step_number: Optional[int] = None,
+    category: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """获取知识库列表（分页 + 按步骤/分类筛选）"""
+    q = db.query(KnowledgeBase)
+    if step_number is not None:
+        q = q.filter(KnowledgeBase.step_number == step_number)
+    if category:
+        q = q.filter(KnowledgeBase.category == category)
+    total = q.count()
+    items = q.order_by(KnowledgeBase.step_number, KnowledgeBase.created_at.desc()).offset(
+        (page - 1) * page_size
+    ).limit(page_size).all()
+    return {
+        "success": True,
+        "data": {
+            "total": total, "page": page, "page_size": page_size,
+            "items": [
+                {
+                    "id": k.id, "name": k.name, "category": k.category,
+                    "step_number": k.step_number, "indicator_level": k.indicator_level,
+                    "content": k.content[:200] + "..." if len(k.content) > 200 else k.content,
+                    "is_active": k.is_active,
+                    "updated_at": k.updated_at.isoformat() if k.updated_at else None,
+                }
+                for k in items
+            ],
+        }
+    }
+
+
+@router.get("/knowledge/{kb_id}")
+def admin_get_knowledge(kb_id: int, db: Session = Depends(get_db)):
+    """获取知识库单条详情"""
+    kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
+    if not kb:
+        raise HTTPException(status_code=404, detail="知识库条目不存在")
+    return {
+        "success": True,
+        "data": {
+            "id": kb.id, "name": kb.name, "content": kb.content,
+            "category": kb.category, "step_number": kb.step_number,
+            "indicator_level": kb.indicator_level, "is_active": kb.is_active,
+            "updated_at": kb.updated_at.isoformat() if kb.updated_at else None,
+        }
+    }
+
+
+@router.post("/knowledge")
+def admin_create_knowledge(req: KnowledgeBaseRequest, db: Session = Depends(get_db)):
+    """创建知识库条目"""
+    kb = KnowledgeBase(
+        name=req.name, content=req.content, category=req.category,
+        step_number=req.step_number, indicator_level=req.indicator_level,
+        is_active=req.is_active,
+    )
+    db.add(kb)
+    db.commit()
+    db.refresh(kb)
+    return {"success": True, "data": {"id": kb.id, "name": kb.name}}
+
+
+@router.put("/knowledge/{kb_id}")
+def admin_update_knowledge(kb_id: int, req: KnowledgeBaseRequest, db: Session = Depends(get_db)):
+    """更新知识库条目"""
+    kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
+    if not kb:
+        raise HTTPException(status_code=404, detail="知识库条目不存在")
+    kb.name = req.name
+    kb.content = req.content
+    kb.category = req.category
+    kb.step_number = req.step_number
+    kb.indicator_level = req.indicator_level
+    kb.is_active = req.is_active
+    db.commit()
+    return {"success": True, "message": "知识库条目已更新"}
+
+
+@router.delete("/knowledge/{kb_id}")
+def admin_delete_knowledge(kb_id: int, db: Session = Depends(get_db)):
+    """删除知识库条目"""
+    kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
+    if not kb:
+        raise HTTPException(status_code=404, detail="知识库条目不存在")
+    db.delete(kb)
+    db.commit()
+    return {"success": True, "message": "知识库条目已删除"}
+
+
+# ═══════════════════════════════════════════════════════
+#  系统设置
+# ═══════════════════════════════════════════════════════
+
+
+class AIChatToggleRequest(BaseModel):
+    ai_chat_enabled: bool
+
+
+class RatingThresholdRequest(BaseModel):
+    excellent: float = 90.0
+    good: float = 75.0
+    pass_: float = 60.0
+
+
+@router.get("/settings")
+def admin_get_settings(db: Session = Depends(get_db)):
+    """获取系统设置"""
+    cfg = db.query(ModelConfig).filter(ModelConfig.platform == "system_config").first()
+    ai_chat_enabled = True
+    rating_thresholds = {"excellent": 90.0, "good": 75.0, "pass": 60.0}
+    if cfg and cfg.api_base_url:
+        try:
+            saved = json.loads(cfg.api_base_url)
+            ai_chat_enabled = saved.get("ai_chat_enabled", True)
+            rating_thresholds = saved.get("rating_thresholds", rating_thresholds)
+        except Exception:
+            pass
+    return {
+        "success": True,
+        "data": {
+            "ai_chat_enabled": ai_chat_enabled,
+            "rating_thresholds": rating_thresholds,
+        }
+    }
+
+
+@router.post("/settings/ai-chat-toggle")
+def admin_toggle_ai_chat(req: AIChatToggleRequest, db: Session = Depends(get_db)):
+    """切换AI聊天功能开关"""
+    cfg = db.query(ModelConfig).filter(ModelConfig.platform == "system_config").first()
+    current = {"ai_chat_enabled": True, "rating_thresholds": {"excellent": 90.0, "good": 75.0, "pass": 60.0}}
+    if cfg and cfg.api_base_url:
+        try:
+            current = json.loads(cfg.api_base_url)
+        except Exception:
+            pass
+    current["ai_chat_enabled"] = req.ai_chat_enabled
+    if not cfg:
+        cfg = ModelConfig(platform="system_config", model_name="system_config", api_base_url=json.dumps(current))
+        db.add(cfg)
+    else:
+        cfg.api_base_url = json.dumps(current)
+    db.commit()
+    return {"success": True, "message": f"AI聊天已{'启用' if req.ai_chat_enabled else '禁用'}"}
+
+
