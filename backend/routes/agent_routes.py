@@ -231,3 +231,251 @@ async def refine_step_content(req: RefineStepRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/status", response_model=AgentResponse)
+async def get_agent_status():
+    """
+    获取Agent状态
+    """
+    try:
+        return AgentResponse(
+            success=True,
+            data={
+                "status": "initialized",
+                "langgraph": "ready",
+                "rag": "ready",
+                "langsmith": "connected",
+                "database": "mysql",
+                "memory_system": "long_short_term",
+                "active_sessions": len(active_agents)
+            },
+            message="Agent状态正常"
+        )
+    except Exception as e:
+        logger.error(f"获取状态失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/session/{session_id}/stats", response_model=AgentResponse)
+async def get_session_stats(session_id: str):
+    """
+    获取会话记忆统计
+    """
+    try:
+        if session_id not in active_agents:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        
+        agent = active_agents[session_id]
+        stats = agent.get_memory_stats()
+        
+        return AgentResponse(
+            success=True,
+            data=stats,
+            message="获取统计成功"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取统计失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/session/{session_id}", response_model=AgentResponse)
+async def close_session(session_id: str):
+    """
+    关闭会话
+    """
+    try:
+        if session_id in active_agents:
+            active_agents[session_id].close()
+            del active_agents[session_id]
+        if session_id in active_workflows:
+            active_workflows[session_id].close()
+            del active_workflows[session_id]
+        if session_id in active_workflow_configs:
+            del active_workflow_configs[session_id]
+        logger.info(f"会话已关闭: {session_id}")
+        return AgentResponse(
+            success=True,
+            data={"session_id": session_id},
+            message="会话已关闭"
+        )
+    except Exception as e:
+        logger.error(f"关闭会话失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/models", response_model=AgentResponse)
+async def get_available_models():
+    """
+    获取所有支持的模型列表
+    """
+    try:
+        models = get_supported_models()
+        
+        return AgentResponse(
+            success=True,
+            data={"models": models},
+            message="获取模型列表成功"
+        )
+    except Exception as e:
+        logger.error(f"获取模型列表失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════
+#  文件上传
+# ═══════════════════════════════════════════════════════
+
+ALLOWED_EXTENSIONS = {
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx",
+    ".jpg", ".jpeg", ".png", ".bmp", ".txt", ".csv",
+}
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+
+
+@router.post("/upload")
+async def upload_file(
+    file: UploadFile = File(...),
+    session_id: Optional[str] = Query(None),
+):
+    """
+    上传单个文件
+    支持 PDF/Word/Excel/图片/TXT/CSV
+    """
+    # 校验扩展名
+    ext = Path(file.filename).suffix.lower() if file.filename else ""
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的文件格式: {ext}。支持: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
+        )
+
+    # 保存文件
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_name = f"{timestamp}_{file.filename}"
+    file_path = UPLOAD_DIR / safe_name
+
+    try:
+        with open(file_path, "wb") as f:
+            content = await file.read()
+            if len(content) > MAX_FILE_SIZE:
+                raise HTTPException(status_code=400, detail=f"文件过大，最大支持 {MAX_FILE_SIZE // 1024 // 1024}MB")
+            f.write(content)
+
+        file_size = len(content)
+
+        # 异步处理文件内容
+        try:
+            from backend.services.file_processor import FileProcessor
+            result = FileProcessor.process_file(str(file_path))
+            extracted_preview = (result.get("content", "") or "")[:500]
+        except Exception:
+            extracted_preview = ""
+
+        return {
+            "success": True,
+            "data": {
+                "original_name": file.filename,
+                "saved_name": safe_name,
+                "file_path": str(file_path),
+                "file_size": file_size,
+                "file_type": ext,
+                "extracted_preview": extracted_preview,
+            },
+            "message": f"文件 '{file.filename}' 上传成功",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"文件上传失败: {e}")
+        raise HTTPException(status_code=500, detail=f"文件上传失败: {str(e)}")
+
+
+@router.post("/upload/batch")
+async def upload_files_batch(
+    files: List[UploadFile] = File(...),
+    session_id: Optional[str] = Query(None),
+):
+    """
+    批量上传多个文件
+    """
+    if len(files) > 10:
+        raise HTTPException(status_code=400, detail="单次最多上传10个文件")
+
+    results = []
+    errors = []
+
+    for file in files:
+        try:
+            ext = Path(file.filename).suffix.lower() if file.filename else ""
+            if ext not in ALLOWED_EXTENSIONS:
+                errors.append({"filename": file.filename, "error": f"不支持格式: {ext}"})
+                continue
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe_name = f"{timestamp}_{file.filename}"
+            file_path = UPLOAD_DIR / safe_name
+
+            content = await file.read()
+            if len(content) > MAX_FILE_SIZE:
+                errors.append({
+                    "filename": file.filename,
+                    "error": f"文件过大，最大 {MAX_FILE_SIZE // 1024 // 1024}MB"
+                })
+                continue
+
+            with open(file_path, "wb") as f:
+                f.write(content)
+
+            results.append({
+                "original_name": file.filename,
+                "saved_name": safe_name,
+                "file_path": str(file_path),
+                "file_size": len(content),
+                "file_type": ext,
+            })
+
+        except Exception as e:
+            errors.append({"filename": file.filename, "error": str(e)})
+
+    return {
+        "success": True,
+        "data": {
+            "uploaded": results,
+            "errors": errors,
+            "total": len(files),
+            "success_count": len(results),
+            "failure_count": len(errors),
+        },
+        "message": f"上传完成: {len(results)}/{len(files)} 成功",
+    }
+
+
+# ═══════════════════════════════════════════════════════
+#  工作流 - SSE 流式执行（核心）
+# ═══════════════════════════════════════════════════════
+
+# 全局进度跟踪（用于SSE轮询模式）
+_WORKFLOW_PROGRESS: Dict[str, Dict] = {}
+
+# 问卷缓存（用于 list 端点和跨请求访问）
+_QUESTIONNAIRE_CACHE: Dict[str, Dict] = {}
+
+_NODE_TO_STEP = {
+    "init": 0, "step1_cost_list": 1, "step2_effective_data": 2,
+    "step3_indicator_system": 3, "step4_indicator_scores": 4,
+    "step5_scoring_standards": 5, "step6_evaluation_table": 6,
+    "step7_indicator_analysis": 7, "step8_experience": 8,
+    "step9_problems": 9, "step10_suggestions": 10,
+    "step11_comprehensive": 11, "step12_basic_info": 12,
+    "step13_work_intro": 13, "step14_final_report": 14,
+}
+
+
+def _make_sse_event(event_type: str, data: dict) -> str:
+    """构建SSE事件字符串"""
+    payload = {"event": event_type, **data, "timestamp": datetime.now().isoformat()}
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
