@@ -1034,3 +1034,260 @@ def admin_toggle_ai_chat(req: AIChatToggleRequest, db: Session = Depends(get_db)
     return {"success": True, "message": f"AI聊天已{'启用' if req.ai_chat_enabled else '禁用'}"}
 
 
+@router.post("/settings/rating-thresholds")
+def admin_set_rating_thresholds(req: RatingThresholdRequest, db: Session = Depends(get_db)):
+    """设置评分等级阈值"""
+    cfg = db.query(ModelConfig).filter(ModelConfig.platform == "system_config").first()
+    current = {"ai_chat_enabled": True, "rating_thresholds": {"excellent": 90.0, "good": 75.0, "pass": 60.0}}
+    if cfg and cfg.api_base_url:
+        try:
+            current = json.loads(cfg.api_base_url)
+        except Exception:
+            pass
+    current["rating_thresholds"] = {"excellent": req.excellent, "good": req.good, "pass": req.pass_}
+    if not cfg:
+        cfg = ModelConfig(platform="system_config", model_name="system_config", api_base_url=json.dumps(current))
+        db.add(cfg)
+    else:
+        cfg.api_base_url = json.dumps(current)
+    db.commit()
+    return {"success": True, "message": "评分阈值已更新", "data": current["rating_thresholds"]}
+
+
+# ═══════════════════════════════════════════════════════
+#  Token 监控（客户端管控）
+# ═══════════════════════════════════════════════════════
+
+@router.get("/token-stats")
+def admin_token_stats(db: Session = Depends(get_db)):
+    """Token消耗统计 — 趋势、分布、Top用户"""
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    week_ago = today - timedelta(days=7)
+    month_ago = today - timedelta(days=30)
+
+    total_tokens = db.query(func.sum(User.tokens_used)).scalar() or 0
+    total_cost = db.query(func.sum(TokenUsage.cost)).scalar() or 0.0
+
+    today_usage = db.query(func.sum(TokenUsage.total_tokens)).filter(
+        TokenUsage.created_at >= today
+    ).scalar() or 0
+
+    week_usage = db.query(func.sum(TokenUsage.total_tokens)).filter(
+        TokenUsage.created_at >= week_ago
+    ).scalar() or 0
+
+    month_usage = db.query(func.sum(TokenUsage.total_tokens)).filter(
+        TokenUsage.created_at >= month_ago
+    ).scalar() or 0
+
+    top_users = db.query(
+        User.username, User.tokens_used, User.id
+    ).filter(User.tokens_used > 0).order_by(User.tokens_used.desc()).limit(10).all()
+
+    daily_trend = db.query(
+        func.date(TokenUsage.created_at).label("date"),
+        func.sum(TokenUsage.total_tokens).label("tokens")
+    ).filter(TokenUsage.created_at >= month_ago).group_by("date").order_by("date").all()
+
+    model_usage = db.query(
+        TokenUsage.model_name,
+        func.sum(TokenUsage.total_tokens).label("tokens"),
+        func.count(TokenUsage.id).label("calls")
+    ).group_by(TokenUsage.model_name).order_by(func.sum(TokenUsage.total_tokens).desc()).all()
+
+    return {
+        "success": True,
+        "data": {
+            "overview": {
+                "total_tokens": total_tokens,
+                "total_cost": round(total_cost, 4),
+                "today_tokens": today_usage,
+                "week_tokens": week_usage,
+                "month_tokens": month_usage,
+            },
+            "top_users": [{"id": u[2], "username": u[0], "tokens_used": u[1]} for u in top_users],
+            "daily_trend": [{"date": str(d[0]), "tokens": d[1]} for d in daily_trend],
+            "model_usage": [{"model": m[0], "tokens": m[1], "calls": m[2]} for m in model_usage],
+        }
+    }
+
+
+@router.get("/ai-chat-stats")
+def admin_ai_chat_stats(db: Session = Depends(get_db)):
+    """AI聊天使用统计"""
+    total_conversations = db.query(func.count(AiConversation.id)).scalar() or 0
+    total_messages = db.query(func.count(AiMessage.id)).scalar() or 0
+    active_conversations_today = db.query(func.count(AiConversation.id)).filter(
+        AiConversation.updated_at >= datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    ).scalar() or 0
+
+    top_users = db.query(
+        User.username, func.count(AiConversation.id).label("conv_count")
+    ).join(AiConversation, AiConversation.user_id == User.id).group_by(
+        User.id
+    ).order_by(func.count(AiConversation.id).desc()).limit(10).all()
+
+    return {
+        "success": True,
+        "data": {
+            "total_conversations": total_conversations,
+            "total_messages": total_messages,
+            "active_conversations_today": active_conversations_today,
+            "top_users": [{"username": u[0], "conversation_count": u[1]} for u in top_users],
+        }
+    }
+
+
+# ═══════════════════════════════════════════════════════
+#  通知管理
+# ═══════════════════════════════════════════════════════
+
+
+class AdminSendNotificationRequest(BaseModel):
+    title: str
+    content: str
+    user_ids: Optional[List[int]] = None  # None/空 = 全部用户
+
+
+@router.post("/notifications")
+def admin_send_notification(
+    req: AdminSendNotificationRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_admin_user),
+):
+    """管理员发送通知 — 支持指定用户或全部用户"""
+    if not req.title or not req.title.strip():
+        raise HTTPException(status_code=400, detail="通知标题不能为空")
+    if not req.content or not req.content.strip():
+        raise HTTPException(status_code=400, detail="通知内容不能为空")
+
+    # 确定目标用户
+    if req.user_ids and len(req.user_ids) > 0:
+        # 发送给指定用户
+        users = db.query(User).filter(User.id.in_(req.user_ids), User.role == UserRole.USER).all()
+        if not users:
+            raise HTTPException(status_code=404, detail="未找到目标用户")
+    else:
+        # 发送给全部普通用户
+        users = db.query(User).filter(User.role == UserRole.USER).all()
+        if not users:
+            raise HTTPException(status_code=404, detail="系统中暂无普通用户")
+
+    notifications = []
+    for user in users:
+        n = Notification(
+            user_id=user.id,
+            title=req.title.strip(),
+            content=req.content.strip(),
+            sender_id=admin.id,
+        )
+        db.add(n)
+        notifications.append({"user_id": user.id, "username": user.username})
+
+    db.commit()
+
+    _log_operation(
+        db, user_id=admin.id, username=admin.username,
+        action="admin_send_notification", resource_type="notification",
+        detail=f"发送通知「{req.title}」给 {len(users)} 个用户",
+    )
+
+    return {
+        "success": True,
+        "message": f"通知已发送给 {len(users)} 个用户",
+        "data": {"recipient_count": len(users), "recipients": notifications},
+    }
+
+
+@router.get("/notifications")
+def admin_get_notifications(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """管理员查看已发送的通知历史"""
+    q = db.query(Notification).order_by(Notification.created_at.desc())
+    total = q.count()
+    items = q.offset((page - 1) * page_size).limit(page_size).all()
+
+    return {
+        "success": True,
+        "data": {
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "notifications": [
+                {
+                    "id": n.id,
+                    "user_id": n.user_id,
+                    "username": n.user.username if n.user else "未知",
+                    "title": n.title,
+                    "content": n.content,
+                    "is_read": n.is_read,
+                    "sender_id": n.sender_id,
+                    "created_at": n.created_at.isoformat(),
+                }
+                for n in items
+            ],
+        }
+    }
+
+
+@router.delete("/notifications/by-title")
+def admin_delete_notifications_by_title(
+    title: str = Query(..., description="通知标题"),
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_admin_user),
+):
+    """管理员批量撤回通知 — 按标题删除所有匹配的通知"""
+    count = db.query(Notification).filter(Notification.title == title).delete(synchronize_session=False)
+    db.commit()
+
+    _log_operation(
+        db, user_id=admin.id, username=admin.username,
+        action="admin_batch_delete_notifications", resource_type="notification",
+        detail=f"批量撤回通知「{title}」共 {count} 条",
+    )
+    return {"success": True, "message": f"已撤回 {count} 条通知"}
+
+
+@router.delete("/notifications/{notification_id}")
+def admin_delete_notification(
+    notification_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_admin_user),
+):
+    """管理员删除/撤回通知 — 从数据库中彻底删除，所有客户端将不可见"""
+    n = db.query(Notification).filter(Notification.id == notification_id).first()
+    if not n:
+        raise HTTPException(status_code=404, detail="通知不存在")
+    title = n.title
+    db.delete(n)
+    db.commit()
+
+    _log_operation(
+        db, user_id=admin.id, username=admin.username,
+        action="admin_delete_notification", resource_type="notification",
+        detail=f"撤回通知「{title}」(ID:{notification_id})",
+    )
+    return {"success": True, "message": "通知已撤回"}
+
+
+# ═══════════════════════════════════════════════════════
+#  报告模块顺序管理（步骤6/13/14）
+# ═══════════════════════════════════════════════════════
+
+
+class ModuleSequenceRequest(BaseModel):
+    step_number: int
+    module_key: str
+    module_name: str
+    sort_order: int = 0
+    is_visible: bool = True
+    client_editable: bool = True
+
+
+class BatchModuleSequenceRequest(BaseModel):
+    modules: list[ModuleSequenceRequest]
+
+
