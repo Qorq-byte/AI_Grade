@@ -479,3 +479,270 @@ def _make_sse_event(event_type: str, data: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _get_or_create_workflow(session_id: str, params: dict) -> tuple:
+    """获取或创建 PerformanceAgent, 返回 (workflow, session_id)"""
+    if session_id and session_id in active_workflows:
+        return active_workflows[session_id], session_id
+    workflow = PerformanceAgent(
+        session_id=session_id,
+        model_name=params.get("model_name") or settings.DEFAULT_MODEL,
+        temperature=params.get("temperature", 0.7),
+        top_p=params.get("top_p", 0.9),
+        use_rag=params.get("use_rag", False),
+        comparison_mode=params.get("comparison_mode", "single"),
+        temperature_profile=params.get("temperature_profile", "normal"),
+    )
+    sid = workflow.session_id
+    active_workflows[sid] = workflow
+    active_workflow_configs[sid] = params
+    return workflow, sid
+
+
+@router.post("/workflow/start-stream")
+async def start_workflow_stream(request: WorkflowRequest, http_request: Request):
+    """
+    SSE 流式启动绩效评价工作流
+    前端通过 EventSource / fetch + ReadableStream 实时接收14步进度
+
+    事件类型:
+      - step_start       : 步骤开始
+      - step_complete    : 步骤完成（含 content_preview）
+      - approval_required: 需要人工确认（Step 3/6/11）
+      - warning          : 校验警告
+      - error            : 步骤错误
+      - complete         : 全部完成（含 final_report 预览）
+    """
+    params = {
+        "model_name": request.model_name, "temperature": request.temperature,
+        "top_p": request.top_p, "use_rag": request.use_rag,
+        "comparison_mode": request.comparison_mode or "single",
+        "temperature_profile": request.temperature_profile or "normal",
+    }
+    workflow, session_id = _get_or_create_workflow(request.session_id, params)
+    config = {"configurable": {"thread_id": session_id}}
+
+    # ── 从Bearer token解析用户（可选），用于工作流归属 ──
+    user_id = None
+    auth_header = http_request.headers.get("authorization", "") or ""
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+        payload = decode_token(token)
+        if payload and payload.get("type") == "access":
+            user_id = payload.get("user_id")
+
+    # ── 持久化工作流会话（供管理端监控、报告列表、重启后恢复使用）──
+    try:
+        from backend.database import SessionLocal
+        from backend.models.user_models import WorkflowSession as WSModel
+        dbs = SessionLocal()
+        try:
+            wf_record = dbs.query(WSModel).filter(WSModel.session_id == session_id).first()
+            if wf_record is None:
+                wf_record = WSModel(
+                    session_id=session_id,
+                    user_id=user_id,
+                    project_name=request.project_name,
+                    status="running",
+                    current_step=0,
+                    model_name=request.model_name or settings.DEFAULT_MODEL,
+                    use_rag=request.use_rag,
+                    comparison_mode=request.comparison_mode or "single",
+                    temperature_profile=request.temperature_profile or "normal",
+                )
+                dbs.add(wf_record)
+            else:
+                wf_record.status = "running"
+                wf_record.project_name = request.project_name
+            dbs.commit()
+            logger.info(f"工作流会话已持久化: {session_id} user={user_id}")
+        except Exception as e:
+            logger.warning(f"工作流会话持久化失败（非致命）: {e}")
+            dbs.rollback()
+        finally:
+            dbs.close()
+    except Exception as e:
+        logger.warning(f"工作流会话持久化异常（非致命）: {e}")
+
+    initial_state = {
+        "session_id": session_id,
+        "project_name": request.project_name,
+        "file_paths": request.file_paths,
+        "model_name": request.model_name,
+        "use_rag": request.use_rag,
+        "uploaded_files": [],
+        "indicator_type": request.indicator_type or "项目支出指标体系",
+        "step_control": {"language_style": request.language_style or "中立"},
+    }
+
+    async def _event_generator():
+        has_error = False
+        total_estimated_tokens = 0
+
+        # 初始化进度跟踪
+        _WORKFLOW_PROGRESS[session_id] = {
+            "status": "running",
+            "last_step": 0,
+            "step_results": {},
+            "warnings": [],
+            "errors": [],
+        }
+
+        # 在后台线程运行 invoke，工作流不受SSE连接状态影响
+        def _run_workflow():
+            try:
+                result = workflow.app.invoke(initial_state, config)
+                final_report = result.get("final_report", "") or ""
+                p = _WORKFLOW_PROGRESS.get(session_id)
+                if p:
+                    p["status"] = "done"
+                    p["final_report"] = final_report
+                    p["last_step"] = 14
+
+                # ── 持久化完成状态（在后台线程执行，不依赖SSE客户端行为）──
+                try:
+                    from backend.database import SessionLocal
+                    from backend.models.user_models import WorkflowSession as WSModel
+                    dbsave = SessionLocal()
+                    try:
+                        wf_record = dbsave.query(WSModel).filter(
+                            WSModel.session_id == session_id
+                        ).first()
+                        if wf_record:
+                            wf_record.status = "completed"
+                            wf_record.current_step = 14
+                            wf_record.completed_at = datetime.now(timezone.utc)
+                            if final_report:
+                                wf_record.final_report = final_report
+                            dbsave.commit()
+                            logger.info(
+                                f"工作流{session_id}已完成并保存到数据库 "
+                                f"report_len={len(final_report)}"
+                            )
+                    finally:
+                        dbsave.close()
+                except Exception as e:
+                    logger.warning(f"工作流完成状态持久化失败（非致命）: {e}")
+            except Exception as e:
+                logger.error(f"后台工作流执行失败: {e}")
+                p = _WORKFLOW_PROGRESS.get(session_id)
+                if p:
+                    p["status"] = "error"
+                    p["error_message"] = str(e)[:500]
+
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(None, _run_workflow)
+
+        # 轮询进度并发射SSE事件
+        emitted_steps = set()
+        questionnaire_emitted = False
+        try:
+            while True:
+                await asyncio.sleep(0.5)
+                p = _WORKFLOW_PROGRESS.get(session_id)
+                if not p:
+                    break
+                status = p.get("status", "")
+
+                # 发射新完成的步骤
+                for sn in range(1, 15):
+                    if sn in emitted_steps:
+                        continue
+                    sr = p.get("step_results", {}).get(str(sn))
+                    if sr:
+                        step_name = STEP_META.get(sn, {}).get("name", f"步骤{sn}")
+                        step_content = sr.get("content", "") or ""
+                        yield _make_sse_event("step_start", {
+                            "step_number": sn, "step_name": step_name,
+                            "session_id": session_id,
+                        })
+                        preview = step_content[:300]
+                        yield _make_sse_event("step_complete", {
+                            "step_number": sn, "step_name": step_name,
+                            "session_id": session_id, "content_preview": preview,
+                            "content": step_content,
+                        })
+                        emitted_steps.add(sn)
+
+                        # 同步当前步骤到数据库（管理端监控实时进度）
+                        try:
+                            from backend.database import SessionLocal
+                            from backend.models.user_models import WorkflowSession as WSModel
+                            dbsync = SessionLocal()
+                            try:
+                                ws_row = dbsync.query(WSModel).filter(
+                                    WSModel.session_id == session_id
+                                ).first()
+                                if ws_row and (ws_row.current_step or 0) < sn:
+                                    ws_row.current_step = sn
+                                    ws_row.updated_at = datetime.now(timezone.utc)
+                                    dbsync.commit()
+                            finally:
+                                dbsync.close()
+                        except Exception:
+                            pass
+
+                        total_estimated_tokens += max(len(step_content) // 3, 1)
+                        yield _make_sse_event("token_update", {
+                            "tokens_used": total_estimated_tokens,
+                            "step_number": sn,
+                            "session_id": session_id,
+                        })
+
+                        # 步骤6完成后，发送问卷可生成事件
+                        if sn == 6 and not questionnaire_emitted:
+                            yield _make_sse_event("questionnaire_ready", {
+                                "session_id": session_id,
+                                "message": "评价指标体系表已生成，可以创建调查问卷了",
+                            })
+                            questionnaire_emitted = True
+
+                # 完成或错误
+                if status == "done":
+                    final = p.get("final_report", "")
+                    yield _make_sse_event("complete", {
+                        "session_id": session_id,
+                        "completed_steps": sorted(emitted_steps),
+                        "has_error": has_error,
+                        "final_report_preview": final[:2000],
+                        "tokens_used": total_estimated_tokens,
+                    })
+                    break
+                elif status == "error":
+                    yield _make_sse_event("error", {
+                        "step_number": -1, "step_name": "系统错误",
+                        "message": p.get("error_message", "工作流执行失败"),
+                        "session_id": session_id,
+                    })
+                    break
+
+            # ── 保存最终报告到数据库（兜底：补齐状态与token统计）──
+            try:
+                final_report = p.get("final_report", "") if p else ""
+                if not final_report and session_id in active_workflows:
+                    st = active_workflows[session_id].get_state(config)
+                    if st and getattr(st, 'values', None):
+                        final_report = st.values.get("final_report", "") or ""
+                if final_report or total_estimated_tokens:
+                    from backend.database import SessionLocal
+                    from backend.models.user_models import WorkflowSession
+                    dbsave = SessionLocal()
+                    try:
+                        wf_record = dbsave.query(WorkflowSession).filter(
+                            WorkflowSession.session_id == session_id
+                        ).first()
+                        if wf_record:
+                            wf_record.status = "completed"
+                            wf_record.current_step = 14
+                            wf_record.completed_at = wf_record.completed_at or datetime.now(timezone.utc)
+                            if final_report:
+                                wf_record.final_report = final_report
+                            if total_estimated_tokens:
+                                wf_record.token_used = (wf_record.token_used or 0) + total_estimated_tokens
+                            dbsave.commit()
+                            logger.info(f"工作流{session_id}报告已保存到数据库（SSE兜底）")
+                        dbsave.close()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
