@@ -746,3 +746,234 @@ async def start_workflow_stream(request: WorkflowRequest, http_request: Request)
             except Exception:
                 pass
 
+            # 清理
+            _WORKFLOW_PROGRESS.pop(session_id, None)
+
+        except Exception as e:
+            err_msg = str(e)[:500]
+            logger.error(f"SSE流式执行失败: {err_msg}")
+            if "KeyError" in str(type(e).__name__):
+                friendly = f"配置错误：缺少必要的参数，请联系管理员检查系统配置"
+            elif "ConnectionError" in str(type(e).__name__) or "timeout" in err_msg.lower():
+                friendly = "网络超时，请检查网络连接后重试"
+            elif "APIError" in str(type(e).__name__) or "RateLimitError" in str(type(e).__name__):
+                friendly = "AI服务繁忙，请稍后重试"
+            elif "ValueError" in str(type(e).__name__):
+                friendly = f"参数错误：{err_msg}"
+            else:
+                friendly = f"系统异常：{err_msg}"
+            yield _make_sse_event("error", {
+                "step_number": -1, "step_name": "系统错误",
+                "message": friendly, "session_id": session_id,
+            })
+
+    return StreamingResponse(
+        _event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
+        }
+    )
+
+
+# ═══════════════════════════════════════════════════════
+#  工作流 - 同步执行（兼容旧调用 / 后端任务）
+# ═══════════════════════════════════════════════════════
+
+@router.post("/workflow/start", response_model=AgentResponse)
+async def start_workflow(request: WorkflowRequest):
+    """同步启动工作流（一次性返回全部结果，耗时较长，推荐使用 start-stream）"""
+    try:
+        params = {
+            "model_name": request.model_name, "temperature": request.temperature,
+            "top_p": request.top_p, "use_rag": request.use_rag,
+            "comparison_mode": request.comparison_mode or "single",
+            "temperature_profile": request.temperature_profile or "normal",
+        }
+        workflow, session_id = _get_or_create_workflow(request.session_id, params)
+        initial_state = {
+            "session_id": session_id, "project_name": request.project_name,
+            "file_paths": request.file_paths, "model_name": request.model_name,
+            "use_rag": request.use_rag,
+            "indicator_type": request.indicator_type or "项目支出指标体系",
+            "step_control": {"language_style": request.language_style or "中立"},
+        }
+        result = workflow.run_workflow(initial_state)
+        return AgentResponse(success=True, data={
+            "session_id": session_id,
+            "completed_steps": result.get("completed_steps", []),
+            "current_step": result.get("current_step", 0),
+            "final_report": result.get("final_report", ""),
+            "errors": result.get("errors", []),
+            "warnings": result.get("warnings", []),
+        }, message="工作流执行完成")
+    except Exception as e:
+        logger.error(f"启动工作流失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════
+#  工作流 - 状态查询（从 checkpoint 读取真实进度）
+# ═══════════════════════════════════════════════════════
+
+@router.get("/workflow/{session_id}/status", response_model=AgentResponse)
+async def get_workflow_status(session_id: str):
+    """
+    获取工作流实时状态 — 从 LangGraph checkpoint 读取真实进度
+    支持：步骤摘要 / 审批状态 / 待处理步骤 / 警告 & 错误
+    """
+    try:
+        if session_id not in active_workflows:
+            if session_id not in active_workflow_configs:
+                # 服务器重启后内存为空 → 尝试从磁盘备份恢复步骤摘要
+                backup = PerformanceAgent.load_state_backup(session_id)
+                step_results = backup.get("step_results", {}) if backup else {}
+                if backup and step_results:
+                    step_summaries = []
+                    for sn_str in sorted(step_results.keys(), key=lambda x: int(x)):
+                        sn = int(sn_str)
+                        srn = step_results[sn_str] or {}
+                        content = srn.get("content", "") if isinstance(srn, dict) else str(srn)
+                        step_summaries.append({
+                            "step_number": sn,
+                            "step_name": STEP_META.get(sn, {}).get("name", f"Step {sn}"),
+                            "status": "completed",
+                            "content_preview": (content or "")[:200],
+                        })
+                    completed = [int(x) for x in step_results.keys()]
+                    return AgentResponse(success=True, data={
+                        "session_id": session_id, "status": "completed",
+                        "current_step": 14, "completed_steps": completed,
+                        "pending_steps": [], "requires_approval": False,
+                        "step_summaries": step_summaries,
+                        "errors": [], "warnings": [],
+                    }, message="已从备份恢复（服务器重启后）")
+
+                # 数据库兜底
+                try:
+                    from backend.database import SessionLocal
+                    from backend.models.user_models import WorkflowSession
+                    dbs = SessionLocal()
+                    try:
+                        wf_record = dbs.query(WorkflowSession).filter(
+                            WorkflowSession.session_id == session_id
+                        ).first()
+                        if wf_record and wf_record.final_report:
+                            return AgentResponse(success=True, data={
+                                "session_id": session_id,
+                                "status": "completed",
+                                "current_step": 14,
+                                "completed_steps": list(range(1, 15)),
+                                "pending_steps": [],
+                                "requires_approval": False,
+                                "step_summaries": [],
+                                "errors": [], "warnings": [],
+                            }, message="已从数据库恢复")
+                    finally:
+                        dbs.close()
+                except Exception:
+                    pass
+
+                return AgentResponse(success=True, data={
+                    "session_id": session_id, "status": "not_found",
+                    "current_step": 0, "completed_steps": [],
+                }, message="工作流未找到（可能已过期）")
+            cfg = active_workflow_configs[session_id]
+            workflow = PerformanceAgent(
+                session_id=session_id, model_name=cfg.get("model_name") or settings.DEFAULT_MODEL,
+                temperature=cfg.get("temperature", 0.7),
+                top_p=cfg.get("top_p", 0.9),
+                use_rag=cfg.get("use_rag", False),
+                comparison_mode=cfg.get("comparison_mode", "single"),
+                temperature_profile=cfg.get("temperature_profile", "normal"),
+            )
+            active_workflows[session_id] = workflow
+
+        workflow = active_workflows[session_id]
+        config = {"configurable": {"thread_id": session_id}}
+        state_obj = workflow.get_state(config)
+
+        if state_obj is None:
+            return AgentResponse(success=True, data={
+                "session_id": session_id, "status": "not_started",
+                "current_step": 0, "completed_steps": [],
+            }, message="工作流尚未启动")
+
+        values = getattr(state_obj, 'values', {}) or {}
+        sc = values.get("step_control", {})
+        requires_approval = sc.get("requires_approval", False)
+        approval_step = sc.get("approval_step")
+        current_step = sc.get("current_step", 0)
+        step_statuses = sc.get("step_statuses", {})
+
+        completed_steps = sorted([sn for sn, st in step_statuses.items() if st == "completed"])
+        pending_steps = [sn for sn in range(1, 15) if sn not in completed_steps]
+
+        sr = values.get("step_results", {})
+        step_summaries = []
+        for sn in completed_steps:
+            srn = sr.get(sn, {})
+            step_summaries.append({
+                "step_number": int(sn),
+                "step_name": STEP_META.get(int(sn), {}).get("name", f"Step {sn}"),
+                "status": srn.get("status", "completed"),
+                "content_preview": (srn.get("content", "") or "")[:200],
+            })
+
+        return AgentResponse(success=True, data={
+            "session_id": session_id,
+            "status": "awaiting_approval" if requires_approval else ("running" if pending_steps else "completed"),
+            "current_step": current_step,
+            "completed_steps": completed_steps,
+            "pending_steps": pending_steps,
+            "requires_approval": requires_approval,
+            "approval_step": approval_step,
+            "approval_step_name": STEP_META.get(approval_step or 0, {}).get("name", ""),
+            "step_summaries": step_summaries,
+            "errors": values.get("errors", []),
+            "warnings": values.get("warnings", []),
+        }, message="获取状态成功")
+    except Exception as e:
+        logger.error(f"获取工作流状态失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════
+#  工作流 - 人工确认（审批 Step 3/6/11）
+# ═══════════════════════════════════════════════════════
+
+@router.post("/workflow/approve", response_model=AgentResponse)
+async def approve_workflow(request: ApproveRequest):
+    """
+    人工确认指定步骤
+    前端在收到 approval_required 事件后调用此接口
+    调用 resume_from_checkpoint() 继续执行，并自动穿越后续所有中断点
+    一次性完成全部14步，避免前端需要多次审批交互
+    """
+    try:
+        session_id = request.session_id
+        if session_id not in active_workflows:
+            if session_id not in active_workflow_configs:
+                raise HTTPException(status_code=404, detail="工作流不存在")
+            cfg = active_workflow_configs[session_id]
+            workflow = PerformanceAgent(
+                session_id=session_id, model_name=cfg.get("model_name") or settings.DEFAULT_MODEL,
+                temperature=cfg.get("temperature", 0.7),
+                top_p=cfg.get("top_p", 0.9),
+                use_rag=cfg.get("use_rag", False),
+                comparison_mode=cfg.get("comparison_mode", "single"),
+                temperature_profile=cfg.get("temperature_profile", "normal"),
+            )
+            active_workflows[session_id] = workflow
+
+        workflow = active_workflows[session_id]
+        config = {"configurable": {"thread_id": session_id}}
+
+        resume_value = {"approved": request.approved, "feedback": request.feedback or ""}
+        # 使用 resume_through_all 自动穿越步骤6和步骤11的审批点
+        # 用户只需在前端审批一次（步骤3），后续中断点系统自动通过
+        result = workflow.resume_through_all(resume_value=resume_value, config=config)
+
