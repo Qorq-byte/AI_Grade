@@ -977,3 +977,250 @@ async def approve_workflow(request: ApproveRequest):
         # 用户只需在前端审批一次（步骤3），后续中断点系统自动通过
         result = workflow.resume_through_all(resume_value=resume_value, config=config)
 
+        if not result.get("success"):
+            raise HTTPException(status_code=500, detail=result.get("error", "工作流执行失败"))
+
+        # 提取各步骤结果供前端更新
+        step_results = {}
+        data_section = result.get("data", {})
+        sr = data_section.get("step_results", {})
+        for sn, sr_data in sr.items():
+            if isinstance(sr_data, dict):
+                step_results[str(sn)] = {
+                    "step_name": STEP_META.get(int(sn), {}).get("name", f"步骤{sn}"),
+                    "content": sr_data.get("content", "")[:3000],
+                }
+
+        return AgentResponse(success=True, data={
+            "session_id": session_id,
+            "approved": request.approved,
+            "completed_steps": result.get("completed_steps", []),
+            "current_step": result.get("current_step", 0),
+            "final_report": result.get("final_report", ""),
+            "step_results": step_results,
+        }, message="已确认，工作流继续执行至完成")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"审批失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════
+#  工作流 - 报告查询 & 编辑存储
+# ═══════════════════════════════════════════════════════
+
+@router.get("/workflow/{session_id}/report")
+async def get_report_content(session_id: str):
+    """获取完整报告Markdown内容（供编辑页面使用）"""
+    try:
+        content = ""
+        project_name = "绩效评价报告"
+
+        # 1. 内存中的工作流（服务器运行期间）
+        if session_id in active_workflows:
+            workflow = active_workflows[session_id]
+            config = {"configurable": {"thread_id": session_id}}
+            state_obj = workflow.get_state(config)
+            if state_obj is not None and getattr(state_obj, 'values', None):
+                values = state_obj.values
+                content = values.get("final_report", "") or ""
+                if not content or len(content.strip()) < 50:
+                    content = _assemble_report_from_steps(values)
+                project_name = values.get("project_name", project_name)
+
+        # 2. 数据库中的报告（服务器重启后）
+        if not content:
+            try:
+                from backend.database import SessionLocal
+                from backend.models.user_models import WorkflowSession
+                dbs = SessionLocal()
+                try:
+                    wf_record = dbs.query(WorkflowSession).filter(
+                        WorkflowSession.session_id == session_id
+                    ).first()
+                    if wf_record and wf_record.final_report:
+                        content = wf_record.final_report
+                        project_name = wf_record.project_name or project_name
+                finally:
+                    dbs.close()
+            except Exception:
+                pass
+
+        # 3. 磁盘状态备份（服务器重启后）
+        if not content:
+            backup = PerformanceAgent.load_state_backup(session_id)
+            if backup:
+                project_name = backup.get("project_name", project_name)
+                # 优先返回显式保存的报告内容（save-report 写入）
+                for key in ("final_report", "report_content", "report"):
+                    val = backup.get(key, "")
+                    if val and str(val).strip():
+                        content = str(val)
+                        break
+                # 否则用步骤14或各步骤内容拼装
+                if not content:
+                    step_results = backup.get("step_results", {})
+                    step_14 = step_results.get("14", {})
+                    if isinstance(step_14, dict) and step_14.get("content"):
+                        content = step_14["content"]
+                    elif step_results:
+                        content = _assemble_report_from_backup_steps(backup)
+
+        if not content:
+            raise HTTPException(status_code=404, detail="报告不存在，请先完成工作流")
+
+        return {
+            "success": True,
+            "data": {
+                "session_id": session_id,
+                "project_name": project_name,
+                "content": content,
+                "word_count": len(content),
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取报告内容失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class SaveReportRequest(BaseModel):
+    session_id: str
+    content: str
+
+
+@router.post("/workflow/save-report")
+async def save_report_content(req: SaveReportRequest):
+    """保存编辑后的报告内容"""
+    try:
+        session_id = req.session_id
+        saved_to_state = False
+
+        # 1. 更新内存中工作流的 LangGraph state（通过update_state写回checkpoint）
+        if session_id in active_workflows:
+            workflow = active_workflows[session_id]
+            config = {"configurable": {"thread_id": session_id}}
+            state_obj = workflow.get_state(config)
+            if state_obj is not None and getattr(state_obj, 'values', None):
+                saved_to_state = _persist_state(session_id, {"final_report": req.content})
+
+        # 2. 持久化到 DB
+        saved_to_db = False
+        try:
+            from backend.database import SessionLocal
+            from backend.models.user_models import WorkflowSession
+            db = SessionLocal()
+            try:
+                wf = db.query(WorkflowSession).filter(WorkflowSession.session_id == session_id).first()
+                if wf:
+                    wf.final_report = req.content
+                    wf.updated_at = datetime.now(timezone.utc)
+                    db.commit()
+                    saved_to_db = True
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"持久化到DB失败（非致命）: {e}")
+
+        # 3. 工作流不在内存且DB无记录 → 尝试写入磁盘备份，避免编辑内容丢失
+        if not saved_to_state and not saved_to_db:
+            try:
+                backup = PerformanceAgent.load_state_backup(session_id)
+                if backup:
+                    backup["final_report"] = req.content
+                    backup["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    backup_dir = os.path.join(
+                        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                        "state_backups",
+                    )
+                    os.makedirs(backup_dir, exist_ok=True)
+                    with open(os.path.join(backup_dir, f"{session_id}.json"), "w", encoding="utf-8") as f:
+                        json.dump(backup, f, ensure_ascii=False, indent=2)
+                    saved_to_state = True
+            except Exception as e:
+                logger.warning(f"写入磁盘备份失败（非致命）: {e}")
+
+        if not saved_to_state and not saved_to_db:
+            raise HTTPException(status_code=404, detail="工作流不存在，无法保存")
+
+        return {
+            "success": True,
+            "message": "报告已保存",
+            "data": {"session_id": session_id, "word_count": len(req.content)}
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"保存报告失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════
+#  辅助函数
+# ═══════════════════════════════════════════════════════
+
+def _assemble_report_from_steps(values: dict) -> str:
+    """从各步骤State值拼装完整报告Markdown"""
+    sections = []
+    project_name = values.get("project_name", "绩效评价报告")
+    sections.append(f"# {project_name}\n")
+
+    chapter_map = [
+        ("一、绩效评价工作开展情况", values.get("work_introduction")),
+        ("二、项目基本情况", values.get("basic_info")),
+        ("三、评价指标体系", values.get("evaluation_table")),
+        ("四、指标得分及分析", values.get("indicator_analysis")),
+        ("五、综合评价分析及结论", values.get("comprehensive_evaluation")),
+        ("六、主要经验做法", values.get("experience_summary")),
+        ("七、存在问题及原因分析", values.get("problems_analysis")),
+        ("八、改进建议", values.get("suggestions")),
+    ]
+
+    for title, content_section in chapter_map:
+        clean = (content_section or "").strip()
+        if "[调用失败" in clean or "[模型" in clean:
+            clean = ""
+        if not clean:
+            clean = "（本部分内容尚未生成）"
+        if not clean.startswith("#"):
+            sections.append(f"## {title}\n\n{clean}\n")
+        else:
+            sections.append(f"{clean}\n")
+
+    sections.append("\n---\n")
+    sections.append("*报告由云海睿评AI生成系统自动生成*")
+    return "\n".join(sections)
+
+
+def _assemble_report_from_backup_steps(backup: dict) -> str:
+    """从磁盘备份的 step_results 拼装报告（step name → chapter mapping）"""
+    step_results = backup.get("step_results", {})
+    project_name = backup.get("project_name", "绩效评价报告")
+
+    # 步骤号 → 章节标题 映射
+    step_chapter_map = {
+        "13": "一、绩效评价工作开展情况",
+        "12": "二、项目基本情况",
+        "6": "三、评价指标体系",
+        "7": "四、指标得分及分析",
+        "11": "五、综合评价分析及结论",
+        "8": "六、主要经验做法",
+        "9": "七、存在问题及原因分析",
+        "10": "八、改进建议",
+    }
+
+    sections = [f"# {project_name}\n"]
+    for step_num, chapter_title in sorted(step_chapter_map.items()):
+        step = step_results.get(step_num, {})
+        content = ""
+        if isinstance(step, dict):
+            content = step.get("content", "")
+        if not content:
+            content = "（本部分内容尚未生成）"
+        if not content.startswith("#"):
+            sections.append(f"## {chapter_title}\n\n{content}\n")
+        else:
+            sections.append(f"{content}\n")
+
