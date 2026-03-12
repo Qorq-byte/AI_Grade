@@ -1461,3 +1461,255 @@ async def export_step_content(request: ExportStepRequest):
         step_name = STEP_META.get(step_number, {}).get("name", f"步骤{step_number}")
         file_label = f"{project_name}_步骤{step_number}_{step_name}"
 
+        if fmt == "pdf":
+            file_path = ExportService.export_to_pdf(
+                step_content, file_label, style, base_dir="backend",
+                title=f"{project_name} - {step_name}"
+            )
+        else:
+            file_path = ExportService.export_to_word(
+                step_content, file_label, style, base_dir="backend",
+                title=f"{project_name} - {step_name}"
+            )
+
+        file_name = os.path.basename(file_path)
+        logger.info(f"步骤{step_number}导出成功: {file_name}")
+        return AgentResponse(success=True, data={
+            "session_id": session_id,
+            "file_path": file_path,
+            "file_name": file_name,
+            "format": fmt,
+            "step_number": step_number,
+        }, message=f"步骤{step_number} {step_name} 导出成功")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"步骤导出失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════
+#  工作流 - 问卷答案提交
+# ═══════════════════════════════════════════════════════
+
+class QuestionnaireAnswerItem(BaseModel):
+    question_id: str
+    question_text: Optional[str] = None
+    question_type: str = "likert"
+    related_indicator_id: Optional[str] = None
+    related_indicator_name: Optional[str] = None
+    selected_level_index: Optional[int] = None
+    text_answer: Optional[str] = None
+
+
+class SubmitQuestionnaireRequest(BaseModel):
+    session_id: str
+    answers: List[QuestionnaireAnswerItem]
+
+
+@router.post("/workflow/questionnaire/submit")
+async def submit_questionnaire_answers(req: SubmitQuestionnaireRequest):
+    """
+    提交调查问卷答案并持久化到数据库
+    每个答案独立存储为一条 QuestionnaireAnswer 记录
+    """
+    from backend.database import SessionLocal
+    from backend.models.user_models import QuestionnaireAnswer
+
+    db = SessionLocal()
+    saved = 0
+    errors = []
+
+    for a in req.answers:
+        try:
+            row = QuestionnaireAnswer(
+                session_id=req.session_id,
+                question_id=a.question_id,
+                question_text=a.question_text,
+                question_type=a.question_type,
+                related_indicator_id=a.related_indicator_id,
+                related_indicator_name=a.related_indicator_name,
+                selected_level_index=a.selected_level_index,
+                text_answer=a.text_answer,
+                submitted_at=datetime.now(timezone.utc),
+            )
+            db.add(row)
+            saved += 1
+        except Exception as e:
+            errors.append({"question_id": a.question_id, "error": str(e)})
+
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"提交失败: {str(e)}")
+    finally:
+        db.close()
+
+    logger.info(f"问卷答案已保存: session={req.session_id}, 成功={saved}, 失败={len(errors)}")
+    return {
+        "success": True,
+        "data": {"saved": saved, "errors": errors},
+        "message": f"已保存 {saved} 条答案",
+    }
+
+
+@router.get("/workflow/{session_id}/questionnaire/answers")
+async def get_questionnaire_answers(session_id: str):
+    """获取指定 session 的问卷答案（用于报告生成引用）"""
+    from backend.database import SessionLocal
+    from backend.models.user_models import QuestionnaireAnswer
+
+    db = SessionLocal()
+    try:
+        rows = db.query(QuestionnaireAnswer).filter(
+            QuestionnaireAnswer.session_id == session_id
+        ).order_by(QuestionnaireAnswer.submitted_at).all()
+
+        return {
+            "success": True,
+            "data": [{
+                "id": r.id,
+                "question_id": r.question_id,
+                "question_text": r.question_text,
+                "question_type": r.question_type,
+                "related_indicator_name": r.related_indicator_name,
+                "selected_level_index": r.selected_level_index,
+                "text_answer": r.text_answer,
+                "submitted_at": r.submitted_at.isoformat() if r.submitted_at else None,
+            } for r in rows],
+            "total": len(rows),
+        }
+    finally:
+        db.close()
+
+
+# ═══════════════════════════════════════════════════════
+#  工作流 - 调查问卷生成
+# ═══════════════════════════════════════════════════════
+
+@router.post("/workflow/questionnaire", response_model=AgentResponse)
+async def generate_questionnaire(request: QuestionnaireRequest):
+    """
+    生成调查问卷（里克特5级量表）
+    基于工作流中最新的指标体系
+    """
+    try:
+        session_id = request.session_id
+
+        # 优先从内存缓存返回已有问卷
+        if session_id in _QUESTIONNAIRE_CACHE:
+            qcache = _QUESTIONNAIRE_CACHE[session_id]
+            return AgentResponse(success=True, data={
+                "session_id": session_id,
+                "questionnaire": qcache["questions"],
+                "display_markdown": qcache.get("display_md", ""),
+                "total_questions": len(qcache["questions"]),
+            }, message=f"已返回 {len(qcache['questions'])} 道问卷题目（缓存）")
+
+        # 尝试恢复工作流（内存 → 配置 → 磁盘备份）
+        workflow = None
+        indicator_system = {}
+        project_core_content = ""
+
+        if session_id in active_workflows:
+            workflow = active_workflows[session_id]
+        elif session_id in active_workflow_configs:
+            cfg = active_workflow_configs[session_id]
+            workflow = PerformanceAgent(
+                session_id=session_id, model_name=cfg.get("model_name") or settings.DEFAULT_MODEL,
+                temperature=cfg.get("temperature", 0.7),
+                top_p=cfg.get("top_p", 0.9),
+                use_rag=cfg.get("use_rag", False),
+                comparison_mode=cfg.get("comparison_mode", "single"),
+                temperature_profile=cfg.get("temperature_profile", "normal"),
+            )
+            active_workflows[session_id] = workflow
+
+        if workflow:
+            config = {"configurable": {"thread_id": session_id}}
+            state_obj = workflow.get_state(config)
+            if state_obj and getattr(state_obj, 'values', None):
+                indicator_system = state_obj.values.get("indicator_system", {})
+                project_core_content = state_obj.values.get("effective_data", "") or ""
+
+        # 始终尝试从文件备份恢复（服务器重启后唯一数据源）
+        backup = PerformanceAgent.load_state_backup(session_id)
+        if backup:
+            # 优先检查是否已有缓存的问卷
+            cached_q = backup.get("questionnaire", {})
+            if cached_q.get("questions"):
+                return AgentResponse(success=True, data={
+                    "session_id": session_id,
+                    "questionnaire": cached_q["questions"],
+                    "display_markdown": cached_q.get("display_md", ""),
+                    "total_questions": len(cached_q["questions"]),
+                }, message=f"已返回 {len(cached_q['questions'])} 道问卷题目（备份）")
+
+            if not indicator_system or not indicator_system.get("level1_indicators"):
+                indicator_system = backup.get("indicator_system", {})
+                project_core_content = backup.get("effective_data", "") or project_core_content
+                logger.info(f"从文件备份恢复了指标体系: {session_id}")
+
+        if not workflow and (not indicator_system or not indicator_system.get("level1_indicators")):
+            raise HTTPException(status_code=404, detail="工作流不存在，请先启动")
+
+        if not indicator_system or not indicator_system.get("level1_indicators"):
+            raise HTTPException(status_code=400, detail="指标体系尚未生成，请先完成Step 3")
+
+        generator = QuestionnaireGenerator()
+        # 使用工作流已有的 base_agent，避免重复创建LLM连接
+        if workflow and hasattr(workflow, 'base_agent') and workflow.base_agent:
+            generator.base_agent = workflow.base_agent
+
+        questions = generator.generate_questions(
+            indicator_system,
+            project_core_content=project_core_content,
+            custom_indicators=request.custom_indicator_ids,
+            max_questions=request.max_questions,
+        )
+        display_md = generator.format_questionnaire_for_display(questions, title="调查问卷")
+
+        # 获取项目名称
+        project_name = "未命名项目"
+        if state_obj and getattr(state_obj, 'values', None):
+            project_name = state_obj.values.get("project_name") or project_name
+        if project_name == "未命名项目" and backup:
+            project_name = backup.get("project_name") or project_name
+
+        # 缓存问卷到内存（供 list 端点使用）
+        _QUESTIONNAIRE_CACHE[session_id] = {
+            "project_name": project_name,
+            "questions": questions,
+            "display_md": display_md,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        # 也保存到文件备份，防止服务器重启丢失问卷数据
+        try:
+            backup_save = PerformanceAgent.load_state_backup(session_id) or {}
+            backup_save["questionnaire"] = {
+                "questions": questions,
+                "display_md": display_md,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "project_name": project_name,
+            }
+            backup_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "state_backups")
+            os.makedirs(backup_dir, exist_ok=True)
+            with open(os.path.join(backup_dir, f"{session_id}.json"), "w", encoding="utf-8") as f:
+                json.dump(backup_save, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+        return AgentResponse(success=True, data={
+            "session_id": session_id,
+            "questionnaire": questions,
+            "display_markdown": display_md,
+            "total_questions": len(questions),
+        }, message=f"已生成 {len(questions)} 道问卷题目")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"问卷生成失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
