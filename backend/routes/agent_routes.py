@@ -1224,3 +1224,240 @@ def _assemble_report_from_backup_steps(backup: dict) -> str:
         else:
             sections.append(f"{content}\n")
 
+    sections.append("\n---\n")
+    sections.append("*报告由云海睿评AI生成系统自动生成*")
+    return "\n".join(sections)
+
+
+# ═══════════════════════════════════════════════════════
+#  工作流 - 报告导出
+# ═══════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════
+#  文件下载
+# ═══════════════════════════════════════════════════════
+
+@router.get("/download/{file_name}")
+async def download_export_file(file_name: str):
+    """
+    下载导出的Word/PDF文件
+    前端导出成功后通过此接口下载文件
+    """
+    # 安全检查：防止路径穿越
+    safe_name = os.path.basename(file_name)
+    export_dir = os.path.join("backend", ExportService.EXPORT_DIR)
+    file_path = os.path.join(export_dir, safe_name)
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail=f"文件不存在: {safe_name}")
+
+    # 根据扩展名设置content-type
+    media_type = "application/octet-stream"
+    if safe_name.endswith(".pdf"):
+        media_type = "application/pdf"
+    elif safe_name.endswith(".docx"):
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+    return FileResponse(
+        file_path,
+        media_type=media_type,
+        filename=safe_name,
+    )
+
+
+@router.post("/workflow/export", response_model=AgentResponse)
+async def export_workflow_report(request: ExportRequest):
+    """
+    导出绩效评价报告（Word / PDF）
+    支持：
+      - 完整报告导出（需要工作流已完成）
+      - 单步骤导出（step_number + step_content 直接导出）
+    """
+    try:
+        session_id = request.session_id
+        fmt = request.format or "word"
+        style = ExportStyle.classic() if request.style_mode == "classic" else ExportStyle()
+        project_name = request.project_name or "绩效评价报告"
+
+        # ── 单步骤导出：使用前端传来的 step_content ──
+        if request.step_number and request.step_content:
+            step_name = STEP_META.get(request.step_number, {}).get("name", f"步骤{request.step_number}")
+            file_label = f"{project_name}_步骤{request.step_number}_{step_name}"
+            content = request.step_content
+
+            if fmt == "pdf":
+                file_path = ExportService.export_to_pdf(
+                    content, file_label, style, base_dir="backend", title=f"{project_name} - {step_name}"
+                )
+            else:
+                file_path = ExportService.export_to_word(
+                    content, file_label, style, base_dir="backend", title=f"{project_name} - {step_name}"
+                )
+
+            file_name = os.path.basename(file_path)
+            logger.info(f"步骤{request.step_number}导出成功: {file_name}")
+            return AgentResponse(success=True, data={
+                "session_id": session_id, "file_path": file_path,
+                "file_name": file_name, "format": fmt,
+                "step_number": request.step_number,
+            }, message=f"步骤{request.step_number}导出成功")
+
+        # ── 完整报告导出 ──
+        # 尝试从工作流state获取报告内容
+        report_content = None
+
+        if session_id in active_workflows:
+            workflow = active_workflows[session_id]
+        elif session_id in active_workflow_configs:
+            cfg = active_workflow_configs[session_id]
+            workflow = PerformanceAgent(
+                session_id=session_id, model_name=cfg.get("model_name") or settings.DEFAULT_MODEL,
+                temperature=cfg.get("temperature", 0.7),
+                top_p=cfg.get("top_p", 0.9),
+                use_rag=cfg.get("use_rag", False),
+                comparison_mode=cfg.get("comparison_mode", "single"),
+                temperature_profile=cfg.get("temperature_profile", "normal"),
+            )
+            active_workflows[session_id] = workflow
+        else:
+            # 工作流不在内存中，尝试从数据库获取报告内容
+            try:
+                from backend.database import SessionLocal
+                from backend.models.user_models import WorkflowSession
+                dbsession = SessionLocal()
+                try:
+                    wf_record = dbsession.query(WorkflowSession).filter(
+                        WorkflowSession.session_id == session_id
+                    ).first()
+                    if wf_record and wf_record.final_report:
+                        report_content = wf_record.final_report
+                        project_name = request.project_name or wf_record.project_name or project_name
+                    dbsession.close()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+            # 如果数据库也没有，尝试从磁盘备份恢复
+            if not report_content:
+                backup = PerformanceAgent.load_state_backup(session_id)
+                if backup:
+                    step_results = backup.get("step_results", {})
+                    project_name = request.project_name or backup.get("project_name", project_name)
+                    # 优先使用显式保存的报告（save-report 写入）
+                    for key in ("final_report", "report_content", "report"):
+                        val = backup.get(key, "")
+                        if val and len(str(val).strip()) > 100:
+                            report_content = str(val)
+                            break
+                    # 其次使用步骤14（组装最终报告）的内容
+                    if not report_content:
+                        step_14 = step_results.get("14", {})
+                        if isinstance(step_14, dict) and step_14.get("content"):
+                            report_content = step_14["content"]
+                            logger.info(f"从磁盘备份步骤14恢复了报告: {session_id}")
+                    # 最后从各步骤内容拼装
+                    if not report_content and step_results:
+                        report_content = _assemble_report_from_backup_steps(backup)
+
+            if not report_content:
+                raise HTTPException(status_code=404, detail="工作流不存在或已过期，请重新执行")
+
+        # 从LangGraph state获取报告
+        if not report_content and session_id in active_workflows:
+            config = {"configurable": {"thread_id": session_id}}
+            state_obj = active_workflows[session_id].get_state(config)
+
+            if state_obj is not None and getattr(state_obj, 'values', None):
+                values = state_obj.values
+                final_report = values.get("final_report", "")
+                if not final_report or len(final_report.strip()) < 100:
+                    # 从各步骤结果拼装完整报告
+                    final_report = _assemble_report_from_steps(values)
+                report_content = final_report
+                project_name = request.project_name or values.get("project_name", project_name)
+
+        if not report_content:
+            raise HTTPException(status_code=400, detail="报告内容为空，请确认工作流已完成")
+
+        if fmt == "pdf":
+            file_path = ExportService.export_to_pdf(
+                report_content, project_name, style, base_dir="backend", title=project_name
+            )
+        else:
+            file_path = ExportService.export_to_word(
+                report_content, project_name, style, base_dir="backend", title=project_name
+            )
+
+        file_name = os.path.basename(file_path)
+        logger.info(f"报告导出成功: {file_name}")
+        return AgentResponse(success=True, data={
+            "session_id": session_id, "file_path": file_path,
+            "file_name": file_name, "format": fmt,
+        }, message="报告导出成功")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"导出失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════
+#  工作流 - 单步骤导出
+# ═══════════════════════════════════════════════════════
+
+class ExportStepRequest(BaseModel):
+    session_id: str
+    step_number: int
+    format: str = "word"
+
+
+@router.post("/workflow/export-step", response_model=AgentResponse)
+async def export_step_content(request: ExportStepRequest):
+    """
+    导出单个步骤的内容为Word或PDF
+    从工作流State中获取步骤内容并导出
+    """
+    try:
+        session_id = request.session_id
+        step_number = request.step_number
+        fmt = request.format or "word"
+        style = ExportStyle.classic()
+
+        # 从工作流state获取步骤内容
+        step_content = None
+        if session_id in active_workflows:
+            workflow = active_workflows[session_id]
+        elif session_id in active_workflow_configs:
+            cfg = active_workflow_configs[session_id]
+            workflow = PerformanceAgent(
+                session_id=session_id, model_name=cfg.get("model_name") or settings.DEFAULT_MODEL,
+                temperature=cfg.get("temperature", 0.7),
+                top_p=cfg.get("top_p", 0.9),
+                use_rag=cfg.get("use_rag", False),
+                comparison_mode=cfg.get("comparison_mode", "single"),
+                temperature_profile=cfg.get("temperature_profile", "normal"),
+            )
+            active_workflows[session_id] = workflow
+        else:
+            raise HTTPException(status_code=404, detail="工作流不存在")
+
+        config = {"configurable": {"thread_id": session_id}}
+        state_obj = workflow.get_state(config)
+
+        if state_obj and getattr(state_obj, 'values', None):
+            values = state_obj.values
+            project_name = values.get("project_name", "绩效评价报告")
+            step_results = values.get("step_results", {})
+            step_data = step_results.get(step_number, {})
+            if isinstance(step_data, dict):
+                step_content = step_data.get("content", "")
+            else:
+                step_content = str(step_data) if step_data else ""
+
+        if not step_content:
+            raise HTTPException(status_code=400, detail=f"步骤{step_number}内容为空，请确认该步骤已执行完成")
+
+        step_name = STEP_META.get(step_number, {}).get("name", f"步骤{step_number}")
+        file_label = f"{project_name}_步骤{step_number}_{step_name}"
+
