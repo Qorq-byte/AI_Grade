@@ -2439,3 +2439,251 @@ async def get_score_summary(
                 "items": level2_data,
             })
 
+        # 等级判定
+        score_100 = round(total_score / total_full * 100, 2) if total_full > 0 else 0
+        if score_100 >= excellent:
+            grade = "优秀"
+        elif score_100 >= good:
+            grade = "良好"
+        elif score_100 >= medium:
+            grade = "合格"
+        else:
+            grade = "不合格"
+
+        # 图表数据（用于前端柱状图）
+        chart_data = {
+            "categories": [item["name"] for item in level1_scores],
+            "full_scores": [item["full_score"] for item in level1_scores],
+            "actual_scores": [item["actual_score"] for item in level1_scores],
+            "score_rates": [item["score_rate"] for item in level1_scores],
+        }
+
+        result = {
+            "total_score": round(total_score, 2),
+            "total_full": total_full,
+            "score_100": score_100,
+            "grade": grade,
+            "thresholds": {"excellent": excellent, "good": good, "medium": medium},
+            "level1_scores": level1_scores,
+            "chart_data": chart_data,
+        }
+
+        # 保存到state（写回checkpoint）
+        _persist_state(session_id, {"score_summary": result})
+
+        return {"success": True, "data": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"评分汇总失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════
+#  步骤12 - 模块化内容生成
+# ═══════════════════════════════════════════════════════
+
+STEP12_MODULES = {
+    "project_background": "项目背景",
+    "project_content": "项目内容",
+    "project_management": "项目组织管理情况",
+    "project_funding": "项目资金投入情况",
+    "project_targets": "项目绩效目标",
+}
+
+
+class ModuleGenerateRequest(BaseModel):
+    session_id: str
+    module_key: str
+    module_name: Optional[str] = None
+
+
+@router.post("/workflow/generate-module")
+async def generate_module_content(req: ModuleGenerateRequest):
+    """
+    步骤12：单独生成某一个模块的内容
+    支持：project_background, project_content, project_management, project_funding, project_targets
+    """
+    try:
+        if req.module_key not in STEP12_MODULES and not req.module_name:
+            raise HTTPException(status_code=400, detail=f"无效的模块: {req.module_key}，支持: {list(STEP12_MODULES.keys())}")
+
+        module_name = req.module_name or STEP12_MODULES.get(req.module_key, req.module_key)
+
+        workflow, values = _get_workflow_values(req.session_id)
+        cfg = active_workflow_configs.get(req.session_id, {})
+        model_name = cfg.get("model_name") or settings.DEFAULT_MODEL
+
+        from backend.utils.llm_helper import get_model_credentials
+        _creds = get_model_credentials(model_name)
+        model = ChatOpenAI(model=model_name, api_key=_creds["api_key"], base_url=_creds["base_url"], temperature=0.7)
+
+        project_name = values.get("project_name", "未命名项目")
+        effective_data = values.get("effective_data", "") or values.get("raw_text", "") or ""
+
+        module_prompts = {
+            "project_background": "撰写项目背景部分，包括项目提出的背景、立项依据、项目必要性等。",
+            "project_content": "撰写项目主要内容，包括建设内容/服务内容、实施周期、建设规模等。",
+            "project_management": "撰写项目组织管理情况，包括组织机构设置、管理流程、制度建设等。",
+            "project_funding": "撰写项目资金投入与使用情况，包括资金来源、到位情况、支出结构等。",
+            "project_targets": "撰写项目绩效目标，包括原定的产出目标、效益目标、时效目标等。",
+        }
+
+        instruction = module_prompts.get(req.module_key, f"撰写「{module_name}」部分的详细内容。")
+
+        prompt = f"""## 项目名称
+{project_name}
+
+## 项目核心资料
+{effective_data[:5000]}
+
+## 任务
+{instruction}
+
+请直接输出该模块的完整内容，要求客观、数据准确、语言规范。"""
+
+        resp = model.invoke(prompt)
+        content = resp.content if hasattr(resp, 'content') else str(resp)
+
+        # 保存到模块字典（写回checkpoint）
+        modules = values.get("basic_info_modules", {}) or {}
+        modules[req.module_key] = content
+        _persist_state(req.session_id, {"basic_info_modules": modules})
+
+        return {
+            "success": True,
+            "data": {
+                "module_key": req.module_key,
+                "module_name": module_name,
+                "content": content,
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"生成模块内容失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/workflow/{session_id}/modules")
+async def get_module_contents(session_id: str):
+    """获取步骤12各模块内容"""
+    try:
+        workflow, values = _get_workflow_values(session_id)
+        modules = values.get("basic_info_modules", {}) or {}
+        return {
+            "success": True,
+            "data": {
+                "modules": [
+                    {"key": k, "name": STEP12_MODULES.get(k, k), "content": v}
+                    for k, v in modules.items()
+                ]
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取模块内容失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════
+#  问卷 - 开放性问题添加
+# ═══════════════════════════════════════════════════════
+
+class AddOpenQuestionRequest(BaseModel):
+    session_id: str
+    question_text: str
+    related_indicator_id: Optional[str] = None
+    related_indicator_name: Optional[str] = None
+
+
+@router.post("/workflow/questionnaire/add-open-question")
+async def add_open_ended_question(req: AddOpenQuestionRequest):
+    """
+    向已有问卷手动添加开放性问题（填空题）
+    操作者可以根据需要在里克特量表问卷基础上添加自定义开放性问题
+    """
+    try:
+        session_id = req.session_id
+
+        # 从缓存获取已有问卷
+        if session_id in _QUESTIONNAIRE_CACHE:
+            qcache = _QUESTIONNAIRE_CACHE[session_id]
+            questions = qcache.get("questions", [])
+        else:
+            # 尝试从备份恢复
+            backup = PerformanceAgent.load_state_backup(session_id)
+            qcache = backup.get("questionnaire", {})
+            questions = qcache.get("questions", [])
+            if not questions:
+                raise HTTPException(status_code=404, detail="未找到问卷，请先生成问卷")
+
+        import uuid
+        new_question = {
+            "id": str(uuid.uuid4())[:8],
+            "index": len(questions) + 1,
+            "question": req.question_text,
+            "question_type": "open_ended",
+            "related_indicator_id": req.related_indicator_id or "",
+            "related_indicator_name": req.related_indicator_name or "",
+            "scale_levels": [],
+            "created_by": "user",
+        }
+        questions.append(new_question)
+
+        # 更新缓存
+        if session_id in _QUESTIONNAIRE_CACHE:
+            _QUESTIONNAIRE_CACHE[session_id]["questions"] = questions
+        else:
+            _QUESTIONNAIRE_CACHE[session_id] = {
+                "questions": questions,
+                "display_md": "",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+
+        # 同时保存到文件备份
+        try:
+            backup_save = PerformanceAgent.load_state_backup(session_id) or {}
+            backup_save["questionnaire"] = {
+                "questions": questions,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "project_name": qcache.get("project_name", backup_save.get("project_name", "")),
+            }
+            backup_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "state_backups")
+            os.makedirs(backup_dir, exist_ok=True)
+            with open(os.path.join(backup_dir, f"{session_id}.json"), "w", encoding="utf-8") as f:
+                json.dump(backup_save, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+        return {
+            "success": True,
+            "data": {"question": new_question, "total_questions": len(questions)},
+            "message": "开放性问题已添加"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"添加开放性问题失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════
+#  语言风格更新
+# ═══════════════════════════════════════════════════════
+
+class LanguageStyleRequest(BaseModel):
+    session_id: str
+    language_style: str = "中立"
+
+
+@router.post("/workflow/set-language-style")
+async def set_language_style(req: LanguageStyleRequest):
+    """
+    设置步骤9、10的语言风格（中立/尖锐/委婉）
+    """
+    valid_styles = ["中立", "尖锐", "委婉"]
+    if req.language_style not in valid_styles:
+        raise HTTPException(status_code=400, detail=f"无效的语言风格，支持: {valid_styles}")
+
