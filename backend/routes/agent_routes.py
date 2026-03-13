@@ -1953,3 +1953,247 @@ async def analyze_perspective(session_id: str, request: Dict[str, Any]):
         if not state_obj or not getattr(state_obj, 'values', None):
             raise HTTPException(status_code=400, detail="工作流尚未启动")
 
+        values = state_obj.values
+
+        # 获取已有的扣分分析数据
+        indicator_analysis = values.get("indicator_analysis", "")
+        problems_analysis = values.get("problems_analysis", "")
+
+        if not indicator_analysis and not problems_analysis:
+            raise HTTPException(status_code=400, detail="步骤7/9尚未完成，无法进行视角分析")
+
+        # 调用LLM从指定视角分析
+        if workflow.base_agent:
+            prompt = f"""## 项目名称
+{values.get('project_name', '未命名')}
+
+## 指标得分及分析
+{indicator_analysis[:3000]}
+
+## 已有问题分析
+{problems_analysis[:3000]}
+
+## 分析指令
+{perspective_map.get(perspective, perspective_map['finance'])}
+请深入分析并给出该视角下的具体问题、扣分指标映射和深层原因。"""
+
+            from backend.agents.prompts.default_prompts import _UNIVERSAL_ROLE, _STYLE_INSTRUCTIONS, _QUALITY_RULES
+            from langchain_core.messages import SystemMessage, HumanMessage
+            system_prompt = _UNIVERSAL_ROLE.format(
+                style_instruction="保持专业、客观、平衡的语调。分析要有深度，拒绝泛泛而谈。",
+                quality_rules="所有分析必须基于提供的指标得分数据，不得编造。",
+            )
+            messages = [SystemMessage(content=system_prompt), HumanMessage(content=prompt)]
+            response = workflow.base_agent.llm.invoke(messages, config={"timeout": 300})
+            analysis = response.content if hasattr(response, 'content') else str(response)
+        else:
+            analysis = "模型未初始化，无法进行视角分析"
+
+        perspective_name = perspective_names.get(perspective, "未知视角")
+
+        return AgentResponse(success=True, data={
+            "session_id": session_id,
+            "perspective": perspective,
+            "perspective_name": perspective_name,
+            "analysis": analysis,
+        }, message=f"已完成{perspective_name}分析")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"视角分析失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════
+#  步骤7 - 逐指标评分分析接口
+# ═══════════════════════════════════════════════════════
+
+class IndicatorScoreInput(BaseModel):
+    """单指标评分输入"""
+    indicator_id: str
+    indicator_name: str
+    level1_name: str = ""
+    level2_name: str = ""
+    level3_name: str = ""
+    full_score: float = 0
+    actual_score: float = 0
+    score_reason: str = ""
+
+
+class BatchIndicatorScoreRequest(BaseModel):
+    session_id: str
+    scores: List[IndicatorScoreInput]
+
+
+class IndicatorScoreItem(BaseModel):
+    """单指标分析项"""
+    indicator_id: str
+    evaluation_point: str
+    score: Optional[float] = None
+    reason: Optional[str] = None
+
+
+class GenerateIndicatorAnalysisRequest(BaseModel):
+    session_id: str
+    indicator_id: str
+    level1_name: str = ""
+    level2_name: str = ""
+    level3_name: str = ""
+    indicator_explanation: str = ""
+    scoring_standard: str = ""
+    score_inputs: List[IndicatorScoreItem] = []
+
+
+@router.get("/workflow/{session_id}/indicators-for-scoring")
+async def get_indicators_for_scoring(session_id: str):
+    """
+    步骤7：获取需要进行评分的指标体系结构（用于前端生成评分输入框）
+    返回所有三级指标及其评分标准、指标解释，供逐指标填写得分和原因
+    """
+    try:
+        workflow, values = _get_workflow_values(session_id)
+        indicator_system = values.get("indicator_system", {})
+        if not indicator_system or not indicator_system.get("level1_indicators"):
+            raise HTTPException(status_code=400, detail="指标体系尚未生成，请先完成步骤3")
+
+        items = []
+        for l1 in indicator_system.get("level1_indicators", []):
+            l1_name = l1.get("name", "")
+            l1_score = l1.get("score", 0)
+            for l2 in l1.get("children", []):
+                l2_name = l2.get("name", "")
+                l2_score = l2.get("score", 0)
+                for l3 in l2.get("children", []):
+                    l3_name = l3.get("name", "")
+                    l3_score = l3.get("score", 0)
+                    l3_id = l3.get("id", f"{l1_name}_{l2_name}_{l3_name}")
+                    explanation = l3.get("explanation", "")
+                    scoring_standard = l3.get("scoring_standard", "")
+
+                    # 解析评分标准中的评价要点
+                    eval_points = _parse_evaluation_points(scoring_standard)
+
+                    items.append({
+                        "indicator_id": l3_id,
+                        "level1_name": l1_name,
+                        "level1_score": l1_score,
+                        "level2_name": l2_name,
+                        "level2_score": l2_score,
+                        "level3_name": l3_name,
+                        "full_score": l3_score,
+                        "indicator_explanation": explanation,
+                        "scoring_standard": scoring_standard,
+                        "evaluation_points": eval_points,
+                    })
+
+        return {"success": True, "data": {"indicators": items, "total_count": len(items)}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取评分指标失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/workflow/generate-indicator-analysis")
+async def generate_indicator_analysis(req: GenerateIndicatorAnalysisRequest):
+    """
+    步骤7：为单个三级指标生成分析内容
+    根据操作者输入的评分要点的得分和原因，由大模型撰写指标分析
+    """
+    try:
+        workflow, values = _get_workflow_values(req.session_id)
+        cfg = active_workflow_configs.get(req.session_id, {})
+        model_name = cfg.get("model_name") or settings.DEFAULT_MODEL
+
+        from backend.utils.llm_helper import get_model_credentials
+        _creds = get_model_credentials(model_name)
+        model = ChatOpenAI(model=model_name, api_key=_creds["api_key"], base_url=_creds["base_url"], temperature=0.7)
+
+        project_core = values.get("effective_data", "")[:3000]
+        score_inputs_text = "\n".join([
+            f"- 评价要点「{s.evaluation_point}」: 得分={s.score}, 原因={s.reason or '无'}"
+            for s in req.score_inputs
+        ]) if req.score_inputs else "（无评分输入）"
+
+        prompt = f"""## 项目核心内容
+{project_core}
+
+## 当前分析指标
+- 一级指标：{req.level1_name}
+- 二级指标：{req.level2_name}
+- 三级指标：{req.level3_name}
+- 指标解释：{req.indicator_explanation}
+- 评分标准：{req.scoring_standard}
+- 满分分值：{sum(s.score or 0 for s in req.score_inputs) if req.score_inputs else 0}
+
+## 操作者评分输入
+{score_inputs_text}
+
+## 任务
+请根据上述信息，撰写该三级指标的详细分析内容。分析应：
+1. 逐条对照评分标准中的评价要点
+2. 说明得分/扣分原因
+3. 引用项目核心内容中的具体事实和数据
+4. 语言专业、客观
+
+请直接输出分析内容。"""
+        resp = model.invoke(prompt)
+        analysis = resp.content if hasattr(resp, 'content') else str(resp)
+        return {"success": True, "data": {"analysis": analysis, "indicator_id": req.indicator_id}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"生成指标分析失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/workflow/save-indicator-scores")
+async def save_indicator_scores(req: BatchIndicatorScoreRequest):
+    """
+    步骤7：保存逐指标评分结果并生成评分表
+    """
+    try:
+        workflow, values = _get_workflow_values(req.session_id)
+        # 保存评分到state（写回checkpoint）
+        score_map = {}
+        for s in req.scores:
+            score_map[s.indicator_id] = {
+                "indicator_name": s.indicator_name,
+                "level1_name": s.level1_name,
+                "level2_name": s.level2_name,
+                "full_score": s.full_score,
+                "actual_score": s.actual_score,
+                "score_reason": s.score_reason,
+            }
+
+        # 生成评分表
+        score_table = _generate_score_table(values.get("indicator_system", {}), score_map)
+        _persist_state(req.session_id, {
+            "indicator_score_map": score_map,
+            "score_table": score_table,
+        })
+
+        return {"success": True, "data": {"score_table": score_table, "saved_count": len(score_map)}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"保存评分结果失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════
+#  步骤9 - 扣分点一键提取
+# ═══════════════════════════════════════════════════════
+
+@router.get("/workflow/{session_id}/extract-deductions")
+async def extract_deduction_points(session_id: str):
+    """
+    步骤9：从步骤7指标分析中提取扣分点
+    返回扣分指标列表，供操作者选择哪些作为问题提出
+    """
+    try:
+        workflow, values = _get_workflow_values(session_id)
+        indicator_analysis = values.get("indicator_analysis", "")
+        score_table = values.get("score_table", "")
+        score_map = values.get("indicator_score_map", {})
+
