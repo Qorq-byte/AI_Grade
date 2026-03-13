@@ -2197,3 +2197,245 @@ async def extract_deduction_points(session_id: str):
         score_table = values.get("score_table", "")
         score_map = values.get("indicator_score_map", {})
 
+        if not indicator_analysis and not score_map:
+            raise HTTPException(status_code=400, detail="步骤7尚未完成，请先生成指标分析")
+
+        deduction_points = []
+        if score_map:
+            for ind_id, info in score_map.items():
+                actual = info.get("actual_score", 0)
+                full = info.get("full_score", 0)
+                if actual < full:
+                    deduction_points.append({
+                        "indicator_id": ind_id,
+                        "indicator_name": info.get("indicator_name", ""),
+                        "level1_name": info.get("level1_name", ""),
+                        "level2_name": info.get("level2_name", ""),
+                        "full_score": full,
+                        "actual_score": actual,
+                        "deduction": round(full - actual, 2),
+                        "score_reason": info.get("score_reason", ""),
+                        "selected": True,
+                        "source": "score_map",
+                    })
+
+        # 如果score_map为空，从分析文本中智能提取
+        if not deduction_points and indicator_analysis:
+            lines = indicator_analysis.split("\n")
+            for line in lines:
+                if "扣" in line or "得分" in line or "分" in line:
+                    match = re.search(r'(?:扣|减)\s*(\d+\.?\d*)\s*分', line)
+                    if match:
+                        deduction_points.append({
+                            "indicator_name": line[:60],
+                            "deduction": float(match.group(1)),
+                            "context": line[:200],
+                            "selected": True,
+                            "source": "text_extraction",
+                        })
+
+        return {
+            "success": True,
+            "data": {
+                "deduction_points": deduction_points,
+                "total_count": len(deduction_points),
+                "total_deduction": sum(p.get("deduction", 0) for p in deduction_points),
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"提取扣分点失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class DeductionSelectionRequest(BaseModel):
+    session_id: str
+    selected_points: List[Dict[str, Any]]
+    manual_problems: Optional[List[Dict[str, str]]] = None
+
+
+@router.post("/workflow/confirm-deductions")
+async def confirm_deduction_points(req: DeductionSelectionRequest):
+    """
+    步骤9：确认扣分点选择（含手动添加的问题）
+    操作者选择哪些扣分点作为问题提出，也可以手动添加问题
+    """
+    try:
+        workflow, values = _get_workflow_values(req.session_id)
+        _persist_state(req.session_id, {
+            "confirmed_deduction_points": req.selected_points,
+            "manual_problems": req.manual_problems or [],
+        })
+        return {
+            "success": True,
+            "data": {
+                "confirmed_count": len(req.selected_points),
+                "manual_count": len(req.manual_problems or []),
+            },
+            "message": "扣分点已确认"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"确认扣分点失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════
+#  步骤10后 - 逻辑校对
+# ═══════════════════════════════════════════════════════
+
+@router.post("/workflow/{session_id}/verify-logic")
+async def verify_logic_consistency(session_id: str):
+    """
+    步骤10后：对指标体系、指标分析、问题、建议进行逻辑校对
+    确保通篇逻辑合理、数据一致
+    """
+    try:
+        workflow, values = _get_workflow_values(session_id)
+        cfg = active_workflow_configs.get(session_id, {})
+
+        indicator_system = values.get("indicator_system", {})
+        indicator_analysis = values.get("indicator_analysis", "")
+        problems_analysis = values.get("problems_analysis", "")
+        suggestions = values.get("suggestions", "")
+        score_table = values.get("score_table", "")
+
+        if not all([indicator_analysis, problems_analysis, suggestions]):
+            raise HTTPException(status_code=400, detail="请先完成步骤7-10后再进行逻辑校对")
+
+        model_name = cfg.get("model_name") or settings.DEFAULT_MODEL
+        from backend.utils.llm_helper import get_model_credentials
+        _creds = get_model_credentials(model_name)
+        model = ChatOpenAI(model=model_name, api_key=_creds["api_key"], base_url=_creds["base_url"], temperature=0.3)
+
+        prompt = f"""你是绩效评价报告逻辑校对专家。请对以下内容进行逻辑一致性校对：
+
+## 一、指标体系（Step6）
+{json.dumps(indicator_system, ensure_ascii=False, indent=2)[:2000]}
+
+## 二、指标分析（Step7）
+{indicator_analysis[:2000]}
+
+## 三、问题及原因分析（Step9）
+{problems_analysis[:2000]}
+
+## 四、改进建议（Step10）
+{suggestions[:2000]}
+
+## 校对要求
+请检查以下维度：
+1. **总分一致性**：各部分得分汇总是否等于100分
+2. **问题-指标对应**：问题分析中提到的扣分项是否与指标分析中的扣分一致
+3. **建议-问题对应**：每条建议是否都有对应的问题
+4. **数据一致性**：全文提及的金额、比例、数字是否前后矛盾
+5. **逻辑连贯性**：从指标体系到分析到问题到建议的逻辑链条是否完整
+
+请按以下格式输出：
+### 校对通过项
+（列出通过校对的维度）
+
+### 发现的问题
+| 序号 | 类型 | 问题描述 | 涉及内容 | 修改建议 |
+|------|------|----------|----------|----------|
+
+### 总结
+（是否需要修改，关键问题概述）"""
+        resp = model.invoke(prompt)
+        result_text = resp.content if hasattr(resp, 'content') else str(resp)
+
+        # 保存到state（写回checkpoint）
+        _persist_state(session_id, {"logic_verification": result_text})
+
+        return {"success": True, "data": {"verification_result": result_text}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"逻辑校对失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════
+#  步骤11 - 自动评分汇总与等级判定
+# ═══════════════════════════════════════════════════════
+
+class GradeThresholdsRequest(BaseModel):
+    excellent: float = 90
+    good: float = 80
+    medium: float = 60
+    poor: float = 0
+
+
+@router.get("/workflow/{session_id}/score-summary")
+async def get_score_summary(
+    session_id: str,
+    excellent: float = Query(90, description="优秀线"),
+    good: float = Query(80, description="良好线"),
+    medium: float = Query(60, description="合格线"),
+):
+    """
+    步骤11：自动评分汇总与等级判定
+    从指标体系+评分结果计算汇总得分、判定等级、生成图表数据
+    """
+    try:
+        workflow, values = _get_workflow_values(session_id)
+        indicator_system = values.get("indicator_system", {})
+        score_map = values.get("indicator_score_map", {})
+
+        if not indicator_system:
+            raise HTTPException(status_code=400, detail="指标体系尚未生成")
+
+        # 计算各一级指标得分
+        level1_scores = []
+        total_score = 0
+        total_full = 0
+
+        for l1 in indicator_system.get("level1_indicators", []):
+            l1_name = l1.get("name", "")
+            l1_score = 0
+            l1_full = 0
+            level2_data = []
+
+            for l2 in l1.get("children", []):
+                l2_name = l2.get("name", "")
+                l2_score = 0
+                l2_full = 0
+                level3_data = []
+
+                for l3 in l2.get("children", []):
+                    l3_name = l3.get("name", "")
+                    l3_full_score = l3.get("score", 0)
+                    l3_id = l3.get("id", f"{l1_name}_{l2_name}_{l3_name}")
+                    actual = score_map.get(l3_id, {}).get("actual_score", 0) if score_map else l3_full_score
+                    l3_score = float(actual) if actual else l3_full_score
+
+                    l2_score += l3_score
+                    l2_full += l3_full_score
+                    level3_data.append({
+                        "name": l3_name,
+                        "full_score": l3_full_score,
+                        "actual_score": l3_score,
+                        "score_rate": round(l3_score / l3_full_score * 100, 1) if l3_full_score > 0 else 0,
+                    })
+
+                l1_score += l2_score
+                l1_full += l2_full
+                level2_data.append({
+                    "name": l2_name,
+                    "full_score": l2_full,
+                    "actual_score": l2_score,
+                    "score_rate": round(l2_score / l2_full * 100, 1) if l2_full > 0 else 0,
+                    "items": level3_data,
+                })
+
+            total_score += l1_score
+            total_full += l1_full
+            level1_scores.append({
+                "name": l1_name,
+                "full_score": l1_full,
+                "actual_score": l1_score,
+                "score_rate": round(l1_score / l1_full * 100, 1) if l1_full > 0 else 0,
+                "items": level2_data,
+            })
+
