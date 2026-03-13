@@ -1713,3 +1713,243 @@ async def generate_questionnaire(request: QuestionnaireRequest):
         logger.error(f"问卷生成失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.get("/workflow/questionnaire/list", response_model=AgentResponse)
+async def list_questionnaires():
+    """
+    列出所有已有问卷的 WorkflowSession 记录
+    前端「问卷填写」Tab 调用此接口获取问卷列表
+    """
+    try:
+        results = []
+        for sid, data in _QUESTIONNAIRE_CACHE.items():
+            results.append({
+                "session_id": sid,
+                "project_name": data.get("project_name", "未命名项目"),
+                "question_count": len(data.get("questions", [])),
+                "updated_at": data.get("updated_at", ""),
+            })
+
+        # 也检查 active_workflows 中有 indicator_system 的session（可生成问卷但尚未生成）
+        for sid, wf in active_workflows.items():
+            if sid in _QUESTIONNAIRE_CACHE:
+                continue
+            try:
+                config = {"configurable": {"thread_id": sid}}
+                state_obj = wf.get_state(config)
+                if state_obj and getattr(state_obj, 'values', None):
+                    indicator_system = state_obj.values.get("indicator_system", {})
+                    if indicator_system and indicator_system.get("level1_indicators"):
+                        results.append({
+                            "session_id": sid,
+                            "project_name": state_obj.values.get("project_name", "未命名项目"),
+                            "question_count": 0,
+                            "updated_at": str(datetime.now(timezone.utc)),
+                            "needs_generation": True,
+                        })
+            except Exception:
+                pass
+
+        # 也检查 active_workflow_configs 中的session（内存evict后从配置重建）
+        for sid in active_workflow_configs:
+            if sid in _QUESTIONNAIRE_CACHE or any(r.get("session_id") == sid for r in results):
+                continue
+            try:
+                results.append({
+                    "session_id": sid,
+                    "project_name": active_workflow_configs[sid].get("project_name", "未命名项目"),
+                    "question_count": 0,
+                    "updated_at": str(datetime.now(timezone.utc)),
+                    "needs_generation": True,
+                })
+            except Exception:
+                pass
+
+        # 始终尝试从文件备份恢复问卷列表（服务器重启后内存数据丢失，磁盘备份是唯一数据源）
+        try:
+            backup_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "state_backups")
+            if os.path.exists(backup_dir):
+                for fname in os.listdir(backup_dir):
+                    if not fname.endswith(".json"):
+                        continue
+                    sid = fname[:-5]
+                    # 跳过已在内存中的 session
+                    if any(r.get("session_id") == sid for r in results):
+                        continue
+                    try:
+                        with open(os.path.join(backup_dir, fname), "r", encoding="utf-8") as f:
+                            backup = json.load(f)
+                        qdata = backup.get("questionnaire", {})
+                        indicator_system = backup.get("indicator_system", {})
+                        has_indicator = bool(indicator_system and indicator_system.get("level1_indicators"))
+                        results.append({
+                            "session_id": sid,
+                            "project_name": qdata.get("project_name", "") or backup.get("project_name", "未命名项目"),
+                            "question_count": len(qdata.get("questions", [])),
+                            "updated_at": qdata.get("updated_at", str(datetime.now(timezone.utc))),
+                            "needs_generation": not bool(qdata.get("questions")) and has_indicator,
+                        })
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        return AgentResponse(success=True, data=results,
+                             message=f"找到 {len(results)} 条问卷记录")
+    except Exception as e:
+        logger.error(f"获取问卷列表失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/workflow/questionnaire/{session_id}", response_model=AgentResponse)
+async def delete_questionnaire(session_id: str):
+    """
+    删除指定 session 的问卷数据（从内存缓存、数据库和磁盘备份中彻底移除）
+    """
+    try:
+        deleted = False
+        if session_id in _QUESTIONNAIRE_CACHE:
+            del _QUESTIONNAIRE_CACHE[session_id]
+            deleted = True
+        if session_id in active_workflows:
+            try:
+                active_workflows[session_id].close()
+            except Exception:
+                pass
+            del active_workflows[session_id]
+            deleted = True
+        if session_id in active_workflow_configs:
+            del active_workflow_configs[session_id]
+            deleted = True
+        if session_id in _WORKFLOW_PROGRESS:
+            del _WORKFLOW_PROGRESS[session_id]
+            deleted = True
+
+        # 删除数据库中的 WorkflowSession 记录
+        try:
+            from backend.database import SessionLocal
+            from backend.models.user_models import WorkflowSession
+            db = SessionLocal()
+            try:
+                ws = db.query(WorkflowSession).filter(WorkflowSession.session_id == session_id).first()
+                if ws:
+                    db.delete(ws)
+                    db.commit()
+                    deleted = True
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"删除问卷DB记录失败: {e}")
+
+        # 删除磁盘备份文件
+        try:
+            backup_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "state_backups")
+            backup_file = os.path.join(backup_dir, f"{session_id}.json")
+            if os.path.exists(backup_file):
+                os.remove(backup_file)
+                logger.info(f"已删除备份文件: {backup_file}")
+                deleted = True
+        except Exception as e:
+            logger.warning(f"删除备份文件失败: {e}")
+
+        if deleted:
+            logger.info(f"问卷已删除: {session_id}")
+            return AgentResponse(success=True, data={"session_id": session_id}, message="问卷已删除")
+        else:
+            return AgentResponse(success=False, data=None, message="未找到对应的问卷")
+    except Exception as e:
+        logger.error(f"删除问卷失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class BatchDeleteQRequest(BaseModel):
+    session_ids: list[str]
+
+@router.post("/workflow/questionnaire/batch-delete", response_model=AgentResponse)
+async def batch_delete_questionnaires(req: BatchDeleteQRequest):
+    """批量删除问卷（内存、数据库、磁盘备份）"""
+    deleted = []
+    for session_id in req.session_ids:
+        try:
+            if session_id in _QUESTIONNAIRE_CACHE: del _QUESTIONNAIRE_CACHE[session_id]
+            if session_id in active_workflows:
+                try: active_workflows[session_id].close()
+                except Exception: pass
+                del active_workflows[session_id]
+            if session_id in active_workflow_configs: del active_workflow_configs[session_id]
+            if session_id in _WORKFLOW_PROGRESS: del _WORKFLOW_PROGRESS[session_id]
+            # 删除磁盘备份文件
+            try:
+                backup_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "state_backups")
+                backup_file = os.path.join(backup_dir, f"{session_id}.json")
+                if os.path.exists(backup_file):
+                    os.remove(backup_file)
+                    logger.info(f"已删除备份文件: {backup_file}")
+            except Exception:
+                pass
+            deleted.append(session_id)
+        except Exception:
+            pass
+    # 批量删除数据库中的 WorkflowSession 记录
+    try:
+        from backend.database import SessionLocal
+        from backend.models.user_models import WorkflowSession
+        db = SessionLocal()
+        try:
+            db.query(WorkflowSession).filter(WorkflowSession.session_id.in_(req.session_ids)).delete(synchronize_session=False)
+            db.commit()
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"批量删除问卷DB记录失败: {e}")
+    return AgentResponse(success=True, data={"deleted": len(deleted), "session_ids": deleted}, message=f"成功删除 {len(deleted)} 条问卷")
+
+
+# ═══════════════════════════════════════════════════════
+#  工作流 - 步骤9多视角分析
+# ═══════════════════════════════════════════════════════
+
+@router.post("/workflow/{session_id}/perspective", response_model=AgentResponse)
+async def analyze_perspective(session_id: str, request: Dict[str, Any]):
+    """
+    步骤9多视角分析 — 前端切换视角时调用
+    根据已有的问题分析结果，从指定视角重新生成分析内容
+    perspectives: finance(财政) / congress(人大) / audit(审计)
+    """
+    try:
+        perspective = request.get("perspective", "finance")
+        perspective_names = {
+            "finance": "财政部门视角",
+            "congress": "人大常委会视角",
+            "audit": "审计部门视角",
+            "management": "管理方建议视角",
+            "third_party": "第三方建议视角",
+        }
+        perspective_map = {
+            "finance": "请从财政部门角度分析资金管理合规性、预算执行率、专款专用情况等方面的问题",
+            "congress": "请从人大常委会角度分析预算监督执行、人大审查意见落实等方面的问题",
+            "audit": "请从审计部门角度分析资金安全、内控制度有效性、财务核算规范性等方面的问题",
+            "management": "请从项目管理方角度分析问题，并给出管理层面的改进建议，聚焦组织协调、资源配置、风险管控等方面",
+            "third_party": "请从独立第三方评估机构角度分析问题，给出客观中立的改进建议，聚焦绩效目标设定合理性、评价方法科学性、结果应用有效性等方面",
+        }
+
+        if session_id not in active_workflows:
+            if session_id not in active_workflow_configs:
+                raise HTTPException(status_code=404, detail="工作流不存在")
+            cfg = active_workflow_configs[session_id]
+            workflow = PerformanceAgent(
+                session_id=session_id, model_name=cfg.get("model_name") or settings.DEFAULT_MODEL,
+                temperature=cfg.get("temperature", 0.7),
+                top_p=cfg.get("top_p", 0.9),
+                use_rag=cfg.get("use_rag", False),
+                comparison_mode=cfg.get("comparison_mode", "single"),
+                temperature_profile=cfg.get("temperature_profile", "normal"),
+            )
+            active_workflows[session_id] = workflow
+        else:
+            workflow = active_workflows[session_id]
+        config = {"configurable": {"thread_id": session_id}}
+        state_obj = workflow.get_state(config)
+        if not state_obj or not getattr(state_obj, 'values', None):
+            raise HTTPException(status_code=400, detail="工作流尚未启动")
+
