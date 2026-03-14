@@ -3179,3 +3179,245 @@ async def set_report_order(req: ReportOrderRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+class AssembleReportRequest(BaseModel):
+    session_id: str
+    show_title: bool = True
+    include_sections: Optional[List[str]] = None
+
+
+@router.post("/workflow/assemble-report")
+async def assemble_final_report(req: AssembleReportRequest):
+    """
+    步骤14：按自定义顺序组装最终报告
+    支持选择性地包含某些章节
+    """
+    try:
+        workflow, values = _get_workflow_values(req.session_id)
+        project_name = values.get("project_name", "未命名项目")
+
+        # 使用自定义顺序或默认顺序
+        custom_order = values.get("report_section_order")
+        if custom_order:
+            section_map = {s["key"]: s for s in custom_order}
+        else:
+            section_map = {k: {"key": k, "name": v, "enabled": True} for k, v in REPORT_SECTION_ORDER.items()}
+
+        # 按顺序组装
+        report_sections = []
+        ordered_keys = custom_order and [s["key"] for s in custom_order] or list(REPORT_SECTION_ORDER.keys())
+        if req.include_sections:
+            ordered_keys = [k for k in ordered_keys if k in req.include_sections]
+
+        for key in ordered_keys:
+            sec = section_map.get(key, {"enabled": True})
+            if not sec.get("enabled", True):
+                continue
+            title = sec.get("name", REPORT_SECTION_ORDER.get(key, key))
+            # 通过映射获取正确的状态字段（basic_info / work_introduction 等）
+            state_field = _SECTION_KEY_TO_STATE_FIELD.get(key, "")
+            content = values.get(state_field, "") if state_field else ""
+            if not content:
+                content = values.get(key, "") or ""
+            if isinstance(content, dict):
+                content = json.dumps(content, ensure_ascii=False, indent=2)
+            if content:
+                report_sections.append(f"## {title}\n\n{content}")
+
+        full_report = "\n\n".join(report_sections)
+        if req.show_title:
+            full_report = f"# {project_name}绩效评价报告\n\n{full_report}"
+
+        _persist_state(req.session_id, {"final_report": full_report})
+        return {"success": True, "data": {"report": full_report, "section_count": len(report_sections)}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"组装报告失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/workflow/{session_id}/format-check")
+async def check_report_format(session_id: str):
+    """
+    步骤14：依据396号文要求进行格式校对
+    检查最终报告的格式规范性和内容完整性
+    """
+    try:
+        workflow, values = _get_workflow_values(session_id)
+        final_report = values.get("final_report", "")
+        if not final_report:
+            raise HTTPException(status_code=400, detail="请先组装最终报告")
+
+        cfg = active_workflow_configs.get(session_id, {})
+        model_name = cfg.get("model_name") or settings.DEFAULT_MODEL
+        from backend.utils.llm_helper import get_model_credentials
+        _creds = get_model_credentials(model_name)
+        model = ChatOpenAI(model=model_name, api_key=_creds["api_key"], base_url=_creds["base_url"], temperature=0.3)
+
+        prompt = f"""你是绩效评价报告格式审查专家。请对以下报告进行格式和内容校对：
+
+## 格式要求（参照396号文）：
+1. 报告结构是否完整（包含基本情况、工作开展、指标体系、分析、经验、问题、建议、结论）
+2. 各级标题编号是否规范（"一、" → "(一)" → "1." 层级）
+3. 表格格式是否规范（表头、边框、数据对齐）
+4. 措辞是否正式、客观
+5. 数据前后是否一致
+
+## 待校对报告：
+{final_report[:8000]}
+
+请按以下格式输出校对结果：
+### 通过的检查项
+（列出符合要求的项目）
+
+### 需要修改的问题
+| 序号 | 问题类型 | 位置 | 问题描述 | 修改建议 |
+|------|----------|------|----------|----------|
+
+### 总结评价
+是否建议通过/需修改后提交"""
+        resp = model.invoke(prompt)
+        result = resp.content if hasattr(resp, 'content') else str(resp)
+        _persist_state(session_id, {"format_check_result": result})
+
+        return {"success": True, "data": {"check_result": result}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"格式校对失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════
+#  步骤12 - 动态模块添加/删除
+# ═══════════════════════════════════════════════════════
+
+class AddCustomModuleRequest(BaseModel):
+    session_id: str
+    module_key: str
+    module_name: str
+    content: Optional[str] = None
+
+
+@router.post("/workflow/add-custom-module")
+async def add_custom_module(req: AddCustomModuleRequest):
+    """
+    步骤12：添加自定义模块（除默认5个模块外）
+    操作者可根据项目需要新增模块内容
+    """
+    try:
+        workflow, values = _get_workflow_values(req.session_id)
+        modules = values.get("basic_info_modules", {}) or {}
+
+        if req.module_key in modules:
+            raise HTTPException(status_code=400, detail="该模块key已存在")
+
+        modules[req.module_key] = req.content or ""
+        # 也更新模块名映射
+        module_names = values.get("module_names", {}) or {}
+        module_names[req.module_key] = req.module_name
+        _persist_state(req.session_id, {
+            "basic_info_modules": modules,
+            "module_names": module_names,
+        })
+
+        return {"success": True, "data": {"key": req.module_key, "name": req.module_name},
+                "message": f"模块「{req.module_name}」已添加"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"添加模块失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class DeleteModuleRequest(BaseModel):
+    session_id: str
+    module_key: str
+
+
+@router.post("/workflow/delete-module")
+async def delete_module(req: DeleteModuleRequest):
+    """步骤12：删除自定义模块"""
+    try:
+        workflow, values = _get_workflow_values(req.session_id)
+        modules = values.get("basic_info_modules", {}) or {}
+
+        if req.module_key not in modules:
+            raise HTTPException(status_code=404, detail="模块不存在")
+
+        modules.pop(req.module_key, "")
+        _persist_state(req.session_id, {"basic_info_modules": modules})
+
+        return {"success": True, "message": f"模块已删除"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/workflow/update-module-content")
+async def update_module_content(req: AddCustomModuleRequest):
+    """
+    步骤12：更新已有模块内容（支持默认5模块+自定义模块）
+    """
+    try:
+        workflow, values = _get_workflow_values(req.session_id)
+        modules = values.get("basic_info_modules", {}) or {}
+        modules[req.module_key] = req.content or ""
+        _persist_state(req.session_id, {"basic_info_modules": modules})
+        return {"success": True, "message": f"模块「{req.module_name or req.module_key}」内容已更新"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════
+#  导出样式自定义
+# ═══════════════════════════════════════════════════════
+
+class ExportStyleRequest(BaseModel):
+    session_id: str
+    font_family: str = "SimSun"
+    font_size: int = 12
+    line_spacing: float = 1.5
+    page_margin: float = 2.5
+
+
+@router.post("/workflow/export-style")
+async def set_export_style(req: ExportStyleRequest):
+    """
+    设置导出PDF/Word文档的自定义样式
+    支持的字体：SimSun(宋体), SimHei(黑体), KaiTi(楷体), FangSong(仿宋)
+    """
+    try:
+        workflow, values = _get_workflow_values(req.session_id)
+        style = {
+            "font_family": req.font_family,
+            "font_size": req.font_size,
+            "line_spacing": req.line_spacing,
+            "page_margin": req.page_margin,
+        }
+        _persist_state(req.session_id, {"export_style": style})
+        return {"success": True, "data": style, "message": "导出样式已保存"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/workflow/{session_id}/export-style")
+async def get_export_style(session_id: str):
+    """获取当前的导出样式设置"""
+    try:
+        workflow, values = _get_workflow_values(session_id)
+        style = values.get("export_style", {
+            "font_family": "SimSun", "font_size": 12,
+            "line_spacing": 1.5, "page_margin": 2.5,
+        })
+        return {"success": True, "data": style}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
