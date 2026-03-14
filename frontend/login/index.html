@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>祺orQ - 登录/注册</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        background: '#ffffff',
+                        foreground: '#171717',
+                        primary: '#6C3FF5',
+                        'primary-foreground': '#ffffff',
+                        muted: '#f5f5f5',
+                        'muted-foreground': '#737373',
+                        accent: '#f5f5f5',
+                        'accent-foreground': '#171717',
+                        border: '#e5e5e5',
+                        ring: '#6C3FF5',
+                        destructive: '#ef4444',
+                        'destructive-foreground': '#ffffff',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        :root {
+            --bg: #ffffff;
+            --fg: #171717;
+            --primary: #6C3FF5;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        .page-container {
+            display: grid;
+            min-height: 100vh;
+        }
+
+        @media (min-width: 1024px) {
+            .page-container {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+
+        .left-panel {
+            display: none;
+            position: relative;
+            flex-direction: column;
+            justify-content: space-between;
+            background: linear-gradient(135deg, #6C3FF5 0%, #5A2FD0 40%, #6C3FF5 100%);
+            padding: 48px;
+            color: white;
+            overflow: hidden;
+        }
+
+        @media (min-width: 1024px) {
+            .left-panel { display: flex; }
+        }
+
+        .grid-bg {
+            position: absolute;
+            inset: 0;
+            background-image: linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px),
+                              linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px);
+            background-size: 20px 20px;
+        }
+
+        .blur-circle-1 {
+            position: absolute;
+            top: 25%;
+            right: 25%;
+            width: 256px;
+            height: 256px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 50%;
+            filter: blur(64px);
+        }
+
+        .blur-circle-2 {
+            position: absolute;
+            bottom: 25%;
+            left: 25%;
+            width: 384px;
+            height: 384px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 50%;
+            filter: blur(64px);
+        }
+
+        .characters-area {
+            position: relative;
+            z-index: 20;
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+            height: 400px;
+            margin: 40px 0;
+        }
+
+        .characters-wrapper {
+            position: relative;
+            width: 550px;
+            height: 400px;
+        }
+
+        .char-purple {
+            position: absolute;
+            bottom: 0;
+            left: 70px;
+            width: 180px;
+            background: #6C3FF5;
+            border-radius: 10px 10px 0 0;
+            z-index: 1;
+            transition: all 0.7s ease-in-out;
+            transform-origin: bottom center;
+        }
+
+        .char-black {
+            position: absolute;
+            bottom: 0;
+            left: 240px;
+            width: 120px;
+            height: 310px;
+            background: #2D2D2D;
+            border-radius: 8px 8px 0 0;
+            z-index: 2;
+            transition: all 0.7s ease-in-out;
+            transform-origin: bottom center;
+        }
+
+        .char-orange {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 240px;
+            height: 200px;
+            background: #FF9B6B;
+            border-radius: 120px 120px 0 0;
+            z-index: 3;
+            transition: all 0.7s ease-in-out;
+            transform-origin: bottom center;
+        }
+
+        .char-yellow {
+            position: absolute;
+            bottom: 0;
+            left: 310px;
+            width: 140px;
+            height: 230px;
+            background: #E8D754;
+            border-radius: 70px 70px 0 0;
+            z-index: 4;
+            transition: all 0.7s ease-in-out;
+            transform-origin: bottom center;
+        }
+
+        .eye-white {
+            position: relative;
+            border-radius: 50%;
+            background: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            transition: height 0.15s ease;
+        }
+
+        .pupil {
+            border-radius: 50%;
+            background: #2D2D2D;
+            transition: transform 0.1s ease-out;
+        }
+
+        .right-panel {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 32px;
+            background: #ffffff;
+        }
+
+        .form-container {
+            width: 100%;
+            max-width: 420px;
+        }
+
+        .input-field {
+            width: 100%;
+            height: 48px;
+            padding: 0 16px;
+            border: 1px solid #e5e5e5;
+            border-radius: 8px;
+            font-size: 14px;
+            background: white;
+            transition: border-color 0.2s;
+            outline: none;
+            color: #171717;
+        }
+
+        .input-field:focus {
+            border-color: #6C3FF5;
+            box-shadow: 0 0 0 3px rgba(108,63,245,0.1);
+        }
+
+        .input-field::placeholder { color: #a3a3a3; }
+
+        .btn-primary {
+            width: 100%;
+            height: 48px;
+            background: #6C3FF5;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .btn-primary:hover { background: #5A2FD0; }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .form-switch { display: none; }
+        .form-switch.active { display: block; }
+
+        .tab-btn {
+            background: none;
+            border: none;
+            font-size: 24px;
+            font-weight: 700;
+            color: #a3a3a3;
+            cursor: pointer;
+            padding: 0 8px 8px 8px;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .tab-btn.active {
+            color: #171717;
+            border-bottom-color: #6C3FF5;
+        }
+
+        .error-msg {
+            padding: 12px;
+            font-size: 14px;
+            color: #ef4444;
+            background: rgba(239,68,68,0.1);
+            border: 1px solid rgba(239,68,68,0.3);
+            border-radius: 8px;
+            display: none;
+        }
+
+        .error-msg.show { display: block; }
+
+        .success-msg {
+            padding: 12px;
+            font-size: 14px;
+            color: #16a34a;
+            background: rgba(22,163,74,0.1);
+            border: 1px solid rgba(22,163,74,0.3);
+            border-radius: 8px;
+            display: none;
+        }
+
+        .success-msg.show { display: block; }
+
+        .password-toggle {
+            position: absolute;
+            right: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: #a3a3a3;
+            padding: 4px;
+        }
+
+        .password-toggle:hover { color: #171717; }
+
+        .password-wrapper { position: relative; }
+
+        .pw-strength-bar {
+            height: 4px;
+            border-radius: 2px;
+            transition: all 0.3s;
+            margin-top: 6px;
+        }
+
+        .mobile-logo {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 48px;
+        }
+
