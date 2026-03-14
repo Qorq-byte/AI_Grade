@@ -2883,3 +2883,299 @@ async def reorder_indicators(req: ReorderRequest):
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "templates")
 
+# 预置经典模板
+_DEFAULT_TEMPLATES = {
+    "project_expenditure": {
+        "name": "项目支出指标体系",
+        "type": "项目支出",
+        "description": "适用于项目支出绩效评价的通用指标体系模板",
+        "level1_indicators": [
+            {"name": "决策", "children": [
+                {"name": "项目立项", "children": [
+                    {"name": "立项依据充分性", "score": 3, "explanation": "项目立项是否符合法律法规、政策要求，立项程序是否规范"},
+                    {"name": "立项程序规范性", "score": 3, "explanation": "项目申请、设立过程是否符合相关要求"},
+                ]},
+                {"name": "绩效目标", "children": [
+                    {"name": "绩效目标合理性", "score": 3, "explanation": "项目绩效目标是否与实际工作内容相关，预期产出和效果是否符合正常业绩水平"},
+                    {"name": "绩效指标明确性", "score": 3, "explanation": "绩效目标是否细化分解为具体的绩效指标，是否清晰、可衡量"},
+                ]},
+                {"name": "资金投入", "children": [
+                    {"name": "预算编制科学性", "score": 3, "explanation": "预算编制是否经过科学论证，额度测算是否依据充分"},
+                    {"name": "资金分配合理性", "score": 3, "explanation": "资金分配是否与项目实际需求相匹配"},
+                ]},
+            ]},
+            {"name": "过程", "children": [
+                {"name": "资金管理", "children": [
+                    {"name": "资金到位率", "score": 4, "explanation": "实际到位资金与计划投入资金的比率"},
+                    {"name": "资金使用合规性", "score": 4, "explanation": "资金使用是否符合财务管理制度规定"},
+                ]},
+                {"name": "组织实施", "children": [
+                    {"name": "管理制度健全性", "score": 4, "explanation": "项目管理制度是否健全，执行是否有效"},
+                    {"name": "制度执行有效性", "score": 4, "explanation": "项目实施是否符合管理规定"},
+                ]},
+            ]},
+            {"name": "产出", "children": [
+                {"name": "产出数量", "children": [
+                    {"name": "实际完成率", "score": 10, "explanation": "实际产出数量与计划产出数量的比率"},
+                ]},
+                {"name": "产出质量", "children": [
+                    {"name": "质量达标率", "score": 10, "explanation": "质量达标产出数与实际产出数的比率"},
+                ]},
+                {"name": "产出时效", "children": [
+                    {"name": "完成及时性", "score": 5, "explanation": "实际完成时间与计划完成时间的比较"},
+                ]},
+                {"name": "产出成本", "children": [
+                    {"name": "成本节约率", "score": 5, "explanation": "实际成本与计划成本的比较"},
+                ]},
+            ]},
+            {"name": "效益", "children": [
+                {"name": "项目效益", "children": [
+                    {"name": "社会效益", "score": 12, "explanation": "项目实施对社会发展带来的影响"},
+                    {"name": "经济效益", "score": 8, "explanation": "项目实施带来的直接或间接经济效益"},
+                    {"name": "生态效益", "score": 5, "explanation": "项目实施对生态环境的影响"},
+                    {"name": "可持续影响", "score": 6, "explanation": "项目实施后的可持续运行及发挥成效的情况"},
+                ]},
+                {"name": "满意度", "children": [
+                    {"name": "服务对象满意度", "score": 5, "explanation": "项目服务对象或受益对象的满意程度"},
+                ]},
+            ]},
+        ],
+    },
+    "department_overall": {
+        "name": "部门整体指标体系",
+        "type": "部门整体",
+        "description": "适用于部门整体支出绩效评价的通用指标体系模板",
+        "level1_indicators": [
+            {"name": "部门决策", "children": [
+                {"name": "目标设定", "children": [
+                    {"name": "绩效目标合理性", "score": 3, "explanation": "部门设定的绩效目标是否合理"},
+                    {"name": "绩效指标明确性", "score": 3, "explanation": "绩效指标是否明确、可衡量"},
+                ]},
+                {"name": "预算配置", "children": [
+                    {"name": "人员经费合理性", "score": 3, "explanation": "人员经费占比是否合理"},
+                    {"name": "公用经费合理性", "score": 3, "explanation": "公用经费安排的科学性"},
+                    {"name": "项目支出合理性", "score": 4, "explanation": "重点项目支出保障程度"},
+                ]},
+            ]},
+            {"name": "部门管理", "children": [
+                {"name": "预算管理", "children": [
+                    {"name": "预算执行率", "score": 4, "explanation": "部门整体预算执行情况"},
+                    {"name": "结转结余率", "score": 3, "explanation": "部门资金结转结余控制情况"},
+                ]},
+                {"name": "资产管理", "children": [
+                    {"name": "资产管理规范性", "score": 4, "explanation": "资产管理制度及执行情况"},
+                ]},
+                {"name": "业务管理", "children": [
+                    {"name": "管理制度健全性", "score": 3, "explanation": "业务管理制度的完善程度"},
+                ]},
+            ]},
+            {"name": "部门产出", "children": [
+                {"name": "数量产出", "children": [
+                    {"name": "重点工作完成率", "score": 15, "explanation": "部门年度重点工作实际完成情况"},
+                ]},
+                {"name": "质量产出", "children": [
+                    {"name": "工作质量达标率", "score": 10, "explanation": "各项工作质量达标情况"},
+                ]},
+                {"name": "时效产出", "children": [
+                    {"name": "工作完成及时性", "score": 5, "explanation": "各项工作是否按计划及时完成"},
+                ]},
+            ]},
+            {"name": "部门效益", "children": [
+                {"name": "履职效益", "children": [
+                    {"name": "社会效益", "score": 15, "explanation": "部门履职对社会发展产生的综合效益"},
+                    {"name": "服务对象满意度", "score": 10, "explanation": "服务对象的总体满意程度"},
+                    {"name": "可持续影响", "score": 5, "explanation": "部门工作成效的长期可持续性"},
+                ]},
+            ]},
+        ],
+    },
+}
+
+
+def _get_templates_file() -> str:
+    os.makedirs(TEMPLATES_DIR, exist_ok=True)
+    return os.path.join(TEMPLATES_DIR, "indicator_templates.json")
+
+
+def _load_templates() -> dict:
+    """加载所有模板（内置+用户自定义）"""
+    tp_file = _get_templates_file()
+    if os.path.exists(tp_file):
+        try:
+            with open(tp_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    # 首次：写入默认模板到文件
+    defaults = dict(_DEFAULT_TEMPLATES)
+    with open(tp_file, "w", encoding="utf-8") as f:
+        json.dump(defaults, f, ensure_ascii=False, indent=2)
+    return defaults
+
+
+@router.get("/workflow/templates")
+async def list_templates():
+    """获取所有可用的指标体系模板"""
+    try:
+        templates = _load_templates()
+        return {
+            "success": True,
+            "data": [
+                {"id": k, "name": v["name"], "type": v["type"], "description": v.get("description", ""),
+                 "indicator_count": sum(len(l2.get("children", [])) for l1 in v.get("level1_indicators", []) for l2 in l1.get("children", []))}
+                for k, v in templates.items()
+            ],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/workflow/templates/{template_id}")
+async def get_template(template_id: str):
+    """获取单个模板详情"""
+    try:
+        templates = _load_templates()
+        if template_id not in templates:
+            raise HTTPException(status_code=404, detail="模板不存在")
+        return {"success": True, "data": templates[template_id]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ImportTemplateRequest(BaseModel):
+    session_id: str
+    template_id: str
+
+
+@router.post("/workflow/templates/import")
+async def import_template(req: ImportTemplateRequest):
+    """
+    步骤3：一键导入模板指标体系到当前工作流
+    """
+    try:
+        templates = _load_templates()
+        if req.template_id not in templates:
+            raise HTTPException(status_code=404, detail="模板不存在")
+
+        workflow, values = _get_workflow_values(req.session_id)
+        template = templates[req.template_id]
+
+        # 导入模板的指标体系
+        indicator_system = {
+            "indicator_type": template["type"],
+            "level1_indicators": template["level1_indicators"],
+            "source": f"template:{req.template_id}",
+        }
+        _persist_state(req.session_id, {"indicator_system": indicator_system})
+
+        return {"success": True, "data": indicator_system, "message": f"已导入模板「{template['name']}」"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"导入模板失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class SaveTemplateRequest(BaseModel):
+    session_id: str
+    template_name: str
+    template_type: str = "自定义"
+
+
+@router.post("/workflow/templates/save")
+async def save_as_template(req: SaveTemplateRequest):
+    """将当前工作流的指标体系保存为新模板"""
+    try:
+        workflow, values = _get_workflow_values(req.session_id)
+        indicator_system = values.get("indicator_system", {})
+        if not indicator_system or not indicator_system.get("level1_indicators"):
+            raise HTTPException(status_code=400, detail="指标体系为空")
+
+        templates = _load_templates()
+        tid = str(uuid.uuid4())[:8]
+        templates[tid] = {
+            "name": req.template_name,
+            "type": req.template_type,
+            "description": f"用户自定义模板（{datetime.now(timezone.utc).strftime('%Y-%m-%d')}）",
+            "level1_indicators": indicator_system.get("level1_indicators", []),
+        }
+        with open(_get_templates_file(), "w", encoding="utf-8") as f:
+            json.dump(templates, f, ensure_ascii=False, indent=2)
+
+        return {"success": True, "data": {"id": tid}, "message": "模板保存成功"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"保存模板失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════
+#  步骤14 - 最终报告自定义顺序组合 & 格式校验
+# ═══════════════════════════════════════════════════════
+
+# 报告的默认章节顺序
+REPORT_SECTION_ORDER = {
+    "step12_basic_info": "一、基本情况",
+    "step13_work_intro": "二、绩效评价工作开展情况",
+    "step6_indicator_system": "三、绩效评价指标体系",
+    "step7_indicator_analysis": "四、指标体系分析情况",
+    "step8_experience": "五、经验做法",
+    "step9_problems": "六、问题及原因分析",
+    "step10_suggestions": "七、建议",
+    "step11_comprehensive": "八、综合评价分析情况及评价结论",
+}
+
+# 章节key → 工作流状态中的内容字段名
+_SECTION_KEY_TO_STATE_FIELD = {
+    "step12_basic_info": "basic_info",
+    "step13_work_intro": "work_introduction",
+    "step6_indicator_system": "evaluation_table",
+    "step7_indicator_analysis": "indicator_analysis",
+    "step8_experience": "experience_summary",
+    "step9_problems": "problems_analysis",
+    "step10_suggestions": "suggestions",
+    "step11_comprehensive": "comprehensive_evaluation",
+}
+
+
+class ReportOrderRequest(BaseModel):
+    session_id: str
+    sections: List[Dict[str, Any]]
+
+
+@router.get("/workflow/{session_id}/report-order")
+async def get_report_order(session_id: str):
+    """获取最终报告的章节顺序"""
+    try:
+        workflow, values = _get_workflow_values(session_id)
+        saved_order = values.get("report_section_order")
+        if saved_order:
+            return {"success": True, "data": saved_order, "is_custom": True}
+        # 返回默认顺序
+        default = []
+        for k, v in REPORT_SECTION_ORDER.items():
+            state_field = _SECTION_KEY_TO_STATE_FIELD.get(k, "")
+            has_content = bool(values.get(state_field) if state_field else values.get(k))
+            default.append({"key": k, "name": v, "enabled": True, "has_content": has_content})
+        return {"success": True, "data": default, "is_custom": False}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/workflow/report-order")
+async def set_report_order(req: ReportOrderRequest):
+    """设置最终报告的自定义章节顺序"""
+    try:
+        workflow, values = _get_workflow_values(req.session_id)
+        _persist_state(req.session_id, {"report_section_order": req.sections})
+        return {"success": True, "message": "报告章节顺序已更新"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
