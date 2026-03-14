@@ -2687,3 +2687,199 @@ async def set_language_style(req: LanguageStyleRequest):
     if req.language_style not in valid_styles:
         raise HTTPException(status_code=400, detail=f"无效的语言风格，支持: {valid_styles}")
 
+    try:
+        workflow, values = _get_workflow_values(req.session_id)
+        sc = values.get("step_control", {})
+        sc["language_style"] = req.language_style
+        _persist_state(req.session_id, {"step_control": sc})
+        return {"success": True, "data": {"language_style": req.language_style}, "message": f"语言风格已设置为「{req.language_style}」"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"设置语言风格失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════
+#  辅助函数
+# ═══════════════════════════════════════════════════════
+
+def _get_workflow_values(session_id: str):
+    """获取工作流状态值（自动重建workflow）"""
+    if session_id not in active_workflows:
+        if session_id not in active_workflow_configs:
+            raise HTTPException(status_code=404, detail="工作流不存在")
+        cfg = active_workflow_configs[session_id]
+        workflow = PerformanceAgent(
+            session_id=session_id, model_name=cfg.get("model_name") or settings.DEFAULT_MODEL,
+            temperature=cfg.get("temperature", 0.7),
+            top_p=cfg.get("top_p", 0.9),
+            use_rag=cfg.get("use_rag", False),
+            comparison_mode=cfg.get("comparison_mode", "single"),
+            temperature_profile=cfg.get("temperature_profile", "normal"),
+        )
+        active_workflows[session_id] = workflow
+    else:
+        workflow = active_workflows[session_id]
+
+    config = {"configurable": {"thread_id": session_id}}
+    state_obj = workflow.get_state(config)
+    if not state_obj or not getattr(state_obj, 'values', None):
+        raise HTTPException(status_code=400, detail="工作流尚未启动")
+    return workflow, state_obj.values
+
+
+def _persist_state(session_id: str, updates: dict) -> bool:
+    """
+    将状态修改写入LangGraph checkpoint。
+    注意：get_state() 返回的 values 是快照，直接修改不会持久化，
+    必须通过 update_state 写回，否则下一次读取会丢失修改。
+    """
+    try:
+        workflow = active_workflows.get(session_id)
+        if workflow is None:
+            if session_id not in active_workflow_configs:
+                return False
+            cfg = active_workflow_configs[session_id]
+            workflow = PerformanceAgent(
+                session_id=session_id, model_name=cfg.get("model_name") or settings.DEFAULT_MODEL,
+                temperature=cfg.get("temperature", 0.7),
+                top_p=cfg.get("top_p", 0.9),
+                use_rag=cfg.get("use_rag", False),
+                comparison_mode=cfg.get("comparison_mode", "single"),
+                temperature_profile=cfg.get("temperature_profile", "normal"),
+            )
+            active_workflows[session_id] = workflow
+        config = {"configurable": {"thread_id": session_id}}
+        workflow.app.update_state(config, updates)
+        return True
+    except Exception as e:
+        logger.warning(f"工作流状态写入checkpoint失败（非致命）: {e}")
+        return False
+
+
+def _parse_evaluation_points(scoring_standard: str) -> list:
+    """从评分标准文本中解析评价要点"""
+    points = []
+    if not scoring_standard:
+        return points
+    # 按常见序号分割
+    lines = re.split(r'[\n;；]', scoring_standard)
+    for line in lines:
+        line = re.sub(r'^\s*[\d一二三四五六七八九十]+[、.)）]\s*', '', line).strip()
+        if line and len(line) > 2:
+            points.append(line)
+    if not points:
+        points = [scoring_standard]
+    return points
+
+
+def _generate_score_table(indicator_system: dict, score_map: dict) -> str:
+    """从指标体系和评分映射生成评分表Markdown"""
+    rows = []
+    rows.append("| 一级指标 | 二级指标 | 三级指标 | 分值 | 得分 | 得分率 |")
+    rows.append("|----------|----------|----------|------|------|--------|")
+
+    for l1 in indicator_system.get("level1_indicators", []):
+        l1_name = l1.get("name", "")
+        for l2 in l1.get("children", []):
+            l2_name = l2.get("name", "")
+            l2_full, l2_score = 0, 0
+            sub_rows = []
+            for l3 in l2.get("children", []):
+                l3_name = l3.get("name", "")
+                l3_full = l3.get("score", 0)
+                l3_id = l3.get("id", f"{l1_name}_{l2_name}_{l3_name}")
+                actual = score_map.get(l3_id, {}).get("actual_score", l3_full)
+                rate = round(actual / l3_full * 100, 1) if l3_full > 0 else 0
+                l2_full += l3_full
+                l2_score += actual
+                sub_rows.append(f"| {l1_name} | {l2_name} | {l3_name} | {l3_full} | {actual} | {rate}% |")
+            for sr in sub_rows:
+                rows.append(sr)
+            l2_rate = round(l2_score / l2_full * 100, 1) if l2_full > 0 else 0
+            rows.append(f"| | **{l2_name} 小计** | | **{l2_full}** | **{l2_score}** | **{l2_rate}%** |")
+
+    return "\n".join(rows)
+
+
+# ═══════════════════════════════════════════════════════
+#  步骤6 - 指标拖拽重排序
+# ═══════════════════════════════════════════════════════
+
+class ReorderRequest(BaseModel):
+    session_id: str
+    level: str  # "level1" / "level2" / "level3"
+    from_index: int
+    to_index: int
+    parent_l1_idx: Optional[int] = None  # level2时需指定属于哪个一级指标
+    parent_l2_idx: Optional[int] = None  # level3时需指定属于哪个二级指标
+
+
+@router.post("/workflow/reorder-indicators")
+async def reorder_indicators(req: ReorderRequest):
+    """
+    步骤6：拖拽重排序指标体系
+    level1: 一级指标顺序拖动（其下所有二级、三级指标跟随移动）
+    level2: 二级指标在某一级指标内拖动（其下三级指标跟随）
+    level3: 三级指标在某二级指标内拖动（不能跨二级指标）
+    """
+    try:
+        workflow, values = _get_workflow_values(req.session_id)
+        indicator_system = values.get("indicator_system", {})
+        if not indicator_system or not indicator_system.get("level1_indicators"):
+            raise HTTPException(status_code=400, detail="指标体系尚未生成")
+
+        l1_list = indicator_system.get("level1_indicators", [])
+
+        if req.level == "level1":
+            if 0 <= req.from_index < len(l1_list) and 0 <= req.to_index < len(l1_list):
+                item = l1_list.pop(req.from_index)
+                l1_list.insert(req.to_index, item)
+                indicator_system["level1_indicators"] = l1_list
+
+        elif req.level == "level2":
+            if req.parent_l1_idx is None:
+                raise HTTPException(status_code=400, detail="level2重排需要指定parent_l1_idx")
+            if req.parent_l1_idx >= len(l1_list):
+                raise HTTPException(status_code=400, detail="一级指标索引越界")
+            l2_list = l1_list[req.parent_l1_idx].get("children", [])
+            if 0 <= req.from_index < len(l2_list) and 0 <= req.to_index < len(l2_list):
+                item = l2_list.pop(req.from_index)
+                l2_list.insert(req.to_index, item)
+                l1_list[req.parent_l1_idx]["children"] = l2_list
+
+        elif req.level == "level3":
+            if req.parent_l1_idx is None or req.parent_l2_idx is None:
+                raise HTTPException(status_code=400, detail="level3重排需要指定parent_l1_idx和parent_l2_idx")
+            if req.parent_l1_idx >= len(l1_list):
+                raise HTTPException(status_code=400, detail="一级指标索引越界")
+            l2_list = l1_list[req.parent_l1_idx].get("children", [])
+            if req.parent_l2_idx >= len(l2_list):
+                raise HTTPException(status_code=400, detail="二级指标索引越界")
+            l3_list = l2_list[req.parent_l2_idx].get("children", [])
+            if 0 <= req.from_index < len(l3_list) and 0 <= req.to_index < len(l3_list):
+                item = l3_list.pop(req.from_index)
+                l3_list.insert(req.to_index, item)
+                l2_list[req.parent_l2_idx]["children"] = l3_list
+                l1_list[req.parent_l1_idx]["children"] = l2_list
+        else:
+            raise HTTPException(status_code=400, detail="level参数无效，支持: level1/level2/level3")
+
+        # 写回checkpoint（workflow.app 是编译后的图，才有update_state方法）
+        _persist_state(req.session_id, {"indicator_system": indicator_system})
+
+        return {"success": True, "message": f"{req.level} 指标重排序完成"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"重排序失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════
+#  步骤3 - 指标体系模板库
+# ═══════════════════════════════════════════════════════
+
+TEMPLATES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "templates")
+
