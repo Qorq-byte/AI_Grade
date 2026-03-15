@@ -307,3 +307,326 @@
             margin-bottom: 48px;
         }
 
+        @media (min-width: 1024px) {
+            .mobile-logo { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <div class="page-container">
+
+        <!-- ====== LEFT PANEL ====== -->
+        <div class="left-panel">
+            <div class="grid-bg"></div>
+            <div class="blur-circle-1"></div>
+            <div class="blur-circle-2"></div>
+
+            <div class="relative z-20">
+                <div class="flex items-center gap-2 text-lg font-semibold">
+                    <div style="width:32px;height:32px;border-radius:8px;background:rgba(255,255,255,0.1);display:flex;align-items:center;justify-content:center;">
+                        <i data-lucide="sparkles" style="width:16px;height:16px;"></i>
+                    </div>
+                    <span>云海睿评</span>
+                </div>
+            </div>
+
+            <div class="characters-area">
+                <div class="characters-wrapper">
+                    <div class="char-purple" id="purpleChar" style="height:400px;">
+                        <div class="absolute flex gap-8" id="purpleEyes" style="left:45px;top:40px;">
+                            <div class="eye-white" style="width:18px;height:18px;"><div class="pupil" style="width:7px;height:7px;"></div></div>
+                            <div class="eye-white" style="width:18px;height:18px;"><div class="pupil" style="width:7px;height:7px;"></div></div>
+                        </div>
+                    </div>
+                    <div class="char-black" id="blackChar">
+                        <div class="absolute flex gap-6" id="blackEyes" style="left:26px;top:32px;">
+                            <div class="eye-white" style="width:16px;height:16px;"><div class="pupil" style="width:6px;height:6px;"></div></div>
+                            <div class="eye-white" style="width:16px;height:16px;"><div class="pupil" style="width:6px;height:6px;"></div></div>
+                        </div>
+                    </div>
+                    <div class="char-orange" id="orangeChar">
+                        <div class="absolute flex gap-8" id="orangeEyes" style="left:82px;top:90px;">
+                            <div class="pupil" style="width:12px;height:12px;"></div>
+                            <div class="pupil" style="width:12px;height:12px;"></div>
+                        </div>
+                    </div>
+                    <div class="char-yellow" id="yellowChar">
+                        <div class="absolute flex gap-6" id="yellowEyes" style="left:52px;top:40px;">
+                            <div class="pupil" style="width:12px;height:12px;"></div>
+                            <div class="pupil" style="width:12px;height:12px;"></div>
+                        </div>
+                        <div id="yellowMouth" style="position:absolute;left:40px;top:88px;width:80px;height:4px;background:#2D2D2D;border-radius:2px;transition:all 0.2s ease-out;"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="relative z-20 flex items-center gap-8 text-sm" style="color:rgba(255,255,255,0.6);">
+                <a href="/" style="color:rgba(255,255,255,0.6);text-decoration:none;" onmouseover="this.style.color='white'" onmouseout="this.style.color='rgba(255,255,255,0.6)'">返回首页</a>
+                <a href="#" style="color:rgba(255,255,255,0.6);text-decoration:none;" onmouseover="this.style.color='white'" onmouseout="this.style.color='rgba(255,255,255,0.6)'">隐私政策</a>
+                <a href="#" style="color:rgba(255,255,255,0.6);text-decoration:none;" onmouseover="this.style.color='white'" onmouseout="this.style.color='rgba(255,255,255,0.6)'">服务条款</a>
+            </div>
+        </div>
+
+        <!-- ====== RIGHT PANEL ====== -->
+        <div class="right-panel">
+            <div class="form-container">
+                <div class="mobile-logo">
+                    <div style="width:32px;height:32px;border-radius:8px;background:rgba(108,63,245,0.1);display:flex;align-items:center;justify-content:center;">
+                        <i data-lucide="sparkles" style="width:16px;height:16px;color:#6C3FF5;"></i>
+                    </div>
+                    <span>云海睿评</span>
+                </div>
+
+                <div style="display:flex;justify-content:center;gap:24px;margin-bottom:40px;">
+                    <button class="tab-btn active" id="tabLogin" onclick="switchTab('login')">登录</button>
+                    <button class="tab-btn" id="tabRegister" onclick="switchTab('register')">注册</button>
+                </div>
+
+                <!-- ===== LOGIN FORM ===== -->
+                <div class="form-switch active" id="loginForm">
+                    <div style="text-align:center;margin-bottom:40px;">
+                        <h1 style="font-size:30px;font-weight:700;margin-bottom:8px;color:#171717;">欢迎回来</h1>
+                        <p style="font-size:14px;color:#737373;">请输入您的账号信息</p>
+                    </div>
+
+                    <div class="success-msg" id="loginSuccess"></div>
+                    <div class="error-msg" id="loginError"></div>
+
+                    <form onsubmit="handleLogin(event)" style="display:flex;flex-direction:column;gap:20px;">
+                        <div>
+                            <label style="display:block;font-size:14px;font-weight:500;margin-bottom:8px;color:#171717;">用户名</label>
+                            <input type="text" id="loginUsername" class="input-field" placeholder="请输入用户名" autocomplete="username" required
+                                onfocus="onFieldFocus()" onblur="onFieldBlur()" oninput="onFieldInput()">
+                        </div>
+
+                        <div>
+                            <label style="display:block;font-size:14px;font-weight:500;margin-bottom:8px;color:#171717;">密码</label>
+                            <div class="password-wrapper">
+                                <input type="password" id="loginPassword" class="input-field" placeholder="••••••••" required
+                                    oninput="onPasswordInput()">
+                                <button type="button" class="password-toggle" onclick="togglePassword('loginPassword', this)">
+                                    <i data-lucide="eye" style="width:20px;height:20px;"></i>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div style="display:flex;align-items:center;justify-content:space-between;">
+                            <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#737373;cursor:pointer;">
+                                <input type="checkbox" id="rememberMe" style="width:16px;height:16px;accent-color:#6C3FF5;">
+                                记住30天
+                            </label>
+                        </div>
+
+                        <button type="submit" class="btn-primary" id="loginBtn">登 录</button>
+                    </form>
+
+                    <div style="text-align:center;font-size:14px;color:#737373;margin-top:32px;">
+                        还没有账号？
+                        <a href="#" style="color:#171717;font-weight:500;text-decoration:none;" onclick="switchTab('register');return false;">立即注册</a>
+                    </div>
+                </div>
+
+                <!-- ===== REGISTER FORM ===== -->
+                <div class="form-switch" id="registerForm">
+                    <div style="text-align:center;margin-bottom:40px;">
+                        <h1 style="font-size:30px;font-weight:700;margin-bottom:8px;color:#171717;">创建账号</h1>
+                        <p style="font-size:14px;color:#737373;">填写信息注册新账号</p>
+                    </div>
+
+                    <div class="success-msg" id="registerSuccess"></div>
+                    <div class="error-msg" id="registerError"></div>
+
+                    <form onsubmit="handleRegister(event)" style="display:flex;flex-direction:column;gap:20px;">
+                        <div>
+                            <label style="display:block;font-size:14px;font-weight:500;margin-bottom:8px;color:#171717;">用户名 <span style="color:#a3a3a3;">*</span></label>
+                            <input type="text" id="regUsername" class="input-field" placeholder="请输入用户名" autocomplete="off" required
+                                onfocus="onFieldFocus()" onblur="onFieldBlur()" oninput="onFieldInput()">
+                        </div>
+
+                        <div>
+                            <label style="display:block;font-size:14px;font-weight:500;margin-bottom:8px;color:#171717;">手机号 <span style="color:#a3a3a3;">(选填)</span></label>
+                            <input type="tel" id="regPhone" class="input-field" placeholder="请输入手机号（选填）" autocomplete="off"
+                                onfocus="onFieldFocus()" onblur="onFieldBlur()" oninput="onFieldInput()">
+                        </div>
+
+                        <div>
+                            <label style="display:block;font-size:14px;font-weight:500;margin-bottom:8px;color:#171717;">密码 <span style="color:#a3a3a3;">*</span></label>
+                            <div class="password-wrapper">
+                                <input type="password" id="regPassword" class="input-field" placeholder="••••••••" required
+                                    oninput="onRegPasswordInput()">
+                                <button type="button" class="password-toggle" onclick="togglePassword('regPassword', this)">
+                                    <i data-lucide="eye" style="width:20px;height:20px;"></i>
+                                </button>
+                            </div>
+                            <div id="pwStrengthBar" class="pw-strength-bar" style="background:#e5e5e5;width:100%;"></div>
+                            <div id="pwStrengthText" style="font-size:12px;color:#a3a3a3;margin-top:4px;"></div>
+                            <ul id="pwRequirements" style="font-size:12px;color:#a3a3a3;margin-top:4px;padding-left:16px;display:none;">
+                                <li id="reqLen" style="color:#a3a3a3;">至少8个字符</li>
+                                <li id="reqTypes" style="color:#a3a3a3;">包含大写字母、小写字母、数字、特殊字符中至少3种</li>
+                                <li id="reqSpace" style="color:#a3a3a3;">不能包含空格</li>
+                            </ul>
+                        </div>
+
+                        <div>
+                            <label style="display:block;font-size:14px;font-weight:500;margin-bottom:8px;color:#171717;">确认密码 <span style="color:#a3a3a3;">*</span></label>
+                            <input type="password" id="regConfirmPassword" class="input-field" placeholder="再次输入密码" required>
+                        </div>
+
+                        <button type="submit" class="btn-primary" id="registerBtn">注 册</button>
+                    </form>
+
+                    <div style="text-align:center;font-size:14px;color:#737373;margin-top:32px;">
+                        已有账号？
+                        <a href="#" style="color:#171717;font-weight:500;text-decoration:none;" onclick="switchTab('login');return false;">立即登录</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ===== REDIRECT LOGIC =====
+        var REDIRECT_URL = getQueryParam('redirect') || getQueryParam('next') || '/client';
+
+        function getQueryParam(name) {
+            const params = new URLSearchParams(window.location.search);
+            return params.get(name);
+        }
+
+        // ===== GLOBAL STATE =====
+        let mouseX = 0, mouseY = 0;
+        let isTyping = false;
+        let isLookingAtEachOther = false;
+        let isPurplePeeking = false;
+        let showPassword = false;
+        let passwordLength = 0;
+        const purpleChar = document.getElementById('purpleChar');
+        const purpleEyes = document.getElementById('purpleEyes');
+        const blackEyes = document.getElementById('blackEyes');
+        const orangeEyes = document.getElementById('orangeEyes');
+        const yellowEyes = document.getElementById('yellowEyes');
+
+        // ===== MOUSE TRACKING =====
+        document.addEventListener('mousemove', (e) => {
+            mouseX = e.clientX;
+            mouseY = e.clientY;
+            updateAllEyes();
+        });
+
+        function getEyeCenter(el) {
+            const r = el.getBoundingClientRect();
+            return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        }
+
+        function calcPupil(el, maxDist, fx, fy) {
+            if (fx !== undefined && fy !== undefined) return { x: fx, y: fy };
+            const c = getEyeCenter(el);
+            const dx = mouseX - c.x, dy = mouseY - c.y;
+            const dist = Math.min(Math.sqrt(dx * dx + dy * dy), maxDist);
+            const angle = Math.atan2(dy, dx);
+            return { x: Math.cos(angle) * dist, y: Math.sin(angle) * dist };
+        }
+
+        function updateAllEyes() {
+            purpleEyes.querySelectorAll('.eye-white .pupil').forEach(p => {
+                const pos = calcPupil(p.parentElement, 5,
+                    (showPassword && passwordLength > 0) ? (isPurplePeeking ? 4 : -4) : (isLookingAtEachOther ? 3 : undefined),
+                    (showPassword && passwordLength > 0) ? (isPurplePeeking ? 5 : -4) : (isLookingAtEachOther ? 4 : undefined));
+                p.style.transform = `translate(${pos.x}px, ${pos.y}px)`;
+            });
+
+            blackEyes.querySelectorAll('.eye-white .pupil').forEach(p => {
+                const pos = calcPupil(p.parentElement, 4,
+                    (showPassword && passwordLength > 0) ? -4 : (isLookingAtEachOther ? 0 : undefined),
+                    (showPassword && passwordLength > 0) ? -4 : (isLookingAtEachOther ? -4 : undefined));
+                p.style.transform = `translate(${pos.x}px, ${pos.y}px)`;
+            });
+
+            const orangeChar = document.getElementById('orangeChar');
+            orangeEyes.querySelectorAll('.pupil').forEach(p => {
+                const pos = calcPupil(orangeChar, 5,
+                    (showPassword && passwordLength > 0) ? -5 : undefined,
+                    (showPassword && passwordLength > 0) ? -4 : undefined);
+                p.style.transform = `translate(${pos.x}px, ${pos.y}px)`;
+            });
+
+            const yellowChar = document.getElementById('yellowChar');
+            yellowEyes.querySelectorAll('.pupil').forEach(p => {
+                const pos = calcPupil(yellowChar, 5,
+                    (showPassword && passwordLength > 0) ? -5 : undefined,
+                    (showPassword && passwordLength > 0) ? -4 : undefined);
+                p.style.transform = `translate(${pos.x}px, ${pos.y}px)`;
+            });
+        }
+
+        function calcBodySkew(el) {
+            const r = el.getBoundingClientRect();
+            const dx = mouseX - (r.left + r.width / 2);
+            return Math.max(-6, Math.min(6, -dx / 120));
+        }
+
+        function updateBodyLean() {
+            const blackChar = document.getElementById('blackChar');
+            const orangeChar = document.getElementById('orangeChar');
+            const yellowChar = document.getElementById('yellowChar');
+
+            if (showPassword && passwordLength > 0) {
+                purpleChar.style.transform = 'skewX(0deg)';
+                blackChar.style.transform = 'skewX(0deg)';
+                orangeChar.style.transform = 'skewX(0deg)';
+                yellowChar.style.transform = 'skewX(0deg)';
+            } else if (isLookingAtEachOther) {
+                purpleChar.style.transform = `skewX(${calcBodySkew(purpleChar)-12}deg) translateX(40px)`;
+                blackChar.style.transform = `skewX(${calcBodySkew(blackChar)*1.5+10}deg) translateX(20px)`;
+                orangeChar.style.transform = `skewX(${calcBodySkew(orangeChar)}deg)`;
+                yellowChar.style.transform = `skewX(${calcBodySkew(yellowChar)}deg)`;
+            } else if (isTyping) {
+                purpleChar.style.transform = `skewX(${calcBodySkew(purpleChar)-12}deg) translateX(40px)`;
+                blackChar.style.transform = `skewX(${calcBodySkew(blackChar)*1.5}deg)`;
+                orangeChar.style.transform = `skewX(${calcBodySkew(orangeChar)}deg)`;
+                yellowChar.style.transform = `skewX(${calcBodySkew(yellowChar)}deg)`;
+            } else {
+                purpleChar.style.transform = `skewX(${calcBodySkew(purpleChar)}deg)`;
+                blackChar.style.transform = `skewX(${calcBodySkew(blackChar)}deg)`;
+                orangeChar.style.transform = `skewX(${calcBodySkew(orangeChar)}deg)`;
+                yellowChar.style.transform = `skewX(${calcBodySkew(yellowChar)}deg)`;
+            }
+            updateAllEyes();
+        }
+
+        setInterval(updateBodyLean, 100);
+
+        function onFieldFocus() {
+            isTyping = true;
+            isLookingAtEachOther = true;
+            purpleChar.style.height = '440px';
+            purpleEyes.style.left = '55px'; purpleEyes.style.top = '65px';
+            blackEyes.style.left = '32px'; blackEyes.style.top = '12px';
+            updateAllEyes();
+        }
+
+        function onFieldBlur() {
+            isTyping = false;
+            setTimeout(() => {
+                isLookingAtEachOther = false;
+                purpleChar.style.height = '400px';
+                purpleEyes.style.left = '45px'; purpleEyes.style.top = '40px';
+                blackEyes.style.left = '26px'; blackEyes.style.top = '32px';
+                updateAllEyes();
+            }, 200);
+        }
+
+        function onFieldInput() {
+            isTyping = isLookingAtEachOther = true;
+            purpleChar.style.height = '440px';
+            purpleEyes.style.left = '55px'; purpleEyes.style.top = '65px';
+            blackEyes.style.left = '32px'; blackEyes.style.top = '12px';
+            updateAllEyes();
+            clearTimeout(window._typingTimer);
+            window._typingTimer = setTimeout(() => {
+                isLookingAtEachOther = false;
+                if (isTyping) { purpleChar.style.height = '440px'; }
+                updateAllEyes();
+            }, 1000);
+        }
+
