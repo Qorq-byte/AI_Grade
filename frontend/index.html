@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="祺orQ - AI智能绩效评价系统，14步标准化评价流程，从资料整理到最终报告全自动生成。支持财政、人大、审计多视角分析，内置三级指标体系，一键导出Word/PDF专业报告。">
+    <meta name="keywords" content="AI绩效评价,绩效评价报告,财政部门,指标体系,预算绩效,绩效管理,AI报告生成">
+    <meta name="robots" content="index, follow">
+    <meta property="og:title" content="祺orQ - AI智能绩效评价系统">
+    <meta property="og:description" content="AI驱动的全流程绩效评价，分钟级生成符合财政部规范的完整评价报告">
+    <meta property="og:type" content="website">
+    <title>云海睿评 - AI智能绩效评价系统</title>
+
+    <!-- Preconnect for performance -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://db.onlinewebfonts.com">
+    <link rel="dns-prefetch" href="https://unpkg.com">
+
+    <!-- Fonts per design spec -->
+    <link rel="stylesheet" href="https://db.onlinewebfonts.com/c/04e6981992c0e2e7642af2074ebe3901?family=Helvetica+Now+Display+Bold" media="print" onload="this.media='all'">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+    <!-- Lucide Icons (deferred) -->
+    <script src="https://unpkg.com/lucide@latest" defer></script>
+
+    <style>
+        :root {
+            --font-heading: 'Helvetica Now Display Bold', 'Inter', sans-serif;
+            --font-body: 'Inter', sans-serif;
+            --color-text: #192837;
+            --color-accent: #7342E2;
+            --color-login-bg: #F2F2EE;
+            --color-bg-light: #FAFAF8;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
+
+        body {
+            font-family: var(--font-body);
+            color: var(--color-text);
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+            background: #F5F5F3;
+        }
+
+        /* ===== NAVBAR ===== */
+        .navbar {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            z-index: 100;
+            transition: background 0.3s ease, box-shadow 0.3s ease;
+        }
+        .navbar.scrolled {
+            background: rgba(255,255,255,0.82);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            box-shadow: 0 1px 0 rgba(0,0,0,0.04);
+        }
+        .navbar-inner {
+            max-width: 1280px;
+            margin: 0 auto;
+            padding: 16px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        @media (min-width: 640px) { .navbar-inner { padding: 20px 32px; } }
+
+        /* Logo */
+        .logo-link {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            text-decoration: none;
+            z-index: 110;
+        }
+        .logo-svg {
+            width: 32px; height: 32px;
+            flex-shrink: 0;
+        }
+        .logo-svg path { fill: var(--color-text); }
+        .logo-text {
+            font-family: var(--font-heading);
+            font-size: 17px;
+            letter-spacing: -0.01em;
+            color: var(--color-text);
+        }
+
+        /* Desktop Nav Links */
+        .nav-links {
+            display: none;
+            align-items: center;
+            gap: 36px;
+            list-style: none;
+        }
+        @media (min-width: 768px) { .nav-links { display: flex; } }
+        .nav-links a {
+            color: var(--color-text);
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 500;
+            opacity: 0.7;
+            transition: opacity 0.2s;
+        }
+        .nav-links a:hover { opacity: 1; }
+
+        /* Desktop Action Buttons */
+        .nav-actions {
+            display: none;
+            align-items: center;
+            gap: 10px;
+            z-index: 110;
+        }
+        @media (min-width: 768px) { .nav-actions { display: flex; } }
+
+        .btn-nav-primary {
+            padding: 10px 20px;
+            border-radius: 9999px;
+            font-size: 14px;
+            font-weight: 600;
+            font-family: var(--font-body);
+            cursor: pointer;
+            border: none;
+            background: var(--color-accent);
+            color: white;
+            transition: all 0.25s;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        @media (min-width: 640px) { .btn-nav-primary { padding: 10px 22px; } }
+        .btn-nav-primary:hover { transform: scale(1.03); filter: brightness(1.1); }
+
+        .btn-nav-secondary {
+            padding: 10px 20px;
+            border-radius: 9999px;
+            font-size: 14px;
+            font-weight: 500;
+            font-family: var(--font-body);
+            cursor: pointer;
+            border: none;
+            background: var(--color-login-bg);
+            color: var(--color-text);
+            transition: all 0.25s;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        @media (min-width: 640px) { .btn-nav-secondary { padding: 10px 22px; } }
+        .btn-nav-secondary:hover { filter: brightness(0.96); }
+
+        /* Mobile Toggle */
+        .mobile-toggle {
+            display: flex;
+            align-items: center; justify-content: center;
+            width: 40px; height: 40px;
+            border-radius: 10px;
+            border: 1px solid rgba(25,40,55,0.12);
+            background: transparent;
+            color: var(--color-text);
+            cursor: pointer;
+            z-index: 110;
+            transition: background 0.2s;
+        }
+        .mobile-toggle:hover { background: rgba(25,40,55,0.04); }
+        @media (min-width: 768px) { .mobile-toggle { display: none; } }
+
+        /* Mobile Overlay */
+        .mobile-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(25,40,55,0.35);
+            backdrop-filter: blur(4px);
+            -webkit-backdrop-filter: blur(4px);
+            z-index: 105;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.35s ease;
+        }
+        .mobile-overlay.open { opacity: 1; pointer-events: all; }
+
+        /* Mobile Sheet - exact per design spec */
+        .mobile-sheet {
+            position: fixed;
+            top: 0; right: 0;
+            width: min(88vw, 360px);
+            height: 100dvh;
+            background: #CFC8C5;
+            z-index: 106;
+            box-shadow: -12px 0 48px rgba(25,40,55,0.18);
+            transform: translateX(100%);
+            transition: transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+            display: flex;
+            flex-direction: column;
+        }
+        .mobile-sheet.open { transform: translateX(0); }
+
+        .mobile-sheet-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 20px 24px;
+        }
+        .mobile-sheet-header .logo-svg path { fill: var(--color-text); }
+        .mobile-sheet-header .logo-text { color: var(--color-text); }
+        .mobile-sheet-divider {
+            height: 1px;
+            background: rgba(25,40,55,0.1);
+            margin: 0 24px;
+        }
+        .mobile-sheet-close {
+            width: 36px; height: 36px;
+            border-radius: 8px;
+            border: 1px solid rgba(25,40,55,0.12);
+            background: transparent;
+            color: var(--color-text);
+            cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .mobile-sheet-nav {
+            flex: 1;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .mobile-sheet-nav a {
+            display: block;
+            padding: 14px 16px;
+            border-radius: 10px;
+            color: var(--color-text);
+            text-decoration: none;
+            font-size: 15px;
+            font-weight: 500;
+            opacity: 0.75;
+            transition: all 0.2s;
+        }
+        .mobile-sheet-nav a:hover {
+            background: rgba(25,40,55,0.04);
+            opacity: 1;
+        }
+        /* Staggered animation delays for mobile nav items */
+        .mobile-sheet-nav a:nth-child(1) { transition-delay: 0.18s; }
+        .mobile-sheet-nav a:nth-child(2) { transition-delay: 0.25s; }
+        .mobile-sheet-nav a:nth-child(3) { transition-delay: 0.32s; }
+        .mobile-sheet-nav a:nth-child(4) { transition-delay: 0.39s; }
+        .mobile-sheet-nav a:nth-child(5) { transition-delay: 0.46s; }
+
+        .mobile-sheet-cta {
+            padding: 20px 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .mobile-sheet-cta .btn-nav-primary,
+        .mobile-sheet-cta .btn-nav-secondary {
+            width: 100%;
+            justify-content: center;
+            padding: 13px;
+            font-size: 15px;
+        }
+
+        /* ===== HERO SECTION ===== */
+        .hero-section {
+            position: relative;
+            width: 100%;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Background video - per design spec: absolute inset-0, object-cover */
+        .hero-video {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            z-index: 0;
+            opacity: 0;
+            transition: opacity 0.6s ease;
+        }
+        .hero-video.loaded { opacity: 1; }
+
+        /* Fallback background shown when video is not available */
+        .hero-video-fallback {
+            position: absolute;
+            inset: 0;
+            z-index: 0;
+            background: linear-gradient(160deg, #E8E6E1 0%, #D5D3CE 20%, #C8C6C0 40%, #D9D6D1 60%, #E0DDD8 80%, #EAE8E3 100%);
+            background-size: 400% 400%;
+            animation: bgShift 12s ease-in-out infinite alternate;
+            will-change: background-position;
+        }
+        @keyframes bgShift {
+            0% { background-position: 0% 0%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 100%; }
+        }
+
+        /* Subtle gradient overlay to ensure dark text readability on video */
+        .hero-video-overlay {
+            position: absolute;
+            inset: 0;
+            z-index: 1;
+            background:
+                linear-gradient(180deg, rgba(245,245,243,0.3) 0%, rgba(245,245,243,0.15) 30%, rgba(245,245,243,0.4) 100%);
+        }
+
