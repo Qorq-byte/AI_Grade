@@ -628,3 +628,304 @@
 </head>
 <body>
 
+    <!-- ========== NAVBAR ========== -->
+    <nav class="navbar" id="navbar">
+        <div class="navbar-inner">
+            <!-- Logo (exact SVG from design spec) -->
+            <a href="/" class="logo-link">
+                <svg class="logo-svg" xmlns="http://www.w3.org/2000/svg" fill="none" overflow="visible" viewBox="0 0 256 256">
+                    <path d="M 64 128 L 64.5 128 L 32 95 L 0 64 L 0 0 L 64 0 L 128 64 L 128 64.5 L 161 32 L 192 0 L 256 0 L 256 64 L 192 128 L 128 128 L 128 192 L 96 223 L 63.5 256 L 0 256 L 0 192 Z M 256 192 L 224 223 L 191.5 256 L 128 256 L 128 192 L 192 128 L 256 128 Z"/>
+                </svg>
+                <span class="logo-text">祺orQ</span>
+            </a>
+
+            <!-- Center nav links -->
+            <ul class="nav-links">
+                <li><a href="#features">核心功能</a></li>
+                <li><a href="#workflow">评价流程</a></li>
+                <li><a href="/client">进入系统</a></li>
+                <li><a href="#about">动态</a></li>
+                <li><a href="#cta">帮助</a></li>
+            </ul>
+
+            <!-- Right action buttons -->
+            <div class="nav-actions">
+                <a href="/login" class="btn-nav-primary">免费注册</a>
+                <a href="/login" class="btn-nav-secondary">登录</a>
+            </div>
+
+            <!-- Mobile hamburger -->
+            <button class="mobile-toggle" id="mobileToggle" onclick="toggleMobileMenu()" aria-label="菜单">
+                <i data-lucide="menu" style="width:22px;height:22px"></i>
+            </button>
+        </div>
+    </nav>
+
+    <!-- Mobile Overlay -->
+    <div class="mobile-overlay" id="mobileOverlay" onclick="toggleMobileMenu()"></div>
+
+    <!-- Mobile Sheet - exact per design spec -->
+    <div class="mobile-sheet" id="mobileSheet">
+        <div class="mobile-sheet-header">
+            <div class="logo-link">
+                <svg class="logo-svg" xmlns="http://www.w3.org/2000/svg" fill="none" overflow="visible" viewBox="0 0 256 256">
+                    <path d="M 64 128 L 64.5 128 L 32 95 L 0 64 L 0 0 L 64 0 L 128 64 L 128 64.5 L 161 32 L 192 0 L 256 0 L 256 64 L 192 128 L 128 128 L 128 192 L 96 223 L 63.5 256 L 0 256 L 0 192 Z M 256 192 L 224 223 L 191.5 256 L 128 256 L 128 192 L 192 128 L 256 128 Z"/>
+                </svg>
+                <span class="logo-text">祺orQ</span>
+            </div>
+            <button class="mobile-sheet-close" onclick="toggleMobileMenu()">
+                <i data-lucide="x" style="width:20px;height:20px"></i>
+            </button>
+        </div>
+        <div class="mobile-sheet-divider"></div>
+        <div class="mobile-sheet-nav">
+            <a href="#features" onclick="toggleMobileMenu()">核心功能</a>
+            <a href="#workflow" onclick="toggleMobileMenu()">评价流程</a>
+            <a href="/client" onclick="toggleMobileMenu()">进入系统</a>
+            <a href="#about" onclick="toggleMobileMenu()">动态</a>
+            <a href="#cta" onclick="toggleMobileMenu()">帮助</a>
+        </div>
+        <div class="mobile-sheet-cta">
+            <a href="/login" class="btn-nav-primary">免费注册</a>
+            <a href="/login" class="btn-nav-secondary">登录</a>
+        </div>
+    </div>
+
+    <!-- ========== HERO SECTION ========== -->
+    <section class="hero-section">
+        <!-- Background video per design spec -->
+        <div class="hero-video-fallback"></div>
+        <video class="hero-video" id="heroVideo" autoplay loop muted playsinline preload="metadata" loading="lazy">
+            <source src="https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260518_003132_8b7edcb6-c64d-4a52-a9ca-879942e122ad.mp4" type="video/mp4">
+        </video>
+        <div class="hero-video-overlay"></div>
+
+        <!-- Hero content per design layout spec -->
+        <div class="hero-content">
+            <div class="hero-text-block">
+                <h1 class="hero-heading fade-up d0">
+                    用人工智能
+                    <i data-lucide="zap" class="icon-inline"></i>
+                    驱动绩效评价
+                    <br>高效精准智能
+                </h1>
+                <p class="hero-subtext fade-up d1">
+                    14步标准化评价流程，从资料整理到最终报告全自动生成。
+                    支持财政、人大、审计多视角分析，内置三级指标体系，一键导出Word/PDF专业报告。
+                </p>
+                <div class="hero-cta-group fade-up d2">
+                    <a href="/login" class="btn-hero-cta">
+                        免费开始使用
+                        <i data-lucide="arrow-right-circle" style="width:20px;height:20px"></i>
+                    </a>
+                    <a href="#features" class="btn-hero-secondary">
+                        <i data-lucide="play-circle" style="width:18px;height:18px"></i>
+                        了解更多
+                    </a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ========== FEATURES SECTION ========== -->
+    <section class="page-section" id="features">
+        <div class="section-container">
+            <span class="section-label fade-up">核心功能</span>
+            <h2 class="section-title fade-up d1">AI驱动的全流程绩效评价</h2>
+            <p class="section-desc fade-up d2">基于LangGraph状态图引擎与大语言模型，实现从数据采集到报告导出的完整智能化闭环</p>
+            <div class="features-grid">
+                <div class="feature-card fade-up d0">
+                    <div class="feature-icon purple"><i data-lucide="file-text" style="width:20px;height:20px"></i></div>
+                    <h3>智能文件解析</h3>
+                    <p>支持 PDF / Word / Excel / TXT / 图片等多格式文件上传，自动提取关键信息</p>
+                </div>
+                <div class="feature-card fade-up d0">
+                    <div class="feature-icon green"><i data-lucide="git-branch" style="width:20px;height:20px"></i></div>
+                    <h3>三级指标体系</h3>
+                    <p>自动构建项目支出绩效评价三级指标体系，含分值分配与评分标准</p>
+                </div>
+                <div class="feature-card fade-up d1">
+                    <div class="feature-icon blue"><i data-lucide="eye" style="width:20px;height:20px"></i></div>
+                    <h3>多视角分析</h3>
+                    <p>支持财政视角、人大视角、审计视角三方面分析，自动提取扣分项</p>
+                </div>
+                <div class="feature-card fade-up d1">
+                    <div class="feature-icon amber"><i data-lucide="clipboard-check" style="width:20px;height:20px"></i></div>
+                    <h3>智能问卷生成</h3>
+                    <p>基于指标体系自动生成里克特5级量表问卷，支持在线填写与结果汇总</p>
+                </div>
+                <div class="feature-card fade-up d1">
+                    <div class="feature-icon purple"><i data-lucide="settings-2" style="width:20px;height:20px"></i></div>
+                    <h3>模型灵活切换</h3>
+                    <p>支持多种大模型，可调节温度和参数，满足不同场景需求</p>
+                </div>
+                <div class="feature-card fade-up d1">
+                    <div class="feature-icon green"><i data-lucide="download" style="width:20px;height:20px"></i></div>
+                    <h3>一键导出报告</h3>
+                    <p>支持Word和PDF双格式导出，包含8大标准章节，排版规范</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ========== WORKFLOW SECTION ========== -->
+    <section class="page-section section-dark" id="workflow">
+        <div class="section-container">
+            <span class="section-label fade-up">评价流程</span>
+            <h2 class="section-title fade-up d1">14步标准化工作流</h2>
+            <p class="section-desc fade-up d2">从资料整理到最终报告组装，AI自动完成全部14个步骤，关键节点支持人工审核确认</p>
+            <div class="workflow-grid">
+                <div class="workflow-step fade-up d0"><div class="workflow-step-num">1</div><div class="workflow-step-name">整理所需资料清单</div></div>
+                <div class="workflow-step fade-up d0"><div class="workflow-step-num">2</div><div class="workflow-step-name">提取核心有效信息</div></div>
+                <div class="workflow-step fade-up d0"><div class="workflow-step-num">3</div><div class="workflow-step-name">构建评价指标体系</div></div>
+                <div class="workflow-step fade-up d0"><div class="workflow-step-num">4</div><div class="workflow-step-name">生成各指标分值</div></div>
+                <div class="workflow-step fade-up d0"><div class="workflow-step-num">5</div><div class="workflow-step-name">生成各指标评分标准</div></div>
+                <div class="workflow-step fade-up d1"><div class="workflow-step-num">6</div><div class="workflow-step-name">生成评价指标体系表</div></div>
+                <div class="workflow-step fade-up d1"><div class="workflow-step-num">7</div><div class="workflow-step-name">生成指标得分分析</div></div>
+                <div class="workflow-step fade-up d1"><div class="workflow-step-num">8</div><div class="workflow-step-name">总结主要经验做法</div></div>
+                <div class="workflow-step fade-up d1"><div class="workflow-step-num">9</div><div class="workflow-step-name">分析存在问题原因</div></div>
+                <div class="workflow-step fade-up d1"><div class="workflow-step-num">10</div><div class="workflow-step-name">提出改进建议</div></div>
+                <div class="workflow-step fade-up d1"><div class="workflow-step-num">11</div><div class="workflow-step-name">综合评价分析结论</div></div>
+                <div class="workflow-step fade-up d2"><div class="workflow-step-num">12</div><div class="workflow-step-name">生成基本情况</div></div>
+                <div class="workflow-step fade-up d2"><div class="workflow-step-num">13</div><div class="workflow-step-name">生成评价工作简介</div></div>
+                <div class="workflow-step fade-up d2"><div class="workflow-step-num">14</div><div class="workflow-step-name">组装最终报告</div></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ========== ABOUT SECTION ========== -->
+    <section class="page-section" id="about">
+        <div class="section-container" style="text-align:center;max-width:640px;margin:0 auto">
+            <span class="section-label fade-up">系统亮点</span>
+            <h2 class="section-title fade-up d1">为什么选择云海睿评</h2>
+            <p class="section-desc fade-up d2" style="margin:0 auto 40px">
+                传统绩效评价耗时数周，祺orQ利用AI大模型将整个过程压缩至分钟级。
+                上传资料即可自动生成符合财政部规范的完整评价报告。
+            </p>
+            <div style="display:flex;flex-wrap:wrap;gap:28px;justify-content:center">
+                <div class="fade-up d0" style="text-align:center">
+                    <div style="font-family:var(--font-heading);font-size:36px;color:var(--color-accent);letter-spacing:-0.02em">分钟级</div>
+                    <div style="font-size:13px;color:rgba(25,40,55,0.5);margin-top:6px">报告生成速度</div>
+                </div>
+                <div class="fade-up d1" style="text-align:center">
+                    <div style="font-family:var(--font-heading);font-size:36px;color:var(--color-accent);letter-spacing:-0.02em">3级</div>
+                    <div style="font-size:13px;color:rgba(25,40,55,0.5);margin-top:6px">层次化指标体系</div>
+                </div>
+                <div class="fade-up d2" style="text-align:center">
+                    <div style="font-family:var(--font-heading);font-size:36px;color:var(--color-accent);letter-spacing:-0.02em">3视角</div>
+                    <div style="font-size:13px;color:rgba(25,40,55,0.5);margin-top:6px">多维分析维度</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ========== CTA SECTION ========== -->
+    <section class="cta-section" id="cta">
+        <div class="cta-card fade-up">
+            <span class="section-label">开始使用</span>
+            <h2>准备好提升绩效评价效率了吗？</h2>
+            <p>注册账号即可免费体验AI驱动的全流程绩效评价。上传资料，14步自动完成，专业报告一键导出。</p>
+            <a href="/login" class="btn-hero-cta">
+                免费开始使用
+                <i data-lucide="arrow-right-circle" style="width:20px;height:20px"></i>
+            </a>
+        </div>
+    </section>
+
+    <!-- ========== FOOTER ========== -->
+    <footer class="footer">
+        <div class="footer-inner">
+            <div class="footer-copy">&copy; 2026 云海睿评 · AI智能绩效评价系统</div>
+            <ul class="footer-links">
+                <li><a href="/login">登录</a></li>
+                <li><a href="/client">客户端</a></li>
+                <li><a href="/admin">管理端</a></li>
+                <li><a href="#">隐私政策</a></li>
+                <li><a href="#">服务条款</a></li>
+            </ul>
+        </div>
+    </footer>
+
+    <script>
+        // ===== NAVBAR SCROLL (throttled) =====
+        var navbar = document.getElementById('navbar');
+        var scrollTicking = false;
+        window.addEventListener('scroll', function() {
+            if (!scrollTicking) {
+                requestAnimationFrame(function() {
+                    if (window.scrollY > 40) navbar.classList.add('scrolled');
+                    else navbar.classList.remove('scrolled');
+                    scrollTicking = false;
+                });
+                scrollTicking = true;
+            }
+        });
+
+        // ===== MOBILE MENU =====
+        var mobileOpen = false;
+        function toggleMobileMenu() {
+            mobileOpen = !mobileOpen;
+            var sheet = document.getElementById('mobileSheet');
+            var overlay = document.getElementById('mobileOverlay');
+            var btn = document.getElementById('mobileToggle');
+            if (mobileOpen) {
+                sheet.classList.add('open');
+                overlay.classList.add('open');
+                btn.innerHTML = '<i data-lucide="x" style="width:22px;height:22px"></i>';
+            } else {
+                sheet.classList.remove('open');
+                overlay.classList.remove('open');
+                btn.innerHTML = '<i data-lucide="menu" style="width:22px;height:22px"></i>';
+            }
+            try{lucide.createIcons()}catch(e){};
+        }
+
+        // ===== SCROLL ANIMATIONS =====
+        (function() {
+            var observer = new IntersectionObserver(function(entries) {
+                entries.forEach(function(entry) {
+                    if (entry.isIntersecting) {
+                        entry.target.classList.add('visible');
+                        observer.unobserve(entry.target);
+                    }
+                });
+            }, { threshold: 0.1, rootMargin: '0px 0px -30px 0px' });
+
+            document.querySelectorAll('.fade-up').forEach(function(el) {
+                observer.observe(el);
+            });
+        })();
+
+        // ===== LOGIN STATE CHECK =====
+        (function() {
+            var token = sessionStorage.getItem('token') || localStorage.getItem('token');
+            if (token) {
+                var navActions = document.querySelector('.nav-actions');
+                var mobileCta = document.querySelector('.mobile-sheet-cta');
+                var html = '<a href="/client" class="btn-nav-secondary">进入系统</a>' +
+                           '<a href="/client" class="btn-nav-primary">控制台</a>';
+                if (navActions) navActions.innerHTML = html;
+                if (mobileCta) mobileCta.innerHTML = '<a href="/client" class="btn-nav-primary">进入控制台</a>';
+                try{lucide.createIcons()}catch(e){};
+            }
+        })();
+
+        // ===== HERO VIDEO LOAD DETECTION =====
+        (function() {
+            var video = document.getElementById('heroVideo');
+            if (video) {
+                video.addEventListener('loadeddata', function() {
+                    video.classList.add('loaded');
+                });
+                setTimeout(function() {
+                    if (!video.classList.contains('loaded')) {
+                        video.style.display = 'none';
+                    }
+                }, 4000);
+            }
+        })();
+
+        try{lucide.createIcons()}catch(e){};
+    </script>
+</body>
+</html>
