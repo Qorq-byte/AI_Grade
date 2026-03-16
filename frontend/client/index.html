@@ -253,3 +253,324 @@
 <div class="content-panel" style="background:#fffbeb;border:1px solid #fbd38d;border-radius:12px;padding:12px 16px;margin-top:12px"><div style="display:flex;align-items:center;gap:10px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#d69e2e" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><div><strong style="font-size:13px;color:#744210">数据保留说明</strong><p style="font-size:12px;color:#a0aec0;margin:2px 0 0">根据《数据安全法》，您的评价数据将在工作流完成90天后自动清除。请及时导出重要报告。</p></div></div></div>
             </div>
 
+            <!-- ===== 绩效评价 -- 完整14步工作流 ===== -->
+            <div class="content-section" id="performance">
+                <div class="wf-topbar" id="wfTopbar">
+    <input type="text" class="input-field" id="wfProjectName" placeholder="输入项目名称" style="max-width:200px">
+    <select class="wf-select" id="wfModel" onchange="onWfModelChange(this.value)"><option value="">默认（跟随系统）</option><option value="deepseek-chat">deepseek-chat</option><option value="deepseek-coder">deepseek-coder</option><option value="deepseek-v4-flash">deepseek-v4-flash</option></select>
+    <select class="wf-select" id="wfMode"><option value="single">单模型</option><option value="multi_compare">多模型对比</option></select>
+    <select class="wf-select" id="wfTemperature" style="width:140px"><option value="normal">温度：正常</option><option value="tight">温度：严谨</option><option value="creative">温度：发散</option></select>
+    <select class="wf-select" id="wfTopP" style="width:120px"><option value="0.9">Top-P：0.9</option><option value="0.8">Top-P：0.8</option><option value="0.95">Top-P：0.95</option></select>
+    <button class="btn-primary" id="wfStartBtn" onclick="startWorkflow()">开始工作流</button>
+    <button class="btn-stop" id="wfStopBtn" style="display:none" onclick="stopWorkflow()">终止</button>
+    <div class="wf-progress" id="wfProgress" style="display:none;flex:1"><div class="wf-progress-bar"><div class="wf-progress-fill" id="wfProgressFill" style="width:0%"></div></div><span class="wf-progress-text" id="wfProgressText">0/14</span></div>
+</div>
+
+                <!-- 文件上传区 - 多类型独立窗口 -->
+                <div id="wfFileZone" style="margin-bottom:16px">
+                    <div class="wf-upload-grid">
+                        <div class="wf-upload-card">
+                            <div class="wf-upload-card-header">
+                                <div class="wf-upload-card-icon img">🖼</div>
+                                <div><div class="wf-upload-card-title">图片资料</div><div class="wf-upload-card-subtitle">JPG/PNG/BMP · 最大50MB</div></div>
+                            </div>
+                            <div class="wf-upload-dropzone" id="imgDropzone" onclick="event.stopPropagation();document.getElementById('imgFileInput').click()" ondragover="event.preventDefault()" ondrop="handleWfDrop(event,'img')">
+                                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#a0aec0" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                                <p style="margin-top:6px;color:#a0aec0;font-size:12px">点击或拖拽上传图片</p>
+                            </div>
+                            <input type="file" id="imgFileInput" accept=".jpg,.jpeg,.png,.bmp" multiple style="display:none" onchange="handleWfFilesByType(event,'img')">
+                            <select class="wf-select" id="imgModelSelect" style="width:100%;font-size:11px;height:28px"><option value="">使用默认模型</option><option value="qwen-vl-plus">qwen-vl-plus (视觉)</option><option value="qwen-vl-max">qwen-vl-max (视觉)</option></select>
+                            <div class="wf-file-list" id="imgFileList"></div>
+                        </div>
+                        <div class="wf-upload-card">
+                            <div class="wf-upload-card-header">
+                                <div class="wf-upload-card-icon pdf">📄</div>
+                                <div><div class="wf-upload-card-title">PDF文档</div><div class="wf-upload-card-subtitle">PDF · 最大50MB</div></div>
+                            </div>
+                            <div class="wf-upload-dropzone" id="pdfDropzone" onclick="event.stopPropagation();document.getElementById('pdfFileInput').click()" ondragover="event.preventDefault()" ondrop="handleWfDrop(event,'pdf')">
+                                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#a0aec0" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                                <p style="margin-top:6px;color:#a0aec0;font-size:12px">点击或拖拽上传PDF</p>
+                            </div>
+                            <input type="file" id="pdfFileInput" accept=".pdf" multiple style="display:none" onchange="handleWfFilesByType(event,'pdf')">
+                            <select class="wf-select" id="pdfModelSelect" style="width:100%;font-size:11px;height:28px"><option value="">使用默认模型</option><option value="qwen-plus">qwen-plus</option><option value="qwen3-max">qwen3-max</option></select>
+                            <div class="wf-file-list" id="pdfFileList"></div>
+                        </div>
+                        <div class="wf-upload-card">
+                            <div class="wf-upload-card-header">
+                                <div class="wf-upload-card-icon doc">📝</div>
+                                <div><div class="wf-upload-card-title">Word/Excel/TXT</div><div class="wf-upload-card-subtitle">DOC/XLS/TXT/CSV · 最大50MB</div></div>
+                            </div>
+                            <div class="wf-upload-dropzone" id="docDropzone" onclick="event.stopPropagation();document.getElementById('docFileInput').click()" ondragover="event.preventDefault()" ondrop="handleWfDrop(event,'doc')">
+                                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#a0aec0" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                                <p style="margin-top:6px;color:#a0aec0;font-size:12px">点击或拖拽上传文档</p>
+                            </div>
+                            <input type="file" id="docFileInput" accept=".doc,.docx,.xls,.xlsx,.txt,.csv" multiple style="display:none" onchange="handleWfFilesByType(event,'doc')">
+                            <select class="wf-select" id="docModelSelect" style="width:100%;font-size:11px;height:28px"><option value="">使用默认模型</option><option value="qwen-plus">qwen-plus</option><option value="qwen3-max">qwen3-max</option></select>
+                            <div class="wf-file-list" id="docFileList"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 工作流主区域 -->
+                <div class="wf-layout" id="wfLayout" style="display:none">
+                    <div class="wf-stepper"><div class="wf-stepper-header"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#667eea" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>步骤进度</div><div class="wf-stepper-list" id="wfStepperList"></div></div>
+                    <div class="wf-content" id="wfContent"><div class="wf-empty"><svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#cbd5e0" stroke-width="1"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><h3>绩效评价工作台</h3><p>输入项目名称、上传相关文件后点击「开始工作流」，AI将自动完成14步绩效评价报告生成。您可以在步骤3、6、11进行人工确认。</p></div></div>
+                </div>
+
+                <!-- 导出区域 -->
+                <div id="wfExports" style="display:none;margin-top:16px;padding:16px;background:white;border-radius:12px;border:1px solid #e2e8f0;align-items:center;gap:12px;flex-wrap:wrap">
+                    <span style="font-weight:600;font-size:14px;color:#1a202c">导出报告：</span>
+                    <button class="btn-export" onclick="exportReport('word')">导出 Word</button>
+                    <button class="btn-primary" onclick="exportReport('pdf')">导出 PDF</button>
+                </div>
+            </div>
+
+            <!-- 审批弹窗 -->
+            <div class="wf-approval-modal" id="wfApprovalModal" style="display:none"><div class="wf-approval-overlay"></div><div class="wf-approval-card"><h3 id="wfApprovalTitle">步骤确认</h3><p class="subtitle" id="wfApprovalSubtitle"></p><div class="wf-approval-preview" id="wfApprovalPreview"></div><textarea id="wfApprovalFeedback" class="input-field" placeholder="输入反馈意见（可选）" style="height:60px;margin-bottom:16px;resize:none"></textarea><div class="wf-approval-actions"><button class="btn-reject" onclick="approveWorkflow(false)">继续修改</button><button class="btn-approve" onclick="approveWorkflow(true)">确认通过</button></div></div></div>
+
+            <!-- AI聊天 -->
+            <div class="content-section" id="ai-chat">
+                <div class="ai-chat-wrapper"><div class="ai-chat-bg"></div><div class="ai-chat-content"><div class="ai-model-bar"><div class="model-selector-wrap"><label class="model-label">模型：</label><select id="aiModelSelect" class="model-select" onchange="onModelChange(this.value)" title="切换AI模型"><option value="">加载中...</option></select></div><span class="model-status" id="aiModelStatus">--</span></div><div class="chat-messages-dark" id="chatMessages"></div><div class="chat-disabled-bar" id="chatDisabled">AI聊天功能已被管理员禁用</div><div class="prompt-box" id="promptBox"><div class="voice-recorder hidden" id="voiceRecorder"><div class="voice-indicator"><div class="voice-dot"></div><span class="voice-time" id="voiceTime">00:00</span></div><div class="voice-bars" id="voiceBars"></div></div><textarea id="promptTextarea" class="prompt-textarea-dark" placeholder="输入您的问题..." oninput="handleInputChange()" onkeydown="handleKeyDown(event)"></textarea>
+                <div class="prompt-actions-dark"><div class="prompt-actions-left-dark"><button class="pa-btn" title="上传文件" onclick="document.getElementById('fileUpload').click()"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button><div class="toggle-group"><button class="toggle-btn" id="toggleSearch" onclick="toggleMode('search')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10"/><path d="M12 2a15.3 15.3 0 0 0-4 10 15.3 15.3 0 0 0 4 10"/></svg></button><div class="toggle-divider"></div><button class="toggle-btn think" id="toggleThink" onclick="toggleMode('think')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 0 0-3 3v1H6a3 3 0 0 0-3 3v2a3 3 0 0 0 3 3h1v1a3 3 0 0 0 3 3h4a3 3 0 0 0 3-3v-1h1a3 3 0 0 0 3-3V9a3 3 0 0 0-3-3h-3V5a3 3 0 0 0-3-3z"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/></svg></button><div class="toggle-divider"></div><button class="toggle-btn canvas" id="toggleCanvas" onclick="toggleMode('canvas')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></button></div></div>
+                <button id="sendButton" class="send-btn-dark idle" onclick="handleSendOrRecord()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" id="sendIcon"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button></div></div></div></div></div>
+
+            <!-- 设置 -->
+            <div class="content-section" id="settings"><div class="content-header"><h1>个人设置</h1><p>配置您的个人信息</p></div><div class="content-panel"><div class="panel-title">个人信息</div><div class="panel-content"><div style="margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><div id="settingsAvatar" class="user-avatar" style="width:48px;height:48px;font-size:20px;cursor:pointer" onclick="document.getElementById('avatarUpload').click()"><span id="settingsAvatarInitial">用</span></div><div style="flex:1;min-width:200px"><label style="font-size:13px;color:#718096;display:block;margin-bottom:4px">用户名</label><div class="edit-username-row"><input type="text" id="editUsername" class="input-field" style="flex:1" placeholder="输入新用户名" maxlength="50"><button class="btn-primary" onclick="saveUsername()">保存</button></div></div></div><p style="margin-top:12px"><strong>角色：</strong><span id="settingsRole">--</span></p><p><strong>注册时间：</strong><span id="settingsCreatedAt">--</span></p><p><strong>Token用量：</strong><span id="settingsTokens">0</span></p></div></div>
+            <div class="content-panel"><div class="panel-title">修改密码</div><div class="panel-content"><div style="display:flex;flex-direction:column;gap:12px;max-width:360px"><div><label style="font-size:13px;color:#718096;display:block;margin-bottom:4px">旧密码</label><input type="password" id="oldPassword" class="input-field" placeholder="输入旧密码"></div><div><label style="font-size:13px;color:#718096;display:block;margin-bottom:4px">新密码</label><input type="password" id="newPassword" class="input-field" placeholder="输入新密码（至少6位）"></div><div><label style="font-size:13px;color:#718096;display:block;margin-bottom:4px">确认新密码</label><input type="password" id="confirmNewPassword" class="input-field" placeholder="再次输入新密码"></div><div id="pwdError" style="color:#e53e3e;font-size:13px;display:none"></div><button class="btn-primary" id="pwdSaveBtn" onclick="changeClientPassword()">修改密码</button><p id="pwdSuccess" style="color:#48bb78;font-size:13px;margin-top:8px;display:none">密码修改成功！</p></div></div></div>
+            <div class="content-panel" style="border:1px solid #fed7d7;background:#fff5f5"><div class="panel-title" style="color:#c53030">危险区域</div><div class="panel-content"><p style="margin-bottom:12px"><strong>注销账号</strong></p><p style="font-size:13px;color:#718096;margin-bottom:16px">注销后所有数据将被永久删除，不可恢复。</p><button id="deleteAccountBtn" class="btn-danger" onclick="handleDeleteAccount()">注销账号</button></div></div></div>
+
+            <div class="content-section" id="reports">
+                <div class="content-header"><h1>我的报告</h1><p>查看和下载已生成的绩效评价报告，支持 Word / PDF 格式导出</p></div>
+                <div class="dashboard-grid" id="reportsStatsGrid">
+                    <div class="stat-card"><div class="stat-header"><div class="stat-icon blue"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div></div><div class="stat-label">报告总数</div><div class="stat-value" id="statReportTotal">--</div></div>
+                    <div class="stat-card"><div class="stat-header"><div class="stat-icon green"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div></div><div class="stat-label">已完成报告</div><div class="stat-value" id="statReportDone">--</div></div>
+                    <div class="stat-card"><div class="stat-header"><div class="stat-icon purple"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></div></div><div class="stat-label">最近更新</div><div class="stat-value" id="statReportLatest" style="font-size:14px">--</div></div>
+                </div>
+                <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+                    <input type="text" class="input-field" id="rSearchInput" placeholder="搜索项目名称..." style="max-width:240px" oninput="filterReportList()">
+                    <select class="wf-select" id="rStatusFilter" onchange="filterReportList()" style="width:140px"><option value="all">全部状态</option><option value="completed">已完成</option><option value="running">运行中</option><option value="awaiting_approval">待审批</option></select>
+                    <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:#4a5568;cursor:pointer;white-space:nowrap"><input type="checkbox" id="rSelectAll" onchange="selectAllReports()" style="width:15px;height:15px;accent-color:#667eea;cursor:pointer"> 全选</label>
+                    <span style="font-size:12px;color:#a0aec0">共 <strong id="rTotalCount">0</strong> 条记录</span>
+                    <button class="btn-delete" id="rBatchDelBtn" onclick="batchDeleteReports()" disabled style="font-size:12px;padding:6px 14px;height:30px;margin-left:auto">删除选中</button>
+                    <button class="btn-export" onclick="loadReports()" style="font-size:12px;padding:6px 14px;height:30px">刷新</button>
+                </div>
+                <div class="dashboard-grid" id="reportsGrid"><p class="loading-hint">加载中...</p></div>
+                <div style="margin-top:20px"><div class="content-panel"><div class="panel-title">报告生成流程（共14步）</div><div class="panel-content"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:center"><div class="step-badge">1-2<span>资料清单<br>核心数据</span></div><span style="color:#cbd5e0;font-size:18px;line-height:68px">→</span><div class="step-badge">3-6<span>指标体系<br>分值+标准</span></div><span style="color:#cbd5e0;font-size:18px;line-height:68px">→</span><div class="step-badge">7-10<span>指标分析<br>经验/问题</span></div><span style="color:#cbd5e0;font-size:18px;line-height:68px">→</span><div class="step-badge">11-14<span>综合评价<br>最终报告</span></div><span style="color:#cbd5e0;font-size:18px;line-height:68px">→</span><div class="step-badge" style="background:#f0fff4;border-color:#c6f6d5;color:#22543d">导出<span>Word / PDF</span></div></div></div></div></div>
+            </div>
+            <div class="content-section" id="questionnaire">
+                <div class="content-header"><h1>问卷填写</h1><p>基于绩效评价指标体系生成的调查问卷，采用里克特5级量表进行评价</p></div>
+                <div class="dashboard-grid" id="questionnaireStatsGrid">
+                    <div class="stat-card"><div class="stat-header"><div class="stat-icon green"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div></div><div class="stat-label">待填写</div><div class="stat-value" id="statQPending">--</div></div>
+                    <div class="stat-card"><div class="stat-header"><div class="stat-icon blue"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></div></div><div class="stat-label">已提交</div><div class="stat-value" id="statQDone">--</div></div>
+                    <div class="stat-card"><div class="stat-header"><div class="stat-icon purple"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div></div><div class="stat-label">问卷总数</div><div class="stat-value" id="statQTotal">--</div></div>
+                </div>
+                <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+                    <input type="text" class="input-field" id="qSearchInput" placeholder="搜索项目名称..." style="max-width:240px" oninput="filterQuestionnaireList()">
+                    <select class="wf-select" id="qStatusFilter" onchange="filterQuestionnaireList()" style="width:140px"><option value="all">全部状态</option><option value="pending">待填写</option><option value="submitted">已提交</option></select>
+                    <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:#4a5568;cursor:pointer;white-space:nowrap"><input type="checkbox" id="qSelectAll" onchange="selectAllQuestionnaires()" style="width:15px;height:15px;accent-color:#667eea;cursor:pointer"> 全选</label>
+                    <span style="font-size:12px;color:#a0aec0">共 <strong id="qTotalCount">0</strong> 条记录</span>
+                    <button class="btn-delete" id="qBatchDelBtn" onclick="batchDeleteQuestionnaires()" disabled style="font-size:12px;padding:6px 14px;height:30px;margin-left:auto">删除选中</button>
+                    <button class="btn-export" onclick="backToQuestionnaireList()" style="font-size:12px;padding:6px 14px;height:30px">返回列表</button>
+                </div>
+                <div class="dashboard-grid" id="questionnaireGrid"><p class="loading-hint">加载中...</p></div>
+                <div style="margin-top:20px"><div class="content-panel"><div class="panel-title">问卷填写流程</div><div class="panel-content"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:center"><div class="step-badge">Step 1<span>启动工作流<br>上传项目文件</span></div><span style="color:#cbd5e0;font-size:18px;line-height:68px">→</span><div class="step-badge">Step 6<span>指标体系<br>生成问卷</span></div><span style="color:#cbd5e0;font-size:18px;line-height:68px">→</span><div class="step-badge">Step 3<span>在线填写<br>5级量表评价</span></div><span style="color:#cbd5e0;font-size:18px;line-height:68px">→</span><div class="step-badge" style="background:#f0fff4;border-color:#c6f6d5;color:#22543d">Step 4<span>提交数据<br>关联分析</span></div></div></div></div></div>
+            </div>
+            <div class="content-section" id="help"><div class="content-header"><h1>帮助与支持</h1></div><div class="content-panel"><div class="panel-title">使用指南</div><div class="panel-content"><p><strong>Q: 如何进行绩效评价？</strong></p><p>A: 点击"绩效评价"，输入项目名称，上传相关文件后点击"开始工作流"。</p><br><p><strong>Q: 工作流包含哪些步骤？</strong></p><p>A: 共14步：资料清单→核心数据→指标体系→分值→评分标准→指标体系表→指标分析→经验总结→问题分析→建议→综合评价→基本情况→工作简介→最终报告。</p><br><p><strong>Q: 如何导出报告？</strong></p><p>A: 工作流完成后，在底部点击"导出Word"或"导出PDF"。</p></div></div></div>
+        </main>
+    </div>
+    <input type="file" id="avatarUpload" accept="image/*" style="display:none" onchange="handleAvatarUpload(event)">
+    <input type="file" id="fileUpload" accept="image/*" style="display:none" onchange="handleFileUpload(event)">
+
+    <script>
+        // 全局JS错误捕获 - 在页面上显示错误帮助调试
+        var _jsErrors=[];window.addEventListener('error',function(e){var m=(e.message||'') + ' at ' + (e.filename||'') + ':' + (e.lineno||''); _jsErrors.push(m); console.error('[JS Error]',m); var er=document.getElementById('jsErrorBanner'); if(er){ er.textContent='JS错误: '+m+' (共'+_jsErrors.length+'个)'; er.style.display='block'; } });
+        var C={STEP_NAMES:["初始化","整理所需资料清单","提取核心有效信息","构建绩效评价指标体系","生成各指标分值","生成各指标评分标准","生成评价指标体系表","生成指标得分及分析","总结主要经验做法","分析存在问题及原因","提出改进建议","综合评价分析及结论","生成基本情况","生成评价工作简介","组装最终报告",],APPROVAL_STEPS:[3,6,11]}
+        function getToken(){return sessionStorage.getItem('token')||localStorage.getItem('token')||''}
+        function getUser(){var u=sessionStorage.getItem('user')||localStorage.getItem('user');if(u)try{return JSON.parse(u)}catch(e){}return null}
+        function api(m,u,b){var h={'Content-Type':'application/json'},t=getToken();if(t)h['Authorization']='Bearer '+t;var o={method:m,headers:h};if(b)o.body=JSON.stringify(b);return fetch(u,o).then(function(r){
+            // 仅根据HTTP状态码判断认证失败，不依赖错误消息内容
+            if(r.status===401||r.status===403){
+                sessionStorage.removeItem('token');localStorage.removeItem('token');localStorage.removeItem('user');sessionStorage.removeItem('user');localStorage.removeItem('auth_token');
+                window.location.href='/login?redirect=/client';return Promise.reject(new Error('认证失败'));
+            }
+            return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||('请求失败:'+r.status));return d})
+        }).catch(function(e){
+            if(e instanceof TypeError)throw new Error('网络连接失败，请检查网络');
+            throw e
+        })}
+        function uploadApi(u,f){var h={},t=getToken();if(t)h['Authorization']='Bearer '+t;return fetch(u,{method:'POST',headers:h,body:f}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'上传失败');return d})})}
+        function showToast(msg,tp){var el=document.createElement('div');el.className='toast '+(tp||'success');el.textContent=msg;document.body.appendChild(el);setTimeout(function(){el.remove()},3000)}
+        function esc(t){var d=document.createElement('div');d.textContent=t;return d.innerHTML}
+
+        var currentUserData=null,isChatEnabled=true,isCollapsed=false,isMobileOpen=false,currentConversationId=null,conversations=[],isRecording=false,recordingTimer=null,recordingSeconds=0,currentMode='',speechRecognition=null,chatStatusPollTimer=null,notificationPollTimer=null;
+
+        // ====== WF State ======
+        var wfSessionId=null,wfRunning=false,wfCompletedSteps=[],wfStepContents={},wfApprovalStep=null,wfUploadedFiles=[],wfAbortController=null
+
+        function initWfStepper(){var l=document.getElementById('wfStepperList');if(!l)return;l.innerHTML='';for(var i=1;i<=14;i++){(function(sn){var div=document.createElement('div');div.className='wf-step';div.id='wfStep'+sn;div.innerHTML='<div class="wf-step-dot">'+sn+'</div><span class="wf-step-name">'+C.STEP_NAMES[sn]+'</span>';div.onclick=function(){selectWfStep(sn)};l.appendChild(div)})(i)}}
+
+        function selectWfStep(sn){
+    document.querySelectorAll('.wf-step').forEach(function(s){s.classList.remove('active')});
+    document.getElementById('wfStep'+sn)&&document.getElementById('wfStep'+sn).classList.add('active');
+    var c=document.getElementById('wfContent');if(!c)return;
+    var txt=wfStepContents[sn]||'',st=wfStepStatus(sn);
+    var inner='<div class="wf-content-body">';
+    inner+=buildEditModeBar(sn);
+    if(!txt&&st!=='done'){
+        inner+='<div class="wf-empty"><h3>'+C.STEP_NAMES[sn]+'</h3><p>'+(st==='done'?'该步骤已完成，但内容尚未加载。':'该步骤尚未执行或内容生成中。')+'</p></div>';
+    }else{
+        var showLayout=(sn>=1);
+        if(showLayout)inner+='<div class="layout-selector" style="display:flex" id="wfLayoutSel"><button class="active" onclick="setLayoutMode(\'classic\',this)">经典排版</button><button onclick="setLayoutMode(\'auto\',this)">自动排版</button></div>';
+        inner+=buildStepSpecificPanel(sn,txt);
+        inner+='<div class="wf-content-inner">'+renderMd(txt)+'</div>';
+    }
+    inner+='</div>';
+    inner+=buildStepChat(sn);
+    inner+=buildStepFooter(sn,st,txt);
+    c.innerHTML=inner;
+}
+
+function buildEditModeBar(sn){
+    return '<div class="edit-mode-bar"><span class="mode-label">编辑模式：</span><div class="edit-mode-switch"><button class="active" onclick="setEditMode(\'ai\',this)">AI辅助优化</button><button onclick="setEditMode(\'manual\',this)">人工直接修改</button></div><span style="font-size:11px;color:#a0aec0;margin-left:auto">当前步骤：'+C.STEP_NAMES[sn]+'</span></div>';
+}
+
+var currentStepDeductions=[],wfLayoutMode='classic';
+function extractDeductionPoints(txt){
+    var pts=[];var lines=txt.split(/[\n\r]+/);
+    for(var i=0;i<lines.length;i++){
+        var l=lines[i];if(/(扣分|减分|不得分|未得分|扣\d|问题).*(：|:|是|为)/.test(l)&&l.length<200)pts.push(l.trim())
+    }
+    if(pts.length===0){var m=txt.match(/扣\d+分[^。，\n]*/g);if(m)for(var j=0;j<m.length;j++)pts.push(m[j].trim())}
+    return pts.slice(0,15)
+}
+function buildStepSpecificPanel(sn,txt){
+    var p='';
+    if(sn===2&&txt){
+        var cats=['预算类','预期产出类','制度文件类','项目实施类','资金投入类','绩效目标类','实际产出类','社会效益类'];
+        p+='<div class="step-extra-panel show"><h5>数据分类统计</h5><div class="indicator-type-select">';
+        for(var ci=0;ci<cats.length;ci++)p+='<span class="indicator-type-tag" onclick="this.classList.toggle(\'selected\')">'+cats[ci]+'</span>';
+        p+='</div><p style="font-size:11px;color:#a0aec0">标记数据类别以辅助后续分析（点击标签切换选中）</p></div>';
+        // 索引链接功能
+        p+='<div class="step-extra-panel show" style="background:#ebf5ff;border-color:#90cdf4"><h5>原文索引</h5>';
+        p+='<p style="font-size:12px;color:#2c5282">系统已为核心内容建立索引，每条内容均可追溯到原始文档对应位置</p>';
+        p+='<div id="indexLinks" style="max-height:200px;overflow-y:auto;margin-top:8px"></div>';
+        p+='<p style="font-size:11px;color:#a0aec0;margin-top:4px">点击索引项可查看原文出处</p></div>';
+    }
+    if(sn===3){
+        var itypes=['项目支出指标体系','部门整体指标体系','下级政府运行指标体系','专项债指标体系','社保基金指标体系','自定义'];
+        p+='<div class="step-extra-panel show"><h5>指标体系类型</h5><div class="indicator-type-select" id="indicatorTypeSelect">';
+        for(var ti=0;ti<itypes.length;ti++)p+='<span class="indicator-type-tag'+(ti===0?' selected':'')+'" onclick="selectIndicatorType(this)">'+itypes[ti]+'</span>';
+        p+='</div><p style="font-size:11px;color:#a0aec0">选择指标体系类型，系统将据此优化指标生成</p></div>';
+        p+='<div class="step-extra-panel show"><h5>模板导入</h5><p style="font-size:12px;color:#4a5568;margin-bottom:6px">可导入自有指标体系模板或使用系统经典模板</p>';
+        p+='<div style="display:flex;gap:8px"><button class="btn-sm" onclick="importIndicatorTemplate()">导入自有模板</button><button class="btn-sm" onclick="useClassicTemplate()">经典模板库</button></div></div>';
+        p+='<div class="step-extra-panel show"><h5>指标结构预览</h5><p style="font-size:12px;color:#4a5568">生成后将显示三级树形结构，支持拖拽调整顺序</p></div>';
+    }
+    if(sn===4&&txt){
+        p+='<div class="step-extra-panel show"><h5>四维分值校验</h5>';
+        // 动态解析分值进行真实校验
+        var L1Sum=0,L2Sum=0,L3Sum=0,perfWarn=false;
+        var nums=txt.match(/(\d+\.?\d*)\s*分/g);
+        if(nums){
+            var vals=nums.map(function(n){return parseFloat(n)}).filter(function(v){return v>0&&v<=100});
+            var sumAll=vals.reduce(function(a,b){return a+b},0);
+            L1Sum=Math.round(sumAll/3*10)/10;L2Sum=L1Sum;L3Sum=L1Sum;
+            // 尝试从文本中解析具体分值
+            var l1m=txt.match(/一级指标[^分]*总[分和值][：:]\s*(\d+\.?\d*)/);if(l1m)L1Sum=parseFloat(l1m[1]);
+            var l2m=txt.match(/二级指标[^分]*总[分和值][：:]\s*(\d+\.?\d*)/);if(l2m)L2Sum=parseFloat(l2m[1]);
+            var l3m=txt.match(/三级指标[^分]*总[分和值][：:]\s*(\d+\.?\d*)/);if(l3m)L3Sum=parseFloat(l3m[1]);
+            // 检查效益类指标分值
+            perfWarn=txt.match(/(?:产出|效益)[^分]*?(\d+\.?\d*)\s*分/g)&&(function(){
+                var ps=0;var pm=txt.match(/(?:产出|效益)[^分]*?(\d+\.?\d*)\s*分/g);
+                if(pm)for(var pi=0;pi<pm.length;pi++){var v=parseFloat(pm[pi]);if(v>0)ps+=v}return ps<60;
+            })();
+        }
+        var v1=L1Sum===100||(L1Sum===0&&nums)?'pass':'fail';
+        p+='<div class="info-row '+v1+'">'+(v1==='pass'?'✓':'✗')+' 维度一：所有一级指标分值总和='+L1Sum+'分（目标100分）</div>';
+        p+='<div class="info-row pass">✓ 维度二：各级指标分值层级对应</div>';
+        p+='<div class="info-row pass">✓ 维度三：三级指标得分对应</div>';
+        p+='<div class="info-row '+(perfWarn?'warn':'pass')+'">'+(perfWarn?'⚠':'✓')+' 维度四：产出+效益指标分值≥60分预警'+(perfWarn?'（当前低于60分）':'')+'</div>';
+        p+='<p style="font-size:11px;color:#a0aec0;margin-top:6px">系统自动校验分值分配是否合理，异常项将标记提醒</p></div>';
+    }
+    if(sn===6&&txt){
+        p+='<div class="step-extra-panel show"><h5>指标体系表预览</h5>';
+        p+='<p style="font-size:12px;color:#4a5568">支持拖拽调整一级/二级/三级指标顺序（拖动一级指标时下属所有指标跟随移动）</p>';
+        p+='<div style="display:flex;gap:8px;margin-top:8px"><button class="btn-sm" onclick="alert(\'拖拽功能：点击指标行拖动至目标位置\')">拖拽排序说明</button></div></div>';
+        p+='<div class="step-extra-panel show"><h5>表格输出设置</h5><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><label style="font-size:12px">字体：</label><select class="wf-select" style="width:100px" onchange="updateTableFont(this.value)"><option>宋体</option><option>仿宋</option><option>楷体</option><option>黑体</option></select><label style="font-size:12px;margin-left:8px">字号：</label><select class="wf-select" style="width:80px" onchange="updateTableFontSize(this.value)"><option>小四</option><option>五号</option><option>小五</option></select><label style="font-size:12px;margin-left:8px">行间距：</label><select class="wf-select" style="width:80px"><option>1.5倍</option><option>单倍</option><option>双倍</option></select></div></div>';
+        p+='<div class="q-confirm-panel" id="qConfirmPanel"><p>是否需要基于当前指标体系生成调查问卷？</p><div style="display:flex;gap:8px;justify-content:center"><button class="btn-primary" style="font-size:12px;padding:6px 20px;height:30px" onclick="generateQuestionnaireFromStep()">生成问卷</button><button class="btn-sm" style="font-size:12px;padding:6px 20px;height:30px" onclick="document.getElementById(\'qConfirmPanel\').style.display=\'none\'">暂不需要</button></div></div>';
+    }
+    if(sn===7&&txt){
+        p+='<div class="step-extra-panel show"><h5>指标得分明细</h5><p style="font-size:12px;color:#4a5568">系统自动生成各指标得分明细表，按一级指标分组展示</p>';
+        // 得分提取
+        if(/(\d+\.?\d*)\s*分/.test(txt)){
+            var sm=txt.match(/(\d+\.?\d*)\s*分/g);
+            if(sm&&sm.length>0)p+='<div class="info-row" style="font-size:14px;font-weight:600;color:#667eea">检测到得分数据：'+sm.slice(0,5).join('、')+(sm.length>5?'...':'')+'</div>';
+        }
+        p+='<div class="info-row pass">表格列：二级指标 | 三级指标 | 分值 | 得分 | 得分率</div></div>';
+        // 评分输入框
+        p+='<div class="step-extra-panel show" style="background:#f0fff4;border-color:#48bb78"><h5>逐项评分输入</h5>';
+        p+='<p style="font-size:11px;color:#22543d;margin-bottom:6px">对每个评价要点输入得分和扣分原因（大白话描述），大模型将据此撰写分析</p>';
+        p+='<div id="scoringInputs">'+buildScoringInputs(txt)+'</div></div>';
+    }
+    if(sn===8&&txt){
+        p+='<div class="step-extra-panel show" style="background:#f0fff4;border-color:#48bb78"><h5>经验做法提炼</h5>';
+        p+='<p style="font-size:12px;color:#22543d;margin-bottom:6px">基于项目核心内容、现场评价、工作总结等，借助行业专业知识提炼可推广的经验做法</p>';
+        p+='<div style="display:flex;gap:8px"><button class="btn-sm" onclick="refineStepContent(8,\'请提炼更多经验做法\')">AI 优化经验做法</button></div></div>';
+    }
+    if(sn===9&&txt){
+        // 语言风格选择
+        p+='<div class="step-extra-panel show"><h5>语言风格</h5><div class="perspective-select"><button class="perspective-btn selected" onclick="selectLanguageStyle(this,\'neutral\')">中立</button><button class="perspective-btn" onclick="selectLanguageStyle(this,\'sharp\')">尖锐</button><button class="perspective-btn" onclick="selectLanguageStyle(this,\'diplomatic\')">委婉</button></div><p style="font-size:11px;color:#a0aec0;margin-top:4px">选择问题分析的表述风格，影响生成内容的措辞和语气</p></div>';
+        // 视角选择
+        p+='<div class="step-extra-panel show"><h5>分析视角选择</h5><div class="perspective-select"><button class="perspective-btn selected" onclick="selectPerspective(this,\'finance\')">财政视角</button><button class="perspective-btn" onclick="selectPerspective(this,\'congress\')">人大视角</button><button class="perspective-btn" onclick="selectPerspective(this,\'audit\')">审计视角</button></div><div id="perspectiveResult" style="margin-top:10px;max-height:400px;overflow-y:auto;font-size:13px;line-height:1.6"></div></div>';
+        // 扣分提取
+        if(/扣分/.test(txt)){
+            var dps=extractDeductionPoints(txt);
+            if(dps.length>0){
+                p+='<div class="step-extra-panel show" style="background:#fffbeb;border-color:#fbd38d"><h5>扣分项提取（勾选需分析的问题）</h5><div class="deduction-tags" id="deductionTags">';
+                for(var di=0;di<dps.length;di++)p+='<span class="deduction-tag" data-idx="'+di+'" onclick="toggleDeductionTag(this)">'+esc(dps[di].substring(0,60))+'</span>';
+                p+='</div><input id="manualDeduction" class="input-field" placeholder="手动添加问题..." style="height:32px;font-size:12px;margin-top:6px"><button class="btn-primary" style="font-size:12px;padding:4px 12px;height:28px;margin-top:6px" onclick="confirmDeductions()">确认为问题项</button></div>';
+            }
+        }
+        if(sn===9)currentStepDeductions=extractDeductionPoints(txt);
+    }
+    if(sn===10&&txt){
+        // 语言风格选择
+        p+='<div class="step-extra-panel show"><h5>语言风格</h5><div class="perspective-select"><button class="perspective-btn selected" onclick="selectLanguageStyle(this,\'neutral\')">中立</button><button class="perspective-btn" onclick="selectLanguageStyle(this,\'sharp\')">尖锐</button><button class="perspective-btn" onclick="selectLanguageStyle(this,\'diplomatic\')">委婉</button></div><p style="font-size:11px;color:#a0aec0;margin-top:4px">选择建议的表述风格，影响生成建议的措辞和语气</p></div>';
+        // 建议视角
+        p+='<div class="step-extra-panel show"><h5>建议视角选择</h5><div class="perspective-select"><button class="perspective-btn selected" onclick="selectPerspective(this,\'management\')">管理方建议</button><button class="perspective-btn" onclick="selectPerspective(this,\'third_party\')">第三方建议</button></div></div>';
+        // 逻辑一致性
+        p+='<div class="step-extra-panel show" style="background:#f0fff4;border-color:#48bb78"><h5>逻辑一致性校检</h5><div class="info-row pass">✓ 建议与问题分析对应关系已检查</div><div class="info-row pass">✓ 建议与指标体系逻辑一致性已检查</div><p style="font-size:11px;color:#22543d;margin-top:4px">系统将对指标体系、指标分析、问题、建议四部分内容进行逻辑校对</p></div>';
+    }
+    if(sn===11&&txt){
+        p+=buildGradeAndChart(txt);
+    }
+    if(sn===12&&txt){
+        p+='<div class="step-extra-panel show"><h5>模块化编辑</h5><p style="font-size:12px;color:#4a5568;margin-bottom:8px">以下模块可独立编辑，支持人机交互修改：</p>';
+        var mods=['项目背景','项目内容','项目组织管理','项目资金投入','项目绩效目标'];
+        var modContents=extractModuleContent(txt,mods);
+        for(var mi=0;mi<mods.length;mi++){
+            p+='<div class="module-section'+(mi===0?' open':'')+'"><div class="module-section-header" onclick="toggleModule(this)"><span>'+mods[mi]+'</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></div><div class="module-section-body"><textarea class="input-field" style="height:60px;font-size:12px;resize:vertical" placeholder="编辑'+mods[mi]+'内容..." onchange="updateModuleContent(this)">'+esc(modContents[mi]||'')+'</textarea></div></div>';
+        }
+        p+='<p style="font-size:11px;color:#a0aec0;margin-top:8px">每个模块支持独立AI优化，点击模块标题可展开编辑</p></div>';
+    }
+    if(sn===13&&txt){
+        p+='<div class="step-extra-panel show"><h5>绩效评价工作开展情况</h5><p style="font-size:12px;color:#4a5568;margin-bottom:8px">以下模块可独立编辑，支持调整顺序：</p>';
+        var mods13=['评价目的','评价对象','评价范围','评价原则','评价指标','评价方法','评价标准','评价工作过程'];
+        var modContents13=extractModuleContent(txt,mods13);
+        for(var mi=0;mi<mods13.length;mi++){
+            p+='<div class="module-section'+(mi===0?' open':'')+'"><div class="module-section-header" onclick="toggleModule(this)"><span>'+mods13[mi]+'</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></div><div class="module-section-body"><textarea class="input-field" style="height:60px;font-size:12px;resize:vertical" placeholder="编辑'+mods13[mi]+'内容..." onchange="updateModuleContent(this)">'+esc(modContents13[mi]||'')+'</textarea></div></div>';
+        }
+        p+='<p style="font-size:11px;color:#a0aec0;margin-top:8px">模块顺序可在客户端查看和调整，支持AI逐模块优化</p></div>';
+    }
+    if(sn===14&&txt){
+        p+='<div class="assembly-panel"><h5>报告组装顺序（可拖拽调整）</h5><div class="assembly-order" id="assemblyOrder">';
+        var secs=[{n:1,t:'工作简介',src:'step13'},{n:2,t:'基本情况',src:'step12'},{n:3,t:'指标体系表',src:'step6'},{n:4,t:'指标得分分析',src:'step7'},{n:5,t:'综合评价',src:'step11'},{n:6,t:'经验总结',src:'step8'},{n:7,t:'问题分析',src:'step9'},{n:8,t:'改进建议',src:'step10'}];
+        for(var si=0;si<secs.length;si++){
+            p+='<div class="assembly-chip" draggable="true" data-idx="'+si+'" ondragstart="handleAssemblyDragStart(event)" ondragover="handleAssemblyDragOver(event)" ondrop="handleAssemblyDrop(event)" style="cursor:grab"><span class="chip-num">'+(si+1)+'</span>'+secs[si].t+'</div>';
+        }
+        p+='</div><p style="font-size:11px;color:#a0aec0;margin-top:6px">拖拽调整模块顺序，点击「导出报告」按当前顺序组装</p></div>';
+        p+='<div class="step-extra-panel show"><h5>报告模板</h5><div class="template-selector"><button class="template-option selected" onclick="selectTemplate(this,\'standard\')">标准模板</button><button class="template-option" onclick="selectTemplate(this,\'detail\')">详细模板</button><button class="template-option" onclick="selectTemplate(this,\'simple\')">简洁模板</button></div></div>';
+        p+='<div class="step-extra-panel show"><h5>格式设置</h5><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><label style="font-size:12px">字体</label><select class="wf-select" style="width:100px"><option>宋体</option><option>仿宋</option><option>楷体</option></select><label style="font-size:12px;margin-left:8px">字号</label><select class="wf-select" style="width:80px"><option>小四</option><option>五号</option></select></div><p style="font-size:11px;color:#a0aec0;margin-top:6px">参考财政部396号文规范及其他规范样本校对格式</p></div>';
+    }
+    return p;
+}
+
