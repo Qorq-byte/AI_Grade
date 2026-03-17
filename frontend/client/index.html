@@ -769,3 +769,271 @@ function handleWfDrop(e,type){
     }
 }
 
+function handleWfFilesByType(e,type){
+    var fs=e.target.files;if(!fs.length)return;
+    var allowedExts={img:['.jpg','.jpeg','.png','.bmp'],pdf:['.pdf'],doc:['.doc','.docx','.xls','.xlsx','.txt','.csv']};
+    var maxSize=50*1024*1024;
+    for(var i=0;i<fs.length;i++){var f=fs[i];var ext='.'+f.name.split('.').pop().toLowerCase();
+        if(allowedExts[type]&&allowedExts[type].indexOf(ext)<0){showToast(f.name+' 格式不支持，请上传'+allowedExts[type].join('/')+'文件','warn');continue}
+        if(f.size>maxSize){showToast(f.name+' 超过50MB限制','warn');continue}
+        (function(f,ft){
+        var fd=new FormData();fd.append('file',f);
+        var modelSelect=document.getElementById(ft+'ModelSelect'),modelName=modelSelect?modelSelect.value:'';
+        if(modelName)fd.append('model_name',modelName);
+        uploadApi('/api/agent/upload',fd).then(function(r){if(r.success){
+            wfUploadedFiles.push({name:r.data.original_name,path:r.data.file_path,size:r.data.file_size,type:ft});
+            renderWfFilesByType(ft);
+        }}).catch(function(e){var em=e.message||'';if(em.indexOf('413')>=0||em.indexOf('too large')>=0){showToast('文件过大，请压缩后重试（限制50MB）','error')}else if(em.indexOf('415')>=0){showToast('文件格式不支持，请上传JPG/PNG/PDF/DOC等格式','error')}else{showToast('上传失败: '+em,'error')}})
+    })(fs[i],type)}e.target.value='';
+}
+
+function renderWfFilesByType(type){
+    var listEl=document.getElementById(type+'FileList'),dropEl=document.getElementById(type+'Dropzone');
+    if(!listEl)return;
+    var files=[];for(var i=0;i<wfUploadedFiles.length;i++){if(wfUploadedFiles[i].type===type)files.push(wfUploadedFiles[i])}
+    listEl.innerHTML='';
+    for(var j=0;j<files.length;j++){(function(idx){
+        var f=files[idx],kb=f.size>1024*1024?(f.size/1024/1024).toFixed(1)+'MB':(f.size/1024).toFixed(0)+'KB';
+        var t=document.createElement('div');t.className='wf-file-tag';
+        t.innerHTML='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#22543d" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span>'+esc(f.name)+' ('+kb+')</span><button class="remove" onclick="removeWfFileByType(\''+type+'\','+idx+')">x</button>';
+        listEl.appendChild(t);
+    })(j)}
+    if(dropEl){if(files.length>0)dropEl.classList.add('has-files');else dropEl.classList.remove('has-files')}
+}
+
+function removeWfFileByType(type,idx){
+    var typeFiles=[];for(var i=0;i<wfUploadedFiles.length;i++){if(wfUploadedFiles[i].type===type)typeFiles.push({idx:i,obj:wfUploadedFiles[i]})}
+    if(idx<typeFiles.length)wfUploadedFiles.splice(typeFiles[idx].idx,1);
+    renderWfFilesByType(type);
+}
+
+function toggleDeductionTag(el){el.classList.toggle('selected')}
+function buildScoringInputs(txt){
+    // 从步骤7内容中解析三级指标及其分值
+    var html='',indicators=[];
+    // 匹配模式：三级指标名称 + 分值 + 评分标准
+    var pattern=/(?:三级指标[：:])?\s*([\u4e00-\u9fa5\w]+(?:率|度|性|情况|指标|效果|管理|执行|完成|效率|效益|达标|合规|规范|落实|保障|到位|健全|覆盖|公开|及时|准确|完整|有效|满意|合理|充分|明确|可行|安全|持续|优化|提升|改善|提高|降低|减少|增加|实现|达到|满足|符合|通过|完成率|达成率|达标率|实施率|执行率|覆盖率|利用率|到位率|及时率|准确率|完整率|有效率|满意率|合格率|合规率|规范率|增长率|下降率|公开率|保障率|透明度|知晓度|认可度|满意度|参与度|满意度|响应度))/g;
+    var m;var seen={};
+    while((m=pattern.exec(txt))!==null){
+        var name=m[1];if(seen[name]||name.length<2)continue;seen[name]=true;
+        // 尝试提取对应分值
+        var scorePattern=new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'[^分]*?(\\d+\\.?\\d*)\\s*分');
+        var sm=txt.match(scorePattern);
+        var score=sm?sm[1]:'';
+        indicators.push({name:name,score:score});
+    }
+    if(indicators.length===0){
+        // 如果没有匹配到，尝试从文本中提取所有"三级指标"相关行
+        var lines=txt.split(/[\n\r]+/);
+        for(var i=0;i<lines.length;i++){
+            var l=lines[i].trim();if(!l||l.length>300)continue;
+            var im=l.match(/(?:三级指标[：:])?\s*(.+?)(?:\s*[（(]\s*(\d+\.?\d*)\s*分\s*[）)]|$)/);
+            if(im&&im[1]&&im[1].length>1&&!seen[im[1]]&&im[1].length<50){
+                seen[im[1]]=true;
+                indicators.push({name:im[1],score:im[2]||''});
+            }
+        }
+    }
+    if(indicators.length===0){
+        html+='<p style="font-size:12px;color:#a0aec0">评分分析完成后将自动填充各指标得分</p>';
+    }else{
+        html+='<div style="max-height:400px;overflow-y:auto">';
+        for(var i=0;i<Math.min(indicators.length,30);i++){
+            var ind=indicators[i];
+            html+='<div class="scoring-row" style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #e2e8f0">';
+            html+='<span style="font-size:12px;color:#4a5568;min-width:160px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(ind.name)+'">'+esc(ind.name)+'</span>';
+            html+='<input class="input-field" style="width:50px;height:28px;font-size:12px;text-align:center" placeholder="得分" value="'+esc(ind.score)+'" onchange="updateScoringItem(this)">';
+            html+='<span style="font-size:11px;color:#a0aec0">分</span>';
+            html+='<input class="input-field" style="flex:1;height:28px;font-size:12px" placeholder="得分/扣分原因（大白话描述）..." onchange="updateScoringItem(this)">';
+            html+='</div>';
+        }
+        html+='</div><p style="font-size:11px;color:#667eea;margin-top:6px">已解析 '+indicators.length+' 个指标，修改后系统将按新数值重新计算总分</p>';
+    }
+    return html;
+}
+function updateScoringItem(el){};
+function extractModuleContent(txt,mods){
+    // 从文本中按模块标题提取内容
+    var result={};
+    for(var i=0;i<mods.length;i++){
+        var mi=mods[i];
+        // 尝试匹配 "模块标题" 或 "**模块标题**" 或 "## 模块标题" 格式
+        var patterns=[
+            new RegExp('(?:^|\\n)\\s*(?:#{1,3}\\s*)?\\*{0,2}'+mi.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\*{0,2}\\s*[：:]\\s*(.+?)(?=\\n\\s*(?:#{1,3}\\s*)?\\*{0,2}(?:'+mods.join('|').replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')\\*{0,2}|$)','s'),
+            new RegExp('(?:^|\\n)\\s*'+mi.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'[：:]\\s*(.+?)(?=\\n\\s*(?:'+mods.join('|').replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')[：:]|$)','s'),
+            new RegExp('(?:^|\\n)\\s*\\*{0,2}'+mi.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\*{0,2}\\s*(.+?)(?=\\n\\s*\\*{0,2}(?:'+mods.join('|').replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')\\*{0,2}|$)','s')
+        ];
+        for(var j=0;j<patterns.length;j++){
+            var m=patterns[j].exec(txt);
+            if(m&&m[1]&&m[1].trim().length>0){
+                result[mi]=m[1].trim().substring(0,500);
+                break;
+            }
+        }
+    }
+    return result;
+}
+function updateModuleContent(el){};
+function confirmDeductions(){
+    var selected=document.querySelectorAll('.deduction-tag.selected'),manual=document.getElementById('manualDeduction');
+    var items=[];selected.forEach(function(t){items.push(t.textContent)});
+    if(manual&&manual.value.trim())items.push(manual.value.trim());
+    if(items.length===0){showToast('请至少选择一个扣分项或手动输入','error');return}
+    showToast('已提取 '+items.length+' 个问题项，请与AI对话优化','success');
+    var msgs=document.getElementById('wfStepChatMsgs');if(msgs)msgs.innerHTML+='<div class="wf-step-chat-msg user">已确认问题项：'+esc(items.join('、'))+'</div>';
+    if(manual)manual.value=''
+}
+function setLayoutMode(md,el){
+    wfLayoutMode=md;
+    var sel=document.getElementById('wfLayoutSel');if(!sel)return;
+    sel.querySelectorAll('button').forEach(function(b){b.classList.remove('active')});
+    if(el)el.classList.add('active');
+    var lbl=document.getElementById('wfLayoutLabel');if(lbl)lbl.textContent=md==='classic'?'经典':'自动';
+    showToast('布局模式切换为: '+(md==='classic'?'经典排版':'自动排版'));
+}
+function exportStep(sn,fmt){
+    if(!wfSessionId){showToast('请先完成工作流','error');return}
+    if(!wfStepContents[sn]){showToast('该步骤内容为空，无法导出','warn');return}
+    var btn=event&&event.target;
+    if(btn){btn.disabled=true;btn.dataset.origText=btn.textContent;btn.textContent='导出中...'}
+    var body={session_id:wfSessionId,format:fmt,project_name:(document.getElementById('wfProjectName').value||'绩效评价报告'),step_number:parseInt(sn),step_content:wfStepContents[sn]};
+    api('POST','/api/agent/workflow/export',body).then(function(r){
+        if(r.data&&r.data.file_path){showToast('步骤'+sn+' '+(fmt==='word'?'Word':'PDF')+'导出成功','success');window.location.href='/api/agent/download/'+encodeURIComponent(r.data.file_name)}
+        else{showToast('导出失败：未获取到文件','error')}
+    }).catch(function(e){showToast('导出失败: '+e.message,'error')})
+    .finally(function(){if(btn){btn.disabled=false;if(btn.dataset.origText)btn.textContent=btn.dataset.origText}})
+}
+function refineStepContent(stepNum, msgText, isApprovalReject){
+    var input=document.getElementById('wfStepChatInput'),msg=(msgText||'')||(input&&input.value.trim());
+    if(!msg)return;
+    var msgs=document.getElementById('wfStepChatMsgs');if(msgs)msgs.innerHTML+='<div class="wf-step-chat-msg user">'+esc(msg)+'</div>';
+    if(input)input.value='';
+    var sn=stepNum||0;
+    if(!sn){document.querySelectorAll('.wf-step.active').forEach(function(s){var m=s.id.match(/wfStep(\d+)/);if(m)sn=parseInt(m[1])});}
+    if(!sn||!wfSessionId)return;
+    var aiDiv=document.createElement('div');aiDiv.className='wf-step-chat-msg ai';aiDiv.textContent='AI重新生成中...';if(msgs)msgs.appendChild(aiDiv);
+    // 审批拒绝场景：展示进度指示
+    if(isApprovalReject){
+        var c=document.getElementById('wfContent');if(c)c.innerHTML='<div class="wf-empty"><h3>'+C.STEP_NAMES[sn]+'</h3><p>AI正在按照您的修改意见重新生成...</p></div>';
+    }
+    api('POST','/api/agent/workflow/refine',{session_id:wfSessionId,step_number:sn,message:msg,layout_mode:wfLayoutMode,language_style:wfLanguageStyle,indicator_type:wfIndicatorType}).then(function(r){
+        if(msgs&&aiDiv.parentNode)aiDiv.remove();
+        if(r.success&&r.data.refined_content){
+            wfStepContents[sn]=r.data.refined_content;
+            // 更新内容显示区域（不重建整个步骤面板，保留聊天历史）
+            var contentInner=document.querySelector('.wf-content-inner');
+            if(contentInner)contentInner.innerHTML=renderMd(r.data.refined_content);
+            // 将AI优化结果添加到聊天历史
+            var preview=r.data.refined_content.substring(0,200)+(r.data.refined_content.length>200?'...':'');
+            if(msgs)msgs.innerHTML+='<div class="wf-step-chat-msg ai"><strong>优化完成 ✅</strong><br><span style="font-size:0.85em;opacity:0.8">'+esc(preview)+'</span></div>';
+            if(msgs)msgs.scrollTop=msgs.scrollHeight;
+            showToast('步骤'+sn+'内容已优化','success')
+        }else{if(msgs)msgs.innerHTML+='<div class="wf-step-chat-msg ai">优化失败，请重试</div>'}
+    }).catch(function(e){
+        if(msgs&&aiDiv.parentNode)aiDiv.remove();
+        if(msgs)msgs.innerHTML+='<div class="wf-step-chat-msg ai">错误: '+esc(e.message)+'</div>'
+    })
+}
+
+        function wfStepStatus(sn){if(wfCompletedSteps.indexOf(sn)>=0)return 'done';if(wfRunning&&sn===Math.max.apply(null,wfCompletedSteps.length?wfCompletedSteps:[0])+1)return 'doing';return 'pending'}
+        function renderMd(t){if(!t)return'';var h=t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');h=h.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');h=h.replace(/### (.+)/g,'<h3>$1</h3>');h=h.replace(/## (.+)/g,'<h2>$1</h2>');h=h.replace(/# (.+?)\n/g,'<h1>$1</h1>');h=h.replace(/- (.+)/g,'&bull; $1');h=h.replace(/\n/g,'<br>');return h}
+
+        function updateWfStepper(){
+            for(var i=1;i<=14;i++){var s=document.getElementById('wfStep'+i);if(!s)continue;s.className='wf-step';var st=wfStepStatus(i);
+                if(st==='done')s.classList.add('done');else if(st==='doing')s.classList.add('doing');if(i===wfApprovalStep&&st==='done')s.classList.add('approval');
+                if(wfCompletedSteps.indexOf(i)<0&&i===wfApprovalStep)s.classList.add('approval');
+            }
+            var done=wfCompletedSteps.length;document.getElementById('wfProgressText')&&(document.getElementById('wfProgressText').textContent=done+'/14');
+            document.getElementById('wfProgressFill')&&(document.getElementById('wfProgressFill').style.width=Math.round(done/14*100)+'%');
+        }
+
+        function handleWfFiles(e){var fs=e.target.files;if(!fs.length)return;
+            for(var i=0;i<fs.length;i++){(function(f){var fd=new FormData();fd.append('file',f);
+                uploadApi('/api/agent/upload',fd).then(function(r){if(r.success){wfUploadedFiles.push({name:r.data.original_name,path:r.data.file_path,size:r.data.file_size});renderWfFiles()}}).catch(function(e){showToast('上传失败: '+e.message,'error')})
+            })(fs[i])}e.target.value=''
+        }
+
+        function renderWfFiles(){var l=document.getElementById('wfFileList');if(!l)return;l.innerHTML='';
+            for(var i=0;i<wfUploadedFiles.length;i++){(function(idx){var f=wfUploadedFiles[idx];var t=document.createElement('div');t.className='wf-file-tag';
+                var kb=f.size>1024*1024?(f.size/1024/1024).toFixed(1)+'MB':(f.size/1024).toFixed(0)+'KB';
+                t.innerHTML='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22543d" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span>'+esc(f.name)+' ('+kb+')</span><button class="remove" onclick="removeWfFile('+idx+')">x</button>';l.appendChild(t)})(i)}
+        }
+
+        function removeWfFile(idx){wfUploadedFiles.splice(idx,1);renderWfFiles()}
+
+        function startWorkflow(){
+            var t=getToken();if(!t){showToast('请先登录','error');return}
+            if(wfRunning){showToast('工作流正在运行中，请勿重复点击','warn');return}
+            wfRunning=true;
+            var sbtn=document.getElementById('wfStartBtn');if(sbtn){sbtn.disabled=true;sbtn.textContent='启动中...'}
+            var pn=document.getElementById('wfProjectName').value.trim()||'未命名项目';
+            // 重置状态，准备新评价
+            wfSessionId=null;wfCompletedSteps=[];wfStepContents={};wfApprovalStep=null;
+            window._currentQuestionData=null;  // 清空问卷缓存，确保下次切换Tab重新加载
+            initWfStepper();document.getElementById('wfLayout').style.display='flex';
+            document.getElementById('wfFileZone').style.display='none';
+            document.getElementById('wfProgress').style.display='flex';document.getElementById('wfStartBtn').style.display='';document.getElementById('wfStopBtn').style.display='';
+            var ex=document.getElementById('wfExports');if(ex)ex.style.display='none';
+            var c=document.getElementById('wfContent');c&&(c.innerHTML='<div class="wf-empty"><h3>正在启动...</h3><p>AI正在准备绩效评价工作流</p></div>');
+            updateWfStepper();
+
+            var paths=[];for(var i=0;i<wfUploadedFiles.length;i++)paths.push(wfUploadedFiles[i].path);
+var md=document.getElementById('wfModel').value,mo=document.getElementById('wfMode').value;
+var tp=document.getElementById('wfTemperature').value,topP=parseFloat(document.getElementById('wfTopP').value);
+var body={project_name:pn,file_paths:paths,model_name:md,comparison_mode:mo,temperature_profile:tp,top_p:topP,indicator_type:wfIndicatorType,perspective:wfPerspective,template:wfTemplate,edit_mode:wfEditMode};
+            wfAbortController=new AbortController();
+
+            fetch('/api/agent/workflow/start-stream',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+t},body:JSON.stringify(body),signal:wfAbortController.signal})
+            .then(function(r){
+                var reader=r.body.getReader(),decoder=new TextDecoder(),buf='';
+                function pump(){return reader.read().then(function(_ref){var done=_ref.done,value=_ref.value;if(done){handleWfComplete();return}
+                    buf+=decoder.decode(value,{stream:true});var lines=buf.split('\n');buf=lines.pop()||'';
+                    for(var i=0;i<lines.length;i++){var ln=lines[i].trim();if(!ln||ln.indexOf('data:')!==0)continue;
+                        try{var d=JSON.parse(ln.substring(5));handleSSEEvent(d)}catch(e){}}
+                    if(!done)return pump()})}
+                return pump()
+            }).catch(function(e){if(e.name!=='AbortError'){showToast('工作流错误: '+e.message,'error');resetWfUI()}})
+        }
+
+        function handleSSEEvent(d){
+            if(!wfRunning)return;
+            if(d.event==='step_start'){
+                wfSessionId=d.session_id;
+                var sn=d.step_number;if(wfCompletedSteps.indexOf(sn)<0)wfCompletedSteps.push(sn);updateWfStepper();
+                var c=document.getElementById('wfContent');c&&(c.innerHTML='<div class="wf-empty"><h3>'+C.STEP_NAMES[sn]+'</h3><p>AI正在生成中...</p></div>')
+            }if(d.event==='token_update'){if(currentUserData){currentUserData.tokens_used=d.tokens_used||0}var stEl=document.getElementById('settingsTokens');if(stEl)stEl.textContent=currentUserData?currentUserData.tokens_used:0;var sbEl=document.getElementById('sidebarTokenCount');if(sbEl)sbEl.textContent=currentUserData?currentUserData.tokens_used:0;return}else if(d.event==='step_complete'){
+                var sn=d.step_number;wfStepContents[sn]=d.content||d.content_preview||'';updateWfStepper();selectWfStep(sn)
+            }else if(d.event==='approval_required'){
+                var sn=d.step_number;wfApprovalStep=sn;updateWfStepper();
+                document.getElementById('wfApprovalTitle').textContent='确认：'+C.STEP_NAMES[sn];
+                document.getElementById('wfApprovalSubtitle').textContent='请审核步骤'+sn+'的生成内容，确认后继续执行';
+                document.getElementById('wfApprovalPreview').textContent=(d.content_preview||'(无内容预览)');
+                document.getElementById('wfApprovalFeedback').value='';document.getElementById('wfApprovalModal').style.display='flex'
+            }else if(d.event==='warning'){
+                showToast('步骤'+d.step_number+': '+d.message,'error')
+            }else if(d.event==='error'){
+                var stepLabel=d.step_number>0?('步骤'+d.step_number+' '+(d.step_name||'')+' - '):'';
+if(d.message.indexOf('超时')>=0||d.message.indexOf('timeout')>=0){showToast(stepLabel+'AI服务响应超时，正在重试...','warn')}
+else if(d.message.indexOf('繁忙')>=0){showToast(stepLabel+'AI服务繁忙，将自动重试...','warn')}
+else{showToast(stepLabel+d.message,'error');wfRunning=false;resetWfUI()}
+            }else if(d.event==='waiting_approval'){
+                wfSessionId=d.session_id;
+                var asn=d.approval_step;
+                if(!wfApprovalStep){wfApprovalStep=asn;updateWfStepper();
+                    document.getElementById('wfApprovalTitle').textContent='确认：'+C.STEP_NAMES[asn];
+                    document.getElementById('wfApprovalSubtitle').textContent='请审核步骤'+asn+'的生成内容，确认后继续执行后续步骤';
+                    document.getElementById('wfApprovalPreview').textContent=(wfStepContents[asn]||'(无内容预览)').substring(0,500);
+                    document.getElementById('wfApprovalFeedback').value='';document.getElementById('wfApprovalModal').style.display='flex'
+                }
+                document.getElementById('wfStartBtn').style.display='none';document.getElementById('wfStopBtn').style.display='';document.getElementById('wfProgress').style.display='';
+                showToast('工作流暂停于步骤'+asn+'，请审核并确认','warn')
+            }else if(d.event==='complete'){
+                wfSessionId=d.session_id;wfRunning=false;updateWfStepper();
+                var ex=document.getElementById('wfExports');if(ex)ex.style.display='flex';
+                document.getElementById('wfStartBtn').style.display='';document.getElementById('wfStopBtn').style.display='none';
+                document.getElementById('wfProgress').style.display='none';
+                showToast('工作流执行完成！','success');
+                handleWfComplete()
+            }
+        }
+
