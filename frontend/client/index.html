@@ -574,3 +574,198 @@ function buildStepSpecificPanel(sn,txt){
     return p;
 }
 
+function buildGradeAndChart(txt){
+    var g='';
+    var grade='',gc='pass',score='';
+    if(/(优秀|良好|合格|不合格)/.test(txt)){
+        if(/优秀/.test(txt)){grade='优秀';gc='excellent'}else if(/良好/.test(txt)){grade='良好';gc='good'}else if(/不合格/.test(txt)){grade='不合格';gc='fail'}else{grade='合格';gc='pass'}
+    }
+    var sm=txt.match(/综合得分[：:]\s*([\d.]+)\s*分/);
+    if(sm)score=sm[1];
+    g+='<div class="step-extra-panel show"><h5>🏆 评价结论</h5>';
+    if(grade)g+='<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px"><span style="font-size:14px;color:#718096">综合评定等级：</span><span class="grade-badge '+gc+'">'+grade+'</span>'+(score?'<span style="font-size:14px;color:#667eea;font-weight:600">得分：'+score+'分</span>':'')+'</div>';
+    g+='<div style="margin-top:12px"><h5 style="font-size:13px;color:#1a202c;margin-bottom:8px">📊 一级指标得分分布</h5><div class="wf-bar-chart" id="wfBarChart">';
+    var bars=[{l:'决策',s:25,v:25},{l:'过程',s:20,v:20},{l:'产出',s:30,v:30},{l:'效益',s:25,v:25}];
+    // 尝试从步骤内容中解析实际得分
+    var scoreMatches=txt.match(/(决策|过程|产出|效益)[^分]*?得分[：:]*\s*([\d.]+)/g);
+    if(scoreMatches){
+        for(var bi2=0;bi2<bars.length;bi2++){
+            for(var si=0;si<scoreMatches.length;si++){
+                var sm2=scoreMatches[si].match(/(决策|过程|产出|效益)[^分]*?[：:]\s*([\d.]+)/);
+                if(sm2&&bars[bi2].l===sm2[1]){bars[bi2].v=parseFloat(sm2[2]);break}
+            }
+        }
+    }
+    for(var bi=0;bi<bars.length;bi++){
+        var b=bars[bi],fillColor=bi===0?'#667eea':(bi===1?'#48bb78':(bi===2?'#ed8936':'#9f7aea'));
+        g+='<div class="wf-bar-col"><div class="wf-bar-value">'+b.v+'分</div><div class="wf-bar-score">/'+b.s+'</div><div class="wf-bar-fill" style="height:'+(b.v/b.s*140)+'px;background:'+fillColor+'"></div><div class="wf-bar-label">'+b.l+'</div></div>';
+    }
+    g+='</div></div></div>';
+    return g;
+}
+
+function buildStepChat(sn){
+    return '<div class="wf-step-chat active" id="wfStepChat"><h4><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#667eea" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>优化步骤 '+sn+': '+C.STEP_NAMES[sn]+'</h4><div class="wf-step-chat-msgs" id="wfStepChatMsgs"></div><div class="wf-step-chat-input-row"><input id="wfStepChatInput" placeholder="输入优化指令，让AI帮您调整..." onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();refineStepContent()}"><button class="btn-primary btn-sm" onclick="refineStepContent()">发送</button></div></div>';
+}
+
+function buildStepFooter(sn,st,txt){
+    var f='<div class="step-footer-bar">';
+    f+='<span style="font-size:11px;color:#a0aec0">步骤 '+sn+' · '+C.STEP_NAMES[sn]+'</span><span class="spacer"></span>';
+    if(st==='done'&&txt){
+        f+='<button class="btn-sm" onclick="exportStep(\''+sn+'\',\'word\')">📄 导出Word</button>';
+        f+='<button class="btn-sm primary" onclick="exportStep(\''+sn+'\',\'pdf\')">📕 导出PDF</button>';
+        if(sn===6)f+='<button class="btn-sm success" onclick="generateQuestionnaireFromStep()">📋 生成问卷</button>';
+    }
+    f+='</div>';
+    return f;
+}
+
+function selectIndicatorType(el){
+    document.querySelectorAll('#indicatorTypeSelect .indicator-type-tag').forEach(function(t){t.classList.remove('selected')});
+    el.classList.add('selected');
+    wfIndicatorType=el.textContent.trim();
+    showToast('指标体系类型已设为：'+wfIndicatorType);
+}
+
+function selectPerspective(el,persp){
+    el.parentElement.querySelectorAll('.perspective-btn').forEach(function(b){b.classList.remove('selected')});
+    el.classList.add('selected');
+    wfPerspective=persp;
+    var names={'finance':'财政部门','congress':'人大常委会','audit':'审计部门','management':'管理方建议','third_party':'第三方建议'};
+    var name=names[persp]||persp;
+    showToast('分析视角切换为：'+name);
+
+    // 步骤10的管理方/第三方建议视角不需要调用后端分析API
+    if(persp==='management'||persp==='third_party'){
+        showToast(name+'视角已选择，建议将基于此视角生成');
+        return;
+    }
+
+    // 步骤9的视角分析：调用后端API获取该视角的分析
+    if(!wfSessionId){showToast('工作流未启动','error');return}
+    var resultDiv=document.getElementById('perspectiveResult');
+    if(resultDiv){resultDiv.innerHTML='<p style="color:#a0aec0">⏳ 正在分析'+name+'视角...</p>'}
+    api('POST','/api/agent/workflow/'+encodeURIComponent(wfSessionId)+'/perspective',{perspective:persp}).then(function(r){
+        if(r.success&&r.data&&r.data.analysis){
+            if(resultDiv){
+                resultDiv.innerHTML='<div style="background:#f7fafc;border-left:3px solid #667eea;padding:12px;border-radius:4px;margin-top:8px">'+r.data.analysis.replace(/\n/g,'<br>')+'</div>';
+            }
+            showToast(name+'分析完成','success');
+        }
+    }).catch(function(e){
+        showToast(name+'分析失败: '+e.message,'error');
+        if(resultDiv){resultDiv.innerHTML='<p style="color:#e53e3e">分析失败，请确保步骤7和步骤9已完成</p>'}
+    });
+}
+
+function selectTemplate(el,tpl){
+    el.parentElement.querySelectorAll('.template-option').forEach(function(b){b.classList.remove('selected')});
+    el.classList.add('selected');
+    wfTemplate=tpl;
+    showToast('报告模板切换为：'+(tpl==='standard'?'标准模板':(tpl==='detail'?'详细模板':'简洁模板')));
+}
+
+function toggleModule(header){
+    header.parentElement.classList.toggle('open');
+}
+
+function selectLanguageStyle(el,style){
+    el.parentElement.querySelectorAll('.perspective-btn').forEach(function(b){b.classList.remove('selected')});
+    el.classList.add('selected');
+    window._languageStyle=style;
+    var names={'neutral':'中立','sharp':'尖锐','diplomatic':'委婉'};
+    showToast('语言风格切换为：'+(names[style]||style));
+    // 将风格传递到 refine 请求中
+    if(wfStep){wfLanguageStyle=style}
+}
+function importIndicatorTemplate(){
+    showToast('请选择要导入的指标体系文件（支持 .xlsx / .json）');
+}
+function useClassicTemplate(){
+    showToast('经典模板库包含：项目支出、部门整体、专项债、社保基金等指标体系模板。功能开发中，敬请期待。');
+}
+function updateTableFont(font){showToast('字体已设为：'+font)}
+function updateTableFontSize(size){showToast('字号已设为：'+size)}
+
+function generateQuestionnaireFromStep(){
+    if(!wfSessionId){showToast('请先完成指标体系生成','error');return}
+    if(!confirm('是否基于当前指标体系生成调查问卷？'))return;
+    api('POST','/api/agent/workflow/questionnaire',{session_id:wfSessionId,max_questions:20}).then(function(r){
+        if(r.success&&r.data&&r.data.questionnaire&&r.data.questionnaire.length){
+            showToast('问卷已生成，共'+r.data.total_questions+'题','success');
+            var qp=document.getElementById('qConfirmPanel');if(qp)qp.innerHTML='<p style="color:#48bb78">✅ 问卷已生成（共'+r.data.total_questions+'题），前往问卷填写页面查看</p>';
+            // 直接切到问卷填写Tab并渲染问卷 — 绕过switchTab避免loadQuestionnaireList覆盖
+            var pnEl=document.getElementById('wfProjectName'),pn=pnEl?pnEl.value.trim():'';
+            var navLink = document.querySelector('.nav-link[onclick*="questionnaire"]');
+            var all=document.querySelectorAll('.nav-link');for(var i=0;i<all.length;i++)all[i].classList.remove('active');
+            if(navLink)navLink.classList.add('active');
+            document.querySelectorAll('.content-section').forEach(function(s){s.classList.remove('active')});
+            var sec=document.getElementById('questionnaire');if(sec)sec.classList.add('active');
+            if(window.innerWidth<768&&isMobileOpen)toggleMobileSidebar();
+            renderQuestionnaireDirect(r.data.questionnaire, wfSessionId, pn||'当前项目');
+        }else{showToast('问卷生成失败：指标体系尚未完成（请确保Step3已完成）','error')}
+    }).catch(function(e){showToast('问卷生成失败: '+e.message,'error')});
+}
+
+// 直接在问卷填写Tab渲染问卷（不重新调API生成）
+function renderQuestionnaireDirect(qs, sid, pn){
+    window._currentQuestionData = qs;
+    var panel = document.getElementById('questionnaire');
+    if(!panel) return;
+    var h='<div class="content-header"><h1>问卷填写</h1><p>项目：'+esc(pn||'未命名')+' | 共 '+qs.length+' 题 <button class="btn-sm" onclick="backToQuestionnaireList()" style="margin-left:12px">返回列表</button></p></div><div style="max-height:calc(100vh - 200px);overflow-y:auto">';
+    var levels=['非常不满意','不满意','一般','满意','非常满意'];
+    for(var i=0;i<qs.length;i++){
+        var q=qs[i], qid=esc(q.question_id||''+i), qt=q.question_text||q.question||q.text||'题目'+(i+1);
+        h+='<div class="content-panel" style="background:#fafbff"><div class="panel-title" style="font-size:14px">第'+(i+1)+'题：'+esc(qt)+'</div><div class="panel-content">';
+        h+='<div style="display:flex;gap:8px;flex-wrap:wrap">';
+        for(var li=0;li<5;li++)h+='<label style="cursor:pointer;padding:6px 14px;border:1px solid #e2e8f0;border-radius:20px;font-size:13px;display:flex;align-items:center;gap:6px;transition:all .2s" onmouseover="this.style.borderColor=\'#667eea\';this.style.background=\'#ebf5ff\'" onmouseout="var r=document.querySelector(\'input[name=q_'+i+']:checked\');if(!r||r.value!==\''+li+'\'){this.style.borderColor=\'#e2e8f0\';this.style.background=\'white\'}"><input type="radio" name="q_'+i+'" value="'+li+'" onchange="markAnswered(this)" style="accent-color:#667eea">'+levels[li]+'</label>';
+        h+='</div></div></div>';
+    }
+    h+='<div style="padding:20px;display:flex;gap:12px;justify-content:center"><button class="btn-primary" style="padding:10px 32px" onclick="submitQuestionnaire(\''+esc(sid)+'\','+qs.length+')">提交问卷</button></div></div>';
+    panel.innerHTML = h;
+}
+
+function setEditMode(mode,el){
+    el.parentElement.querySelectorAll('button').forEach(function(b){b.classList.remove('active')});
+    el.classList.add('active');
+    wfEditMode=mode;
+    showToast('编辑模式：'+(mode==='ai'?'AI辅助优化':'人工直接修改'));
+}
+
+var wfIndicatorType='项目支出指标体系',wfPerspective='management',wfTemplate='standard',wfEditMode='ai',wfLanguageStyle='neutral',wfAssemblyOrder=[1,2,3,4,5,6,7,8];
+var dragSrcIdx=null;
+
+function handleAssemblyDragStart(e){dragSrcIdx=parseInt(e.target.getAttribute('data-idx'));e.dataTransfer.effectAllowed='move';e.target.style.opacity='0.5'}
+function handleAssemblyDragOver(e){e.preventDefault();e.dataTransfer.dropEffect='move'}
+function handleAssemblyDrop(e){
+    e.preventDefault();var target=e.target.closest('.assembly-chip');if(!target)return;
+    var dstIdx=parseInt(target.getAttribute('data-idx'));
+    if(dragSrcIdx===null||dragSrcIdx===dstIdx)return;
+    // 交换顺序
+    var tmp=wfAssemblyOrder[dragSrcIdx];wfAssemblyOrder[dragSrcIdx]=wfAssemblyOrder[dstIdx];wfAssemblyOrder[dstIdx]=tmp;
+    // 重新渲染
+    var orderEl=document.getElementById('assemblyOrder');if(!orderEl)return;
+    var chips=orderEl.querySelectorAll('.assembly-chip');
+    var secs=[{n:1,t:'工作简介'},{n:2,t:'基本情况'},{n:3,t:'指标体系表'},{n:4,t:'指标得分分析'},{n:5,t:'综合评价'},{n:6,t:'经验总结'},{n:7,t:'问题分析'},{n:8,t:'改进建议'}];
+    var html='';
+    for(var i=0;i<wfAssemblyOrder.length;i++){
+        var si=wfAssemblyOrder[i]-1;
+        html+='<div class="assembly-chip" draggable="true" data-idx="'+i+'" ondragstart="handleAssemblyDragStart(event)" ondragover="handleAssemblyDragOver(event)" ondrop="handleAssemblyDrop(event)" style="cursor:grab"><span class="chip-num">'+(i+1)+'</span>'+secs[si].t+'</div>';
+    }
+    orderEl.innerHTML=html;
+    dragSrcIdx=null;
+    showToast('报告顺序已调整，导出时将按新顺序组装');
+}
+
+function handleWfDrop(e,type){
+    e.preventDefault();e.stopPropagation();
+    var files=e.dataTransfer.files;if(!files.length)return;
+    var input=document.getElementById(type+'FileInput');
+    if(input){
+        var dt=new DataTransfer();
+        for(var i=0;i<files.length;i++)dt.items.add(files[i]);
+        input.files=dt.files;
+        handleWfFilesByType({target:input},type);
+    }
+}
+
