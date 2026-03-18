@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>调查问卷生成 — 云海睿评</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: #1e293b;
+            --border: #334155;
+            --text: #e2e8f0;
+            --accent: #6FFF00;
+            --muted: #94a3b8;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            min-height: 100vh;
+        }
+        .container { max-width: 900px; margin: 0 auto; padding: 24px; }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+        .btn {
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.875rem;
+            font-weight: 600;
+            transition: all 0.2s;
+            border: 1px solid var(--border);
+            background: var(--card);
+            color: var(--text);
+        }
+        .btn:hover { background: #334155; }
+        .btn-accent { background: var(--accent); color: #000; border-color: var(--accent); }
+        .btn-accent:hover { background: #5ee600; }
+        .btn-sm { padding: 4px 12px; font-size: 0.75rem; }
+        input, select {
+            padding: 8px 12px;
+            background: #0f172a;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            font-size: 0.9rem;
+        }
+        input:focus, select:focus { outline: none; border-color: var(--accent); }
+        .question-item {
+            background: #0f172a;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 16px;
+            margin-bottom: 12px;
+            transition: all 0.2s;
+        }
+        .question-item:hover { border-color: #475569; }
+        .likert-option {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border: 2px solid var(--border);
+            cursor: pointer;
+            font-size: 0.8rem;
+            font-weight: 600;
+            transition: all 0.15s;
+            margin: 2px;
+        }
+        .likert-option:hover { border-color: var(--accent); }
+        .likert-option.selected { background: var(--accent); color: #000; border-color: var(--accent); }
+        .likert-scale {
+            display: flex;
+            gap: 4px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-top: 8px;
+        }
+        .likert-label {
+            font-size: 0.7rem;
+            color: var(--muted);
+            width: 36px;
+            text-align: center;
+        }
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 12px 24px;
+            border-radius: 8px;
+            z-index: 300;
+            animation: slideIn 0.3s ease;
+        }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } }
+        .toast-success { background: #22c55e; color: #fff; }
+        .toast-error { background: #ef4444; color: #fff; }
+        .stats-card {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .stat {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 12px 20px;
+            text-align: center;
+            min-width: 100px;
+        }
+        .stat .num { font-size: 1.5rem; font-weight: 700; }
+        .stat .lbl { font-size: 0.75rem; color: var(--muted); }
+        .tag {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 20px;
+            font-size: 0.7rem;
+            font-weight: 600;
+        }
+        .tag-likert { background: rgba(59,130,246,0.15); color: #3b82f6; }
+        .tag-open { background: rgba(34,197,94,0.15); color: #22c55e; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div style="display:flex; align-items:center; gap:16px; margin-bottom:24px;">
+            <a href="/" style="color:var(--muted); text-decoration:none;">← 返回</a>
+            <h1 style="font-size:1.4rem; font-weight:700;">📋 调查问卷</h1>
+        </div>
+
+        <!-- Session Input -->
+        <div class="card" id="session-card">
+            <h3 style="margin-bottom:12px;">关联工作流会话</h3>
+            <div style="display:flex; gap:8px;">
+                <input id="session-input" placeholder="输入 session ID..." style="flex:1;" 
+                    value="">
+                <button class="btn btn-accent" onclick="loadQuestionnaire()">🚀 生成问卷</button>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="card hidden" id="controls-card">
+            <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+                <label style="font-size:0.85rem;">最大题数:</label>
+                <input id="max-questions" type="number" value="30" min="5" max="100" style="width:80px;">
+                <button class="btn btn-accent" onclick="regenerate()">🔄 重新生成</button>
+                <button class="btn" onclick="exportAsCSV()">📥 导出 CSV</button>
+                <button class="btn btn-accent" onclick="submitAnswers()">📤 提交答卷</button>
+                <button class="btn" onclick="printQuestionnaire()">🖨️ 打印</button>
+            </div>
+        </div>
+
+        <!-- Stats -->
+        <div class="stats-card hidden" id="stats-card">
+            <div class="stat"><div class="num" id="stat-total">0</div><div class="lbl">总题数</div></div>
+            <div class="stat"><div class="num" id="stat-likert">0</div><div class="lbl">量表题</div></div>
+            <div class="stat"><div class="num" id="stat-open">0</div><div class="lbl">开放题</div></div>
+            <div class="stat"><div class="num" id="stat-answered">0</div><div class="lbl">已作答</div></div>
+        </div>
+
+        <!-- Questionnaire -->
+        <div id="questionnaire-container"></div>
+    </div>
+
+    <div id="toast-container"></div>
+
+    <script>
+    let questionnaireData = [];
+    let answers = {};  // question.id -> selected value
+    let sessionId = '';
+
+    document.addEventListener('DOMContentLoaded', () => {
+        lucide.createIcons();
+        // Check query param
+        const params = new URLSearchParams(window.location.search);
+        const sid = params.get('session');
+        if (sid) {
+            document.getElementById('session-input').value = sid;
+            loadQuestionnaire();
+        }
+    });
+
+    async function loadQuestionnaire() {
+        sessionId = document.getElementById('session-input').value.trim();
+        if (!sessionId) {
+            showToast('请输入 session ID', 'error');
+            return;
+        }
+
+        try {
+            const resp = await fetch('/api/agent/workflow/questionnaire', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    max_questions: parseInt(document.getElementById('max-questions').value) || 30,
+                }),
+            });
+            const data = await resp.json();
+
+            if (!data.success) {
+                showToast(data.message || '生成失败', 'error');
+                return;
+            }
+
+            questionnaireData = data.data.questionnaire || [];
+            answers = {};
+            renderAll();
+            document.getElementById('controls-card').classList.remove('hidden');
+            document.getElementById('stats-card').classList.remove('hidden');
+            showToast(`已生成 ${questionnaireData.length} 道题目`);
+        } catch (e) {
+            showToast('加载失败: ' + e.message, 'error');
+        }
+    }
+
+    async function regenerate() {
+        answers = {};
+        await loadQuestionnaire();
+    }
+
+    function renderAll() {
+        const container = document.getElementById('questionnaire-container');
+
+        if (!questionnaireData.length) {
+            container.innerHTML = '<div class="card" style="text-align:center;color:var(--muted);">尚无题目，请先生成问卷</div>';
+            return;
+        }
+
+        container.innerHTML = questionnaireData.map((q, i) => {
+            const isLikert = q.question_type === 'likert';
+            const levels = q.scale_levels || [];
+            const selected = answers[q.id];
+
+            return `
+                <div class="question-item" id="q-${q.id}">
+                    <div style="display:flex; justify-content:space-between; align-items:start; margin-bottom:8px;">
+                        <strong style="font-size:0.95rem;">${q.index}. ${q.question}</strong>
+                        <span class="tag tag-${isLikert ? 'likert' : 'open'}">${isLikert ? '量表题' : '开放题'}</span>
+                    </div>
+                    ${q.related_indicator_name ? 
+                        `<p style="font-size:0.75rem; color:var(--muted); margin-bottom:6px;">关联指标: ${q.related_indicator_name}</p>` 
+                        : ''}
+                    ${isLikert ? renderLikertScale(q, selected) : renderOpenEnded(q, selected)}
+                </div>
+            `;
+        }).join('');
+
+        // Bind likert clicks
+        questionnaireData.forEach(q => {
+            if (q.question_type === 'likert') {
+                (q.scale_levels || []).forEach((level, i) => {
+                    const el = document.getElementById(`likert-${q.id}-${i}`);
+                    if (el) {
+                        el.addEventListener('click', () => selectLikert(q.id, i));
+                    }
+                });
+            } else {
+                const ta = document.getElementById(`open-${q.id}`);
+                if (ta) {
+                    ta.addEventListener('input', () => {
+                        answers[q.id] = ta.value;
+                        updateStats();
+                    });
+                }
+            }
+        });
+
+        updateStats();
+    }
+
+    function renderLikertScale(q, selected) {
+        const levels = q.scale_levels || [];
+        const radios = levels.map((lv, i) => {
+            const sel = selected === i ? ' selected' : '';
+            return `<div class="likert-option${sel}" id="likert-${q.id}-${i}" title="${lv}">${i + 1}</div>`;
+        }).join('');
+        const labels = levels.map(lv => `<span class="likert-label">${lv}</span>`).join('');
+        return `
+            <div class="likert-scale">
+                ${radios}
+            </div>
+            <div style="display:flex; gap:4px; margin-top:4px;">
+                ${labels}
+            </div>
+        `;
+    }
+
+    function renderOpenEnded(q, selected) {
+        return `<textarea id="open-${q.id}" rows="3" style="width:100%; padding:8px; background:#0f172a; border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:0.85rem; margin-top:6px;" placeholder="请填写您的意见...">${selected || ''}</textarea>`;
+    }
+
+    function selectLikert(qId, levelIndex) {
+        answers[qId] = levelIndex;
+        // Re-render just this item
+        const q = questionnaireData.find(x => x.id === qId);
+        if (!q) return;
+        const item = document.getElementById('q-' + qId);
+        if (!item) return;
+        const levels = q.scale_levels || [];
+        levels.forEach((_, i) => {
+            const el = document.getElementById(`likert-${qId}-${i}`);
+            if (el) el.classList.toggle('selected', i === levelIndex);
+        });
+        updateStats();
+    }
+
+    function updateStats() {
+        const total = questionnaireData.length;
+        const likert = questionnaireData.filter(q => q.question_type === 'likert').length;
+        const open = questionnaireData.filter(q => q.question_type === 'open_ended').length;
+        const answered = Object.values(answers).filter(v => v !== undefined && v !== '').length;
+
+        document.getElementById('stat-total').textContent = total;
+        document.getElementById('stat-likert').textContent = likert;
+        document.getElementById('stat-open').textContent = open;
+        document.getElementById('stat-answered').textContent = answered;
+    }
+
+    function exportAsCSV() {
+        if (!questionnaireData.length) return;
+        let csv = '\uFEFF序号,题型,问题,关联指标,答案\n';
+        questionnaireData.forEach(q => {
+            const ans = answers[q.id];
+            let ansText = '';
+            if (q.question_type === 'likert' && ans !== undefined) {
+                ansText = (q.scale_levels || [])[ans] || String(ans + 1);
+            } else if (q.question_type === 'open_ended') {
+                ansText = `"${(ans || '').replace(/"/g, '""')}"`;
+            }
+            csv += `${q.index},${q.question_type === 'likert' ? '量表题' : '开放题'},"${q.question}","${q.related_indicator_name || ''}",${ansText}\n`;
+        });
+
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `问卷_${new Date().toISOString().slice(0,10)}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast('CSV 已下载');
+    }
+
+    async function submitAnswers() {
+        if (!sessionId) { showToast('请先生成问卷', 'error'); return; }
+        if (!questionnaireData.length) { showToast('问卷为空', 'error'); return; }
+
+        const payload = {
+            session_id: sessionId,
+            answers: questionnaireData.map(q => ({
+                question_id: q.id,
+                question_text: q.question,
+                question_type: q.question_type,
+                related_indicator_id: q.related_indicator_id || '',
+                related_indicator_name: q.related_indicator_name || '',
+                selected_level_index: q.question_type === 'likert' ? (answers[q.id] ?? null) : null,
+                text_answer: q.question_type === 'open_ended' ? (answers[q.id] || '') : null,
+            })),
+        };
+
+        try {
+            const resp = await fetch('/api/agent/workflow/questionnaire/submit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            const data = await resp.json();
+            if (data.success) {
+                showToast(`✅ 答卷已提交，共保存 ${data.data.saved} 条`);
+            } else {
+                showToast('提交失败: ' + (data.message || '未知错误'), 'error');
+            }
+        } catch(e) {
+            showToast('提交失败: ' + e.message, 'error');
+        }
+    }
+
+    function printQuestionnaire() {
+        window.print();
+    }
+
+    function showToast(msg, type = 'success') {
+        const container = document.getElementById('toast-container');
+        const t = document.createElement('div');
+        t.className = `toast toast-${type}`;
+        t.textContent = msg;
+        container.appendChild(t);
+        setTimeout(() => t.remove(), 3000);
+    }
+    </script>
+</body>
+</html>
