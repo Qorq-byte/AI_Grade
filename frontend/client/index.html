@@ -1246,3 +1246,308 @@ function filterReportList(){
     renderReportList(filtered);
 }
 
+function loadQuestionnaireList(){
+    var grid=document.getElementById('questionnaireGrid');if(!grid)return;
+    if(window._currentQuestionData&&window._currentQuestionData.length)return;
+    grid.innerHTML='<p class="loading-hint">加载中...</p>';
+    api('GET','/api/agent/workflow/questionnaire/list').then(function(r){
+        window._questionnaireData=r.data||[];
+        updateQuestionnaireStats(window._questionnaireData);
+        renderQuestionnaireGrid(window._questionnaireData);
+    }).catch(function(e){
+        grid.innerHTML='<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#a0aec0" stroke-width="1.5"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg><h3>加载失败</h3><p>'+esc(e.message||'网络不可达')+'</p></div>';
+    })
+}
+function updateQuestionnaireStats(data){
+    var total=data?data.length:0;
+    var pending=0,done=0;if(data)for(var i=0;i<data.length;i++){if(data[i].question_count>0)pending++;else done++}
+    document.getElementById('statQPending')&&(document.getElementById('statQPending').textContent=pending);
+    document.getElementById('statQDone')&&(document.getElementById('statQDone').textContent=done);
+    document.getElementById('statQTotal')&&(document.getElementById('statQTotal').textContent=total);
+    updateBatchDeleteState('questionnaire');
+}
+function renderQuestionnaireGrid(data){
+    var grid=document.getElementById('questionnaireGrid');if(!grid)return;
+    document.getElementById('qTotalCount')&&(document.getElementById('qTotalCount').textContent=data?data.length:0);
+    if(!data||!data.length){
+        window._currentQuestionData=null;
+        grid.innerHTML='<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#a0aec0" stroke-width="1.5"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg><h3>暂无问卷记录</h3><p>在「绩效评价」工作流 Step 6 可生成配套问卷</p><button class="btn-primary" onclick="switchTab(\'performance\',document.querySelector(\'.nav-link[onclick*=\\\'performance\\\']\'))">前往绩效评价</button></div>';return;
+    }
+    var h='';
+    for(var i=0;i<data.length;i++){
+        var d=data[i],sid=esc(d.session_id||''),pn=esc(d.project_name||'未命名项目');
+        var label=d.question_count>0?(d.question_count+' 题 待填写'):(d.needs_generation?'待生成问卷':'已提交');
+        var cls=d.question_count>0?'green':(d.needs_generation?'orange':'blue');
+        var timeStr=(d.created_at||d.updated_at)?esc((d.created_at||d.updated_at).slice(0,19).replace('T',' ')):'--';
+        h+='<div class="stat-card" id="qcard_'+sid+'" style="cursor:default;position:relative">';
+        // 标题行：勾选框 + 项目名 + 折叠按钮
+        h+='<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">';
+        h+='<input type="checkbox" class="batch-check" onchange="updateBatchDeleteState(\'questionnaire\')" data-sid="'+sid+'" style="width:16px;height:16px;accent-color:#667eea;cursor:pointer;flex-shrink:0">';
+        h+='<div class="stat-label" onclick="openQuestionnaire(\''+sid+'\',\''+pn+'\')" style="font-size:14px;font-weight:600;flex:1;min-width:0;cursor:pointer">'+pn+'</div>';
+        h+='<button class="card-toggle" onclick="toggleCard(\'qcard_'+sid+'\')" title="折叠/展开" style="width:26px;height:26px;border-radius:50%;border:1px solid #e2e8f0;background:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:14px;color:#718096;transition:all .2s">−</button>';
+        h+='</div>';
+        // 可折叠区
+        h+='<div class="card-detail" id="qdetail_'+sid+'">';
+        h+='<div class="stat-header"><div class="stat-icon '+cls+'"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div></div>';
+        h+='<div class="stat-value" style="font-size:14px;color:#667eea">'+label+'</div>';
+        h+='<div style="font-size:11px;color:#a0aec0;margin-top:4px">生成时间：'+timeStr+'</div>';
+        h+='<button class="btn-delete" style="position:absolute;top:8px;right:36px;font-size:11px;padding:3px 8px;height:auto;z-index:1" onclick="event.stopPropagation();deleteQuestionnaire(\''+sid+'\',\''+pn+'\')">删除</button>';
+        h+='</div>';
+        h+='</div>';
+    }
+    grid.innerHTML=h;
+    updateBatchDeleteState('questionnaire');
+}
+function batchDeleteQuestionnaires(){
+    var cbs=document.getElementById('questionnaireGrid').querySelectorAll('.batch-check:checked');
+    if(!cbs.length){showToast('请先勾选要删除的问卷','warn');return}
+    var ids=[];cbs.forEach(function(cb){ids.push(cb.getAttribute('data-sid'))});
+    if(!confirm('确定要删除选中的 '+ids.length+' 条问卷吗？\n删除后相关数据将被移除。'))return;
+    api('POST','/api/agent/workflow/questionnaire/batch-delete',{session_ids:ids}).then(function(r){
+        if(r.success){
+            showToast('成功删除 '+r.data.deleted+' 条问卷','success');
+            window._questionnaireData=(window._questionnaireData||[]).filter(function(d){return ids.indexOf(d.session_id)<0});
+            updateQuestionnaireStats(window._questionnaireData);
+            renderQuestionnaireGrid(window._questionnaireData);
+        }
+    }).catch(function(e){showToast('批量删除失败: '+e.message,'error')})
+}
+function deleteQuestionnaire(sid,pn){
+    if(!confirm('确定要删除问卷「'+esc(pn)+'」吗？\n删除后相关问卷数据将被移除。'))return;
+    api('DELETE','/api/agent/workflow/questionnaire/'+encodeURIComponent(sid)).then(function(r){
+        if(r.success){
+            showToast('问卷已删除','success');
+            window._questionnaireData=(window._questionnaireData||[]).filter(function(d){return d.session_id!==sid});
+            updateQuestionnaireStats(window._questionnaireData);
+            renderQuestionnaireGrid(window._questionnaireData);
+        }
+    }).catch(function(e){showToast('删除失败: '+e.message,'error')})
+}
+function filterQuestionnaireList(){
+    var raw=window._questionnaireData||[];
+    var kw=(document.getElementById('qSearchInput')?.value||'').trim().toLowerCase();
+    var st=document.getElementById('qStatusFilter')?.value||'all';
+    var filtered=raw.filter(function(d){
+        if(kw&&(d.project_name||'').toLowerCase().indexOf(kw)<0)return false;
+        if(st==='pending'&&d.question_count<=0)return false;
+        if(st==='submitted'&&d.question_count>0)return false;
+        return true;
+    });
+    updateQuestionnaireStats(filtered);
+    renderQuestionnaireGrid(filtered);
+}
+function selectAllQuestionnaires(){
+    var sel=document.getElementById('qSelectAll');if(!sel)return;
+    var checked=sel.checked;
+    var cbs=document.getElementById('questionnaireGrid').querySelectorAll('.batch-check');
+    cbs.forEach(function(cb){cb.checked=checked});
+    updateBatchDeleteState('questionnaire');
+}
+
+function openQuestionnaire(sid,pn){
+    document.getElementById('questionnaireStatsGrid')&&(document.getElementById('questionnaireStatsGrid').style.display='none');
+    document.getElementById('questionnaireGrid').innerHTML='<p class="loading-hint">生成问卷中...</p>';
+    api('POST','/api/agent/workflow/questionnaire',{session_id:sid,max_questions:20}).then(function(r){
+        if(!r.success||!r.data||!r.data.questionnaire||!r.data.questionnaire.length){
+            showToast('问卷生成失败：该工作流尚无指标体系，请先完成Step3','error');return}
+        var qs=r.data.questionnaire;
+        window._currentQuestionData=qs;
+        var h='<div class="content-header"><h1>问卷填写</h1><p>项目：'+esc(pn||'未命名')+' | 共 '+qs.length+' 题</p></div><div style="max-height:calc(100vh - 200px);overflow-y:auto;padding-right:4px">';
+        for(var i=0;i<qs.length;i++){
+            var q=qs[i],qt=q.question_text||'';
+            h+='<div class="content-panel" style="background:#fafbff"><div class="panel-title" style="font-size:14px">第'+(i+1)+'题：'+esc(qt)+'</div><div class="panel-content"><div style="display:flex;gap:8px;flex-wrap:wrap">';
+            var levels=['非常不满意','不满意','一般','满意','非常满意'];
+            for(var li=0;li<5;li++)h+='<label class="likert-label" onmouseover="this.style.borderColor=\'#667eea\';this.style.background=\'#ebf5ff\'" onmouseout="var r=document.querySelector(\'input[name=q_'+i+']:checked\');if(!r||r.value!==\''+li+'\'){this.style.borderColor=\'#e2e8f0\';this.style.background=\'white\'}"><input type="radio" name="q_'+i+'" value="'+li+'" onchange="markAnswered(this)" style="accent-color:#667eea">'+levels[li]+'</label>';
+            h+='</div></div></div>'}
+        h+='<div style="padding:20px;display:flex;gap:12px;justify-content:center"><button class="btn-export" onclick="backToQuestionnaireList()">返回列表</button><button class="btn-primary" style="padding:10px 32px" onclick="submitQuestionnaire(\''+esc(sid)+'\','+qs.length+')">提交问卷</button></div></div>';
+        document.getElementById('questionnaire').innerHTML=h
+    }).catch(function(e){showToast('问卷生成失败: '+e.message,'error')})
+}
+function markAnswered(rb){
+    var label=rb.parentElement;
+    var all=label.parentElement.querySelectorAll('label');
+    all.forEach(function(l){l.style.borderColor='#e2e8f0';l.style.background='white'});
+    label.style.borderColor='#667eea';label.style.background='#ebf5ff'
+}
+function submitQuestionnaire(sid,total){
+    var answers=[];
+    for(var i=0;i<total;i++){
+        var rb=document.querySelector('input[name=q_'+i+']:checked');
+        if(!rb){showToast('请回答第'+(i+1)+'题','error');return}
+        var actualQid=window._currentQuestionData?(window._currentQuestionData[i]?.question_id||''+i):(''+i);
+        var actualQtext=window._currentQuestionData?(window._currentQuestionData[i]?.question_text||''):'';
+        var actualQtype=window._currentQuestionData?(window._currentQuestionData[i]?.question_type||'likert'):'likert';
+        answers.push({question_id:actualQid,question_text:actualQtext,question_type:actualQtype,selected_level_index:parseInt(rb.value)})
+    }
+    api('POST','/api/agent/workflow/questionnaire/submit',{session_id:sid,answers:answers}).then(function(r){
+        if(r.success){showToast('问卷提交成功！共 '+r.data.saved+' 条','success');backToQuestionnaireList()}
+    }).catch(function(e){showToast('提交失败: '+e.message,'error')})
+}
+function backToQuestionnaireList(){
+    window._currentQuestionData=null;
+    document.getElementById('questionnaire').innerHTML='<div class="content-header"><h1>问卷填写</h1><p>基于绩效评价指标体系生成的调查问卷，采用里克特5级量表进行评价</p></div><div class="dashboard-grid" id="questionnaireStatsGrid"><div class="stat-card"><div class="stat-header"><div class="stat-icon green"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div></div><div class="stat-label">待填写</div><div class="stat-value" id="statQPending">--</div></div><div class="stat-card"><div class="stat-header"><div class="stat-icon blue"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></div></div><div class="stat-label">已提交</div><div class="stat-value" id="statQDone">--</div></div><div class="stat-card"><div class="stat-header"><div class="stat-icon purple"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div></div><div class="stat-label">问卷总数</div><div class="stat-value" id="statQTotal">--</div></div></div><div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap"><input type="text" class="input-field" id="qSearchInput" placeholder="搜索项目名称..." style="max-width:240px" oninput="filterQuestionnaireList()"><select class="wf-select" id="qStatusFilter" onchange="filterQuestionnaireList()" style="width:140px"><option value="all">全部状态</option><option value="pending">待填写</option><option value="submitted">已提交</option></select><label style="display:flex;align-items:center;gap:4px;font-size:12px;color:#4a5568;cursor:pointer;white-space:nowrap"><input type="checkbox" id="qSelectAll" onchange="selectAllQuestionnaires()" style="width:15px;height:15px;accent-color:#667eea;cursor:pointer"> 全选</label><span style="font-size:12px;color:#a0aec0">共 <strong id="qTotalCount">0</strong> 条记录</span><button class="btn-delete" id="qBatchDelBtn" onclick="batchDeleteQuestionnaires()" disabled style="font-size:12px;padding:6px 14px;height:30px;margin-left:auto">删除选中</button><button class="btn-export" onclick="backToQuestionnaireList()" style="font-size:12px;padding:6px 14px;height:30px">返回列表</button></div><div class="dashboard-grid" id="questionnaireGrid"><p class="loading-hint">加载中...</p></div><div style="margin-top:20px"><div class="content-panel"><div class="panel-title">问卷填写流程</div><div class="panel-content"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:center"><div class="step-badge">Step 1<span>启动工作流<br>上传项目文件</span></div><span style="color:#cbd5e0;font-size:18px;line-height:68px">→</span><div class="step-badge">Step 6<span>指标体系<br>生成问卷</span></div><span style="color:#cbd5e0;font-size:18px;line-height:68px">→</span><div class="step-badge">Step 3<span>在线填写<br>5级量表评价</span></div><span style="color:#cbd5e0;font-size:18px;line-height:68px">→</span><div class="step-badge" style="background:#f0fff4;border-color:#c6f6d5;color:#22543d">Step 4<span>提交数据<br>关联分析</span></div></div></div></div></div>';
+    loadQuestionnaireList();
+}
+
+// ===== REPORTS API (backend side) =====
+
+// ===== INIT =====
+document.addEventListener('DOMContentLoaded',function(){
+    try{
+        // 可见状态标记 — 确认JS已执行
+        var vtag=document.createElement('div');
+        vtag.id='jsStatusTag';
+        vtag.style.cssText='position:fixed;bottom:8px;right:8px;background:#48bb78;color:white;padding:3px 10px;border-radius:12px;font-size:10px;z-index:99999;opacity:0.7';
+        vtag.textContent='JS v250523.1 OK';
+        document.body.appendChild(vtag);
+
+        var u=getUser();if(!u){window.location.href='/login?redirect=/client';return}
+        initSpeechRecognition();initWfStepper();loadUserData();checkAiChatStatus();loadConversations();loadDashboardData();loadRecentActivity();startNotificationPoll();loadAiModels();chatStatusPollTimer=setInterval(checkAiChatStatus,30000);
+
+        setTimeout(function(){
+            var tag=document.getElementById('jsStatusTag');
+            if(tag)tag.textContent='JS v250523.1 READY';
+        },1000);
+    }catch(e){
+        var er=document.getElementById('jsErrorBanner');
+        if(er){er.textContent='INIT ERROR: '+e.message;er.style.display='block'}
+    }
+})
+        function loadUserData(){var tel=document.getElementById('settingsTokens');if(tel)tel.textContent='加载中...';api('GET','/api/client/me').then(function(r){if(r&&r.success&&r.data){currentUserData=r.data;updateAllUI();refreshTokenDisplay();startTokenPolling()}}).catch(function(e){var em=e.message||'';if(em.indexOf('401')>=0||em.indexOf('403')>=0||em.indexOf('login')>=0){sessionStorage.removeItem('token');localStorage.removeItem('token');localStorage.removeItem('user');sessionStorage.removeItem('user');window.location.href='/login?redirect=/client'}else{console.error('加载用户数据失败:',em)}})}
+        var _tokenPollTimer=null;
+        function startTokenPolling(){stopTokenPolling();_tokenPollTimer=setInterval(refreshTokenDisplay,30000)}
+        function stopTokenPolling(){if(_tokenPollTimer){clearInterval(_tokenPollTimer);_tokenPollTimer=null}}
+        function refreshTokenDisplay(){api('GET','/api/client/token-stats').then(function(r){if(r&&r.success&&r.data){var t=r.data.total_tokens||0;document.getElementById('sidebarTokenCount').textContent=t;document.getElementById('settingsTokens').textContent=t;if(currentUserData)currentUserData.tokens_used=t}}).catch(function(){})}
+        function checkAiChatStatus(){api('GET','/api/client/ai/chat-status').then(function(r){if(!r||!r.data)return;isChatEnabled=r.data.enabled;var d=document.getElementById('chatDisabled'),b=document.getElementById('sendButton'),p=document.getElementById('promptTextarea');if(!isChatEnabled){if(d)d.style.display='block';if(b)b.disabled=true;if(p)p.disabled=true;if(p)p.placeholder='AI聊天已被管理员禁用'}else{if(d)d.style.display='none';if(b)b.disabled=false;if(p)p.disabled=false;if(p)p.placeholder='输入您的问题...'}}).catch(function(e){console.warn('AI聊天状态查询失败:',e)})}
+        function updateAllUI(){if(!currentUserData){setTimeout(function(){loadUserData()},2000);return}var n=currentUserData.username,i=n.charAt(0).toUpperCase(),r=currentUserData.role==='admin'?'管理员':'普通用户';document.getElementById('sidebarUserName').textContent=n;document.getElementById('sidebarUserRole').textContent=r;[document.getElementById('userAvatar'),document.getElementById('settingsAvatar')].forEach(function(e){if(!e)return;if(currentUserData.avatar_url)e.innerHTML='<img src="'+currentUserData.avatar_url+'" alt="头像">';else{var s=e.querySelector('span');if(s)s.textContent=i}});var sa=document.getElementById('settingsAvatarInitial');if(sa&&!currentUserData.avatar_url)sa.textContent=i;document.getElementById('settingsRole').textContent=r;document.getElementById('settingsCreatedAt').textContent=currentUserData.created_at?new Date(currentUserData.created_at).toLocaleDateString('zh-CN'):'--';document.getElementById('settingsTokens').textContent=currentUserData.tokens_used||0;
+            document.getElementById('sidebarTokenCount').textContent=currentUserData.tokens_used||0;
+            document.getElementById('editUsername').value=n}
+        function handleAvatarUpload(e){var f=e.target.files[0];if(!f)return;if(!f.type.startsWith('image/')){showToast('仅支持图片','error');return}if(f.size>5242880){showToast('图片不能超过5MB','error');return}var fd=new FormData();fd.append('file',f);uploadApi('/api/client/avatar',fd).then(function(r){if(r.success){currentUserData.avatar_url=r.data.avatar_url;updateAllUI();showToast('头像更新成功')}}).catch(function(e){showToast(e.message,'error')});e.target.value=''}
+        function saveUsername(){var n=document.getElementById('editUsername').value.trim();if(!n){showToast('用户名不能为空','error');return}if(n.length<2){showToast('用户名至少2个字符','error');return}if(n===currentUserData.username){showToast('用户名未变化','success');return}var b=document.querySelector('#settings button.btn-primary');b.disabled=true;b.textContent='保存中...';api('PUT','/api/client/profile',{username:n}).then(function(r){if(r.success){currentUserData.username=r.data.username;currentUserData.avatar_url=r.data.avatar_url;currentUserData.role=r.data.role;updateAllUI();var u=getUser();if(u){u.username=r.data.username;var s=JSON.stringify(u);sessionStorage.setItem('user',s);if(localStorage.getItem('user'))localStorage.setItem('user',s)}showToast('用户名修改成功')}}).catch(function(e){showToast(e.message,'error')}).finally(function(){b.disabled=false;b.textContent='保存'})}
+        function handleLogout(){if(!confirm('确定退出？'))return;sessionStorage.clear();localStorage.clear();showToast('已退出登录');setTimeout(function(){window.location.href='/login'},500)}
+        function handleDeleteAccount(){if(!confirm('警告：此操作将永久删除您的账号和所有数据！\n\n确定要注销吗？'))return;var i=prompt('请输入"确认注销"以继续：');if(i!=='确认注销'){showToast('操作已取消','error');return}var b=document.getElementById('deleteAccountBtn');b.disabled=true;b.textContent='注销中...';api('DELETE','/api/client/account').then(function(r){if(r.success){sessionStorage.clear();localStorage.clear();alert('账号已成功注销。');window.location.href='/'}}).catch(function(e){showToast(e.message,'error');b.disabled=false;b.textContent='注销账号'})}
+        function changeClientPassword(){var o=document.getElementById('oldPassword').value.trim(),n=document.getElementById('newPassword').value,cn=document.getElementById('confirmNewPassword').value,err=document.getElementById('pwdError'),ok=document.getElementById('pwdSuccess'),btn=document.getElementById('pwdSaveBtn');err.style.display='none';ok.style.display='none';if(!o||!n||!cn){err.textContent='请填写所有密码字段';err.style.display='block';return}if(n.length<6){err.textContent='新密码长度不能少于6位';err.style.display='block';return}if(n!==cn){err.textContent='两次输入的新密码不一致';err.style.display='block';return}btn.disabled=true;btn.textContent='修改中...';api('PUT','/api/client/password',{old_password:o,new_password:n}).then(function(r){ok.style.display='block';document.getElementById('oldPassword').value='';document.getElementById('newPassword').value='';document.getElementById('confirmNewPassword').value='';showToast('密码修改成功')}).catch(function(e){err.textContent=e.message||'修改失败';err.style.display='block'}).finally(function(){btn.disabled=false;btn.textContent='修改密码'})}
+
+        // ===== AI CHAT =====
+        function handleInputChange(){var t=document.getElementById('promptTextarea'),s=document.getElementById('sendButton');if(!isRecording){if(t.value.trim())s.className='send-btn-dark active';else s.className='send-btn-dark idle'}}
+        function updateSendButton(){var s=document.getElementById('sendButton');if(isRecording)s.className='send-btn-dark recording-btn';else if(document.getElementById('promptTextarea').value.trim())s.className='send-btn-dark active';else s.className='send-btn-dark idle'}
+        function handleKeyDown(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChatMessage()}}
+        function sendChatMessage(){var t=document.getElementById('promptTextarea'),m=t.value.trim();if(!m)return;if(!isChatEnabled){showToast('AI聊天已禁用','error');return}t.value='';updateSendButton();var dp=m;(currentMode==='search')?dp='[搜索: '+m+']':(currentMode==='think')?dp='[深度思考: '+m+']':(currentMode==='canvas')?dp='[画布: '+m+']':null;
+            addChatBubble('user',m);t.disabled=true;document.getElementById('sendButton').disabled=true;
+            var th=addChatBubble('assistant','思考中...',true);
+            var reqBody={message:dp};if(currentConversationId)reqBody.conversation_id=currentConversationId;var sel=document.getElementById('aiModelSelect');if(sel&&sel.value)reqBody.model=sel.value;api('POST','/api/client/ai/chat',reqBody).then(function(r){
+                if(th&&th.parentNode)th.remove();addChatBubble('assistant',r.data.reply);
+                if(r.data.model){var st=document.getElementById('aiModelStatus');if(st)st.textContent='模型: '+r.data.model}
+                if(!currentConversationId||r.data.conversation_id!==currentConversationId)currentConversationId=r.data.conversation_id;
+                loadConversations();refreshTokenDisplay()
+            }).catch(function(e){var msg='未知错误';if(typeof e==='string')msg=e;else if(e&&typeof e.message==='string')msg=e.message;else if(e)try{msg=JSON.stringify(e)}catch(x){};if(th&&th.parentNode)th.remove();addChatBubble('assistant','抱歉，AI服务暂时不可用：'+msg)})
+            .finally(function(){t.disabled=false;document.getElementById('sendButton').disabled=false;t.focus();checkAiChatStatus()})
+        }
+        function loadAiModels(){api('GET','/api/client/ai/models').then(function(r){var sel=document.getElementById('aiModelSelect');if(!sel)return;var models=r.data.models||[];var def=r.data.default_model||'';if(!models.length){sel.innerHTML='<option value="">暂无可用模型</option>';var st=document.getElementById('aiModelStatus');if(st)st.textContent='未配置API密钥';return}sel.innerHTML='';var savedModel=localStorage.getItem('ai_selected_model')||def;var hasSaved=false;for(var i=0;i<models.length;i++){var m=models[i];var opt=document.createElement('option');opt.value=m.model;opt.textContent=m.provider+' - '+m.model;opt.title=m.provider+' / '+m.model;if(m.model===savedModel){opt.selected=true;hasSaved=true}sel.appendChild(opt)}if(!hasSaved&&def){sel.value=def}onModelChange(sel.value)}).catch(function(e){var sel=document.getElementById('aiModelSelect');if(sel)sel.innerHTML='<option value="">加载失败</option>'})}
+        function onModelChange(val){var st=document.getElementById('aiModelStatus');if(st){if(val)st.textContent='当前: '+val;else st.textContent='--'}if(val){localStorage.setItem('ai_selected_model',val);var wf=document.getElementById('wfModel');if(wf){var found=false;for(var i=0;i<wf.options.length;i++){if(wf.options[i].value===val){wf.selectedIndex=i;found=true;break}}if(!found){var opt=document.createElement('option');opt.value=val;opt.textContent=val;wf.appendChild(opt);wf.value=val}showToast('已切换模型: '+val,'success')}}}
+        function onWfModelChange(val){if(!val)return;var sel=document.getElementById('aiModelSelect');if(sel){var found=false;for(var i=0;i<sel.options.length;i++){if(sel.options[i].value===val){sel.selectedIndex=i;found=true;break}}if(!found){var opt=document.createElement('option');opt.value=val;opt.textContent=val;sel.appendChild(opt);sel.value=val}}var st=document.getElementById('aiModelStatus');if(st)st.textContent='当前: '+val;localStorage.setItem('ai_selected_model',val);showToast('工作流模型已切换: '+val,'success')}
+        function addChatBubble(role,content,isTemp){var c=document.getElementById('chatMessages');if(!c)return null;var el=document.createElement('div');el.className='chat-message-dark '+role;var av='<div class="chat-avatar '+role+'">'+(role==='user'?'我':'AI')+'</div>';var bb='<div class="chat-bubble-dark">'+esc(content)+'</div>';el.innerHTML=role==='user'?bb+av:av+bb;c.appendChild(el);c.scrollTop=c.scrollHeight;if(!isTemp){var e=c.querySelector('.chat-empty');if(e)e.style.display='none'}return el}
+        function renderChatMessages(msgs){var c=document.getElementById('chatMessages');if(!c)return;c.innerHTML='';if(!msgs||!msgs.length){c.innerHTML='<div class="chat-empty"><h2>我能帮您什么？</h2><p>随时向我提问，我会尽力帮助您</p></div>';return}for(var i=0;i<msgs.length;i++){var m=msgs[i],el=document.createElement('div');el.className='chat-message-dark '+m.role;var av='<div class="chat-avatar '+m.role+'">'+(m.role==='user'?'我':'AI')+'</div>';el.innerHTML=m.role==='user'?'<div class="chat-bubble-dark">'+esc(m.content)+'</div>'+av:av+'<div class="chat-bubble-dark">'+esc(m.content)+'</div>';c.appendChild(el)}c.scrollTop=c.scrollHeight}
+
+        function createNewConversation(){currentConversationId=null;renderChatMessages([]);var t=document.getElementById('promptTextarea');if(t)t.focus();switchTab('ai-chat',document.querySelector('[onclick*=\"ai-chat\"]'));loadConversations()}
+        function loadConversations(){api('GET','/api/client/ai/conversations').then(function(r){conversations=r.data||[];renderConvList()}).catch(function(){})}
+        function renderConvList(){var l=document.getElementById('convList');if(!l)return;if(!conversations||!conversations.length){l.innerHTML='<li class="no-conv">暂无对话记录</li>';return}l.innerHTML='';for(var i=0;i<conversations.length;i++){(function(idx){var c=conversations[idx],li=document.createElement('li');li.className='conv-item'+(c.id===currentConversationId?' active':'');li.innerHTML='<span class="conv-title" title="'+esc(c.title||'')+'">'+esc(c.title||'')+'</span><button class="conv-delete" title="删除" onclick="event.stopPropagation();deleteConv('+c.id+')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>';li.onclick=function(){switchToConv(c.id)};l.appendChild(li)})(i)}}
+        function switchToConv(cid){if(!cid){currentConversationId=null;renderChatMessages([]);renderConvList();return}currentConversationId=cid;api('GET','/api/client/ai/conversations/'+cid).then(function(r){if(r.success){renderChatMessages(r.data.messages);switchTab('ai-chat',document.querySelector('[onclick*=\"ai-chat\"]'));renderConvList()}}).catch(function(){})}
+        function deleteConv(cid){if(!confirm('确定删除此对话？'))return;api('DELETE','/api/client/ai/conversations/'+cid).then(function(r){showToast(r.message||'已删除');if(currentConversationId===cid){currentConversationId=null;renderChatMessages([])}loadConversations()}).catch(function(e){showToast(e.message,'error')})}
+
+        function toggleMode(md){currentMode=currentMode===md?'':md;var s=document.getElementById('toggleSearch'),t=document.getElementById('toggleThink'),c=document.getElementById('toggleCanvas');if(s)s.className='toggle-btn'+(currentMode==='search'?' on':'');if(t)t.className='toggle-btn think'+(currentMode==='think'?' on':'');if(c)c.className='toggle-btn canvas'+(currentMode==='canvas'?' on':'');var ph='输入您的问题...';if(currentMode==='search')ph='搜索网络...';else if(currentMode==='think')ph='深度思考...';else if(currentMode==='canvas')ph='创建画布...';document.getElementById('promptTextarea').placeholder=ph}
+        function handleFileUpload(e){showToast('图片已选择，输入文本后发送');e.target.value=''}
+        function toggleUserCardMenu(e){e.stopPropagation();document.getElementById('userCardMenu').classList.toggle('show')}
+        document.addEventListener('click',function(){var m=document.getElementById('userCardMenu');if(m)m.classList.remove('show')})
+
+        function toggleCollapse(){var s=document.getElementById('sidebar'),ic=document.getElementById('collapseIcon');isCollapsed=!isCollapsed;if(isCollapsed){s.classList.remove('expanded');s.classList.add('collapsed');ic.innerHTML='<polyline points="9 18 15 12 9 6"/>'}else{s.classList.remove('collapsed');s.classList.add('expanded');ic.innerHTML='<polyline points="15 18 9 12 15 6"/>'}}
+        function toggleMobileSidebar(){var s=document.getElementById('sidebar'),o=document.getElementById('mobileOverlay');isMobileOpen=!isMobileOpen;if(isMobileOpen){s.classList.add('open');o.classList.add('show')}else{s.classList.remove('open');o.classList.remove('show')}}
+        function switchTab(tid,el){
+    try{
+    var all=document.querySelectorAll('.nav-link');for(var i=0;i<all.length;i++)all[i].classList.remove('active');
+    if(el&&el.classList)el.classList.add('active');
+    // 同时使用 class 和 inline style 确保可见性
+    document.querySelectorAll('.content-section').forEach(function(s){s.classList.remove('active');s.style.display='none'});
+    var t=document.getElementById(tid);
+    if(t){t.classList.add('active');t.style.display='block'}
+    if(tid==='ai-chat'){checkAiChatStatus();var ta=document.getElementById('promptTextarea');if(ta)ta.focus()}
+    if(tid==='settings'&&currentUserData){document.getElementById('editUsername').value=currentUserData.username;updateAllUI()}
+    if(tid==='dashboard'){loadDashboardData();loadRecentActivity();}
+    if(tid==='performance')initWfStepper();
+    if(tid==='reports')loadReports();
+    if(tid==='questionnaire')loadQuestionnaireList();
+    if(window.innerWidth<768&&isMobileOpen)toggleMobileSidebar()
+    }catch(e){console.error('switchTab error:',e)}
+}
+        window.addEventListener('resize',function(){if(window.innerWidth>=768&&isMobileOpen)toggleMobileSidebar()})
+
+        // ===== 通知 =====
+        var notificationPollTimer=null,notifCollapsed=true,NOTIF_COLLAPSE_LIMIT=5;
+        function toggleNotificationPanel(){
+            var p=document.getElementById('notificationPanel'),o=document.getElementById('notificationOverlay');
+            if(p.classList.contains('show')){closeNotificationPanel()}else{p.classList.add('show');o.classList.add('show');fetchNotifications()}
+        }
+        function closeNotificationPanel(){document.getElementById('notificationPanel').classList.remove('show');document.getElementById('notificationOverlay').classList.remove('show')}
+        function fetchNotifications(){
+            api('GET','/api/client/notifications').then(function(r){
+                if(!r||!r.success)return;
+                var data=r.data,list=document.getElementById('notificationList'),badge=document.getElementById('notificationBadge');
+                var count=data.unread_count||0;
+                if(count>0){badge.style.display='flex';badge.textContent=count>99?'99+':count}else{badge.style.display='none'}
+                var ns=data.notifications||[];
+                if(!ns.length){list.innerHTML='<div class="notification-empty"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg><p style="font-size:14px">暂无通知</p></div>';return}
+                var total=ns.length,showAll=!notifCollapsed||total<=NOTIF_COLLAPSE_LIMIT,visible=showAll?ns:ns.slice(0,NOTIF_COLLAPSE_LIMIT);
+                var h='';visible.forEach(function(n){
+                    h+='<div class="notification-item'+(n.is_read?'':' unread')+'" style="cursor:default">';
+                    h+='<div style="display:flex;justify-content:space-between;align-items:flex-start">';
+                    h+='<div style="flex:1" onclick="markNotificationRead('+n.id+')">';
+                    h+='<div class="ni-title">'+esc(n.title)+'</div>';
+                    h+='<div class="ni-content" id="nic_'+n.id+'">'+esc(n.content)+'</div>';
+                    h+='<button class="ni-expand-btn" id="nieb_'+n.id+'" onclick="event.stopPropagation();toggleNotificationContent('+n.id+')">展开 ▼</button>';
+                    h+='<div class="ni-time">'+formatTimeStr(n.created_at)+'</div></div>';
+                    h+='<button style="background:none;border:none;color:#a0aec0;cursor:pointer;font-size:16px;padding:0 0 0 8px;line-height:1" onclick="event.stopPropagation();deleteNotification('+n.id+')" title="删除">✕</button>';
+                    h+='</div></div>';
+                });
+                if(!showAll){
+                    h+='<div style="padding:10px 18px;text-align:center;cursor:pointer;color:#667eea;font-size:13px;border-top:1px solid #f0f0f0" onclick="notifCollapsed=false;fetchNotifications()">展开更多 (共 '+total+' 条，已显示 '+NOTIF_COLLAPSE_LIMIT+' 条)</div>';
+                }else if(total>NOTIF_COLLAPSE_LIMIT){
+                    h+='<div style="padding:10px 18px;text-align:center;cursor:pointer;color:#667eea;font-size:13px;border-top:1px solid #f0f0f0" onclick="notifCollapsed=true;fetchNotifications()">收起</div>';
+                }
+                list.innerHTML=h
+            }).catch(function(e){console.error('获取通知失败:',e)})
+        }
+        function markNotificationRead(id){
+            api('PUT','/api/client/notifications/'+id+'/read').then(function(r){if(r&&r.success)fetchNotifications()}).catch(function(){})
+        }
+        function toggleNotificationContent(id){
+            var content=document.getElementById('nic_'+id);
+            var btn=document.getElementById('nieb_'+id);
+            if(!content||!btn)return;
+            if(content.classList.contains('expanded')){
+                content.classList.remove('expanded');
+                btn.textContent='展开 ▼';
+            }else{
+                content.classList.add('expanded');
+                btn.textContent='收起 ▲';
+            }
+        }
+        function markAllNotificationsRead(){
+            api('PUT','/api/client/notifications/read-all').then(function(r){if(r&&r.success){showToast('已全部标记为已读');fetchNotifications()}}).catch(function(e){showToast(e.message,'error')})
+        }
+        function deleteNotification(id){
+            if(!confirm('确认删除此通知？'))return;
+            api('DELETE','/api/client/notifications/'+id).then(function(r){if(r&&r.success)fetchNotifications()}).catch(function(e){showToast('删除失败','error')})
+        }
+        function clearAllNotifications(){
+            if(!confirm('确认清空所有通知？此操作不可撤销。'))return;
+            api('DELETE','/api/client/notifications').then(function(r){if(r&&r.success){showToast(r.message);fetchNotifications()}}).catch(function(e){showToast('清空失败','error')})
+        }
+        function formatTimeStr(iso){if(!iso)return'';try{var d=new Date(iso),now=new Date(),diff=now-d;if(diff<60000)return'刚刚';if(diff<3600000)return Math.floor(diff/60000)+'分钟前';if(diff<86400000)return Math.floor(diff/3600000)+'小时前';if(diff<604800000)return Math.floor(diff/86400000)+'天前';return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')}catch(e){return iso}}
+        function startNotificationPoll(){stopNotificationPoll();fetchNotifications();notificationPollTimer=setInterval(fetchNotifications,30000)}
+        function stopNotificationPoll(){if(notificationPollTimer){clearInterval(notificationPollTimer);notificationPollTimer=null}};
+        // 页面关闭时停止轮询
+        window.addEventListener('beforeunload',function(){stopNotificationPoll();if(chatStatusPollTimer){clearInterval(chatStatusPollTimer);chatStatusPollTimer=null}});
+        
+    </script>
+</body>
+</html>
