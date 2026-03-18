@@ -1037,3 +1037,212 @@ else{showToast(stepLabel+d.message,'error');wfRunning=false;resetWfUI()}
             }
         }
 
+        function handleWfComplete(){
+            if(!wfSessionId)return;
+            var c=document.getElementById('wfContent');c&&(c.innerHTML='<div class="wf-empty"><svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#48bb78" stroke-width="1.5"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg><h3 style="color:#48bb78">工作流执行完成</h3><p>点击左侧步骤查看各步骤生成的内容，或点击下方按钮导出报告</p></div>');
+            wfUploadedFiles=[];['img','pdf','doc'].forEach(function(t){renderWfFilesByType(t)});
+            // 恢复文件上传区，允许开始新的评价（但保留 sessionId 用于导出和查看）
+            document.getElementById('wfFileZone').style.display='';
+            var sbtn=document.getElementById('wfStartBtn');if(sbtn){sbtn.disabled=false;sbtn.textContent='开始新评价'}
+            setTimeout(function(){loadUserData()},1000)
+        }
+
+        function approveWorkflow(approved){
+            document.getElementById('wfApprovalModal').style.display='none';
+            if(!approved){
+                var fb=document.getElementById('wfApprovalFeedback'),notes=fb?fb.value.trim():'';
+                if(!notes){showToast('请填写修改意见后再提交','warn');document.getElementById('wfApprovalModal').style.display='flex';return}
+                showToast('正在提交修改意见并重新生成该步骤...','success');
+                refineStepContent(wfApprovalStep, notes, true);
+                wfApprovalStep=null;
+                return;
+            }
+            var fb=document.getElementById('wfApprovalFeedback').value.trim();
+            showToast('正在继续执行工作流，请稍候...','success');
+            api('POST','/api/agent/workflow/approve',{session_id:wfSessionId,approved:approved,feedback:fb||''}).then(function(r){
+                if(r.success){
+                    wfApprovalStep=null;
+                    // 更新各步骤内容
+                    if(r.data&&r.data.step_results){
+                        var stp=r.data.step_results;
+                        for(var k in stp){wfStepContents[parseInt(k)]=stp[k].content||''}
+                    }
+                    // 更新已完成步骤列表
+                    if(r.data&&r.data.completed_steps){wfCompletedSteps=r.data.completed_steps}
+                    updateWfStepper();
+                    showToast('已确认，工作流继续执行','success');
+                    if(r.data.final_report){
+                        wfRunning=false;
+                        handleWfComplete();
+                    }
+                }
+            }).catch(function(e){showToast('审批失败: '+e.message,'error')})
+        }
+
+        function stopWorkflow(){if(!confirm('确定要终止工作流吗？'))return;
+            if(wfAbortController){wfAbortController.abort();wfAbortController=null}wfUploadedFiles=[];['img','pdf','doc'].forEach(function(t){renderWfFilesByType(t)});resetWfUI();showToast('工作流已终止','success')}
+
+        function resetWfUI(){wfRunning=false;var sbtn=document.getElementById('wfStartBtn');if(sbtn){sbtn.disabled=false;sbtn.textContent='开始评价'}document.getElementById('wfStartBtn').style.display='';document.getElementById('wfStopBtn').style.display='none';document.getElementById('wfProgress').style.display='none';document.getElementById('wfFileZone').style.display='';document.getElementById('wfLayout').style.display='none';updateWfStepper()}
+
+        function exportReport(fmt){
+            if(!wfSessionId){showToast('请先完成工作流','error');return}
+            var btns=document.querySelectorAll('[onclick*="exportReport"]');
+            btns.forEach(function(b){b.disabled=true;b.dataset.origText=b.textContent;b.textContent='导出中...'});
+            var body={session_id:wfSessionId,format:fmt,project_name:(document.getElementById('wfProjectName').value||'绩效评价报告')};
+            api('POST','/api/agent/workflow/export',body).then(function(r){
+                if(r.data&&r.data.file_path){showToast('报告导出成功','success');window.location.href='/api/agent/download/'+encodeURIComponent(r.data.file_name)}
+                else{showToast('导出失败：未获取到文件','error')}
+            }).catch(function(e){showToast('导出失败: '+e.message,'error')})
+            .finally(function(){btns.forEach(function(b){b.disabled=false;if(b.dataset.origText)b.textContent=b.dataset.origText})})
+        }
+
+        // ===== AI Chat =====
+        function initSpeechRecognition(){var S=window.SpeechRecognition||window.webkitSpeechRecognition;if(!S){speechRecognition=null;return}speechRecognition=new SpeechRecognition();speechRecognition.lang='zh-CN';speechRecognition.continuous=true;speechRecognition.interimResults=true;speechRecognition.onresult=function(e){var t='';for(var i=e.resultIndex;i<e.results.length;i++)t+=e.results[i][0].transcript;document.getElementById('promptTextarea').value=t;handleInputChange()};speechRecognition.onerror=function(e){stopRecording();showToast('语音识别出错','error')}}
+        function startRecording(){if(!isChatEnabled){showToast('AI聊天已禁用','error');return}isRecording=true;recordingSeconds=0;updateRecordingUI();document.getElementById('voiceRecorder').classList.remove('hidden');document.getElementById('promptTextarea').style.display='none';document.getElementById('voiceTime').textContent='00:00';document.getElementById('promptBox').classList.add('recording');var b=document.getElementById('voiceBars');b.innerHTML='';for(var i=0;i<32;i++)setTimeout(function(idx){var bar=document.createElement('div');bar.className='voice-bar';bar.style.animationDelay=(idx*.05)+'s';bar.style.animationDuration=(.4+Math.random()*.6)+'s';b.appendChild(bar)}.bind(null,i),i*30);recordingTimer=setInterval(function(){recordingSeconds++;var m=Math.floor(recordingSeconds/60),s=recordingSeconds%60;document.getElementById('voiceTime').textContent=(m<10?'0'+m:m)+':'+(s<10?'0'+s:s)},1000);if(speechRecognition)try{speechRecognition.start()}catch(e){}updateSendButton()}
+        function stopRecording(){isRecording=false;if(recordingTimer){clearInterval(recordingTimer);recordingTimer=null}if(speechRecognition)try{speechRecognition.stop()}catch(e){}document.getElementById('voiceRecorder').classList.add('hidden');document.getElementById('promptTextarea').style.display='';document.getElementById('promptBox').classList.remove('recording');updateSendButton();var t=document.getElementById('promptTextarea').value.trim();if(t)sendChatMessage()}
+        function updateRecordingUI(){var sb=document.getElementById('sendButton'),ic=document.getElementById('sendIcon');if(isRecording){sb.className='send-btn-dark recording-btn';ic.outerHTML='<rect x="4" y="4" width="16" height="16" rx="2" fill="currentColor" id="sendIcon"/>'}else{if(document.getElementById('promptTextarea').value.trim())sb.className='send-btn-dark active';else sb.className='send-btn-dark idle';document.getElementById('sendIcon').outerHTML='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" id="sendIcon"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>'}}
+        function handleSendOrRecord(){if(isRecording){stopRecording();return}var t=document.getElementById('promptTextarea').value.trim();if(t){sendChatMessage();return}if(!window.SpeechRecognition&&!window.webkitSpeechRecognition){showToast('浏览器不支持语音输入','error');return}startRecording()}
+
+        // ===== DASHBOARD =====
+function loadDashboardData(){api('GET','/api/client/dashboard').then(function(r){if(r&&r.success&&r.data){var d=r.data;document.getElementById('statProjects').textContent=d.completed_workflows||0;document.getElementById('statCompleted').textContent=d.total_reports||0;document.getElementById('statDialogs').textContent=d.ai_dialog_count||0;var tel=document.getElementById('settingsTokens');if(tel&&d.tokens_used!==undefined)tel.textContent=d.tokens_used;if(currentUserData&&d.tokens_used!==undefined)currentUserData.tokens_used=d.tokens_used}}).catch(function(){console.log('Dashboard data load failed')})}
+function loadRecentActivity(){
+    api('GET','/api/client/activity').then(function(r){
+        var el=document.getElementById('recentActivity');if(!el)return;
+        if(!r.success||!r.data||!r.data.length){el.innerHTML='<p style="color:#a0aec0">暂无活动记录</p>';return}
+        var h='<div style="display:flex;flex-direction:column;gap:12px">';
+        for(var i=0;i<Math.min(r.data.length,8);i++){var a=r.data[i],act='',icon='';
+            if(a.action==='workflow_start'){act='启动绩效评价工作流';icon='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#667eea" stroke-width="2"><path d="M5 12h14"/><polyline points="12 5 19 12 12 19"/></svg>'}
+            else if(a.action==='workflow_complete'){act='完成工作流';icon='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#48bb78" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>'}
+            else if(a.action==='ai_chat'){act='AI对话';icon='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9f7aea" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'}
+            else if(a.action==='report_export'){act='导出报告';icon='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ed8936" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>'}
+            else{act=a.action;icon='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#a0aec0" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>'}
+            h+='<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #f0f0f0">'+icon+'<div style="flex:1"><div style="font-size:13px;color:#1a202c">'+esc(a.description||act)+'</div><div style="font-size:12px;color:#a0aec0">'+esc(a.time||'')+'</div></div></div>'}
+        el.innerHTML=h+'</div>'
+    }).catch(function(){var el=document.getElementById('recentActivity');if(el)el.innerHTML='<p style="color:#a0aec0">加载失败</p>'})
+}
+
+function loadReports(){
+    var grid=document.getElementById('reportsGrid');if(!grid)return;
+    grid.innerHTML='<p class="loading-hint">加载中...</p>';
+    api('GET','/api/client/reports').then(function(r){
+        window._reportData=r.data||[];
+        updateReportStats(window._reportData);
+        renderReportList(window._reportData);
+    }).catch(function(e){
+        grid.innerHTML='<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#a0aec0" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><h3>加载失败</h3><p>'+esc(e.message||'网络不可达')+'</p></div>';
+    })
+}
+function updateReportStats(data){
+    var total=data?data.length:0;
+    var done=0;if(data)for(var i=0;i<data.length;i++){var s=data[i].status||'';if(s==='completed'||s==='已完成')done++}
+    document.getElementById('statReportTotal')&&(document.getElementById('statReportTotal').textContent=total);
+    document.getElementById('statReportDone')&&(document.getElementById('statReportDone').textContent=done);
+    var latest='--';if(data&&data.length>0){var d=data[data.length-1];latest=(d.project_name||'--')+(d.updated_at?' ('+d.updated_at.slice(0,10)+')':'')}
+    document.getElementById('statReportLatest')&&(document.getElementById('statReportLatest').textContent=latest);
+    // 更新批量删除按钮
+    updateBatchDeleteState('reports');
+}
+function renderReportList(data){
+    var el=document.getElementById('reportsGrid');if(!el)return;
+    document.getElementById('rTotalCount')&&(document.getElementById('rTotalCount').textContent=data?data.length:0);
+    if(!data||!data.length){
+        el.innerHTML='<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#a0aec0" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><h3>暂无评价报告</h3><p>完成一次「绩效评价」工作流后，系统将自动生成报告</p><button class="btn-primary" onclick="switchTab(\'performance\',document.querySelector(\'.nav-link[onclick*=\\\'performance\\\']\'))">前往绩效评价</button></div>';return;
+    }
+    var h='';
+    for(var i=0;i<data.length;i++){
+        var d=data[i],status=esc(d.status||'完成'),sid=esc(d.session_id||''),pn=esc(d.project_name||'未命名项目');
+        var tagCls='completed';if(status==='运行中'||status==='running')tagCls='running';else if(status.indexOf('审批')>=0||status==='awaiting_approval')tagCls='awaiting_approval';
+        var timeStr=(d.created_at||d.updated_at)?esc((d.created_at||d.updated_at).slice(0,19).replace('T',' ')):'--';
+        h+='<div class="stat-card report-card" id="rcard_'+sid+'" style="cursor:default">';
+        // 标题行：勾选框 + 项目名 + 折叠按钮
+        h+='<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">';
+        h+='<input type="checkbox" class="batch-check" onchange="updateBatchDeleteState(\'reports\')" data-sid="'+sid+'" style="width:16px;height:16px;accent-color:#667eea;cursor:pointer;flex-shrink:0">';
+        h+='<div class="stat-label" style="font-size:15px;font-weight:600;flex:1;min-width:0">'+pn+'</div>';
+        h+='<button class="card-toggle" onclick="toggleCard(\'rcard_'+sid+'\')" title="折叠/展开" style="width:26px;height:26px;border-radius:50%;border:1px solid #e2e8f0;background:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:14px;color:#718096;transition:all .2s">−</button>';
+        h+='</div>';
+        // 可折叠的参数区
+        h+='<div class="card-detail" id="rdetail_'+sid+'">';
+        h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span class="status-tag '+tagCls+'">'+status+'</span>'+(d.score?'<span style="font-size:12px;color:#718096">得分：'+esc(String(d.score))+'</span>':'')+'</div>';
+        h+='<div style="font-size:11px;color:#a0aec0;margin-bottom:4px">生成时间：'+timeStr+'</div>';
+        h+='</div>';
+        h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px"><button class="btn-export" style="font-size:11px;padding:5px 10px;height:26px" onclick="event.stopPropagation();exportExistingReport(\''+sid+'\',\'word\',\''+pn+'\')">Word</button><button class="btn-primary" style="font-size:11px;padding:5px 10px;height:26px" onclick="event.stopPropagation();exportExistingReport(\''+sid+'\',\'pdf\',\''+pn+'\')">PDF</button><button class="btn-delete" style="font-size:11px;padding:5px 10px;height:26px" onclick="event.stopPropagation();deleteReport(\''+sid+'\',\''+pn+'\')">删除</button></div>';
+        h+='</div>';
+    }
+    el.innerHTML=h;
+    updateBatchDeleteState('reports');
+}
+function toggleCard(cardId){
+    var card=document.getElementById(cardId);if(!card)return;
+    var detail=card.querySelector('.card-detail');if(!detail)return;
+    var toggle=card.querySelector('.card-toggle');if(!toggle)return;
+    var collapsed=detail.style.display==='none';
+    detail.style.display=collapsed?'block':'none';
+    toggle.textContent=collapsed?'−':'+';
+    toggle.style.background=collapsed?'#fff':'#f7fafc';
+}
+function selectAllReports(){
+    var sel=document.getElementById('rSelectAll');if(!sel)return;
+    var checked=sel.checked;
+    var cbs=document.getElementById('reportsGrid').querySelectorAll('.batch-check');
+    cbs.forEach(function(cb){cb.checked=checked});
+    updateBatchDeleteState('reports');
+}
+function updateBatchDeleteState(type){
+    var grid=type==='reports'?document.getElementById('reportsGrid'):document.getElementById('questionnaireGrid');
+    if(!grid)return;
+    var cbs=grid.querySelectorAll('.batch-check:checked');
+    var count=cbs.length;
+    var btn=document.getElementById(type==='reports'?'rBatchDelBtn':'qBatchDelBtn');
+    var selAll=document.getElementById(type==='reports'?'rSelectAll':'qSelectAll');
+    if(btn){btn.disabled=count===0;btn.textContent='删除选中'+(count>0?' ('+count+')':'')}
+    if(selAll){var all=grid.querySelectorAll('.batch-check');selAll.checked=all.length>0&&count===all.length;selAll.indeterminate=count>0&&count<all.length}
+}
+function batchDeleteReports(){
+    var cbs=document.getElementById('reportsGrid').querySelectorAll('.batch-check:checked');
+    if(!cbs.length){showToast('请先勾选要删除的报告','warn');return}
+    var ids=[];cbs.forEach(function(cb){ids.push(cb.getAttribute('data-sid'))});
+    if(!confirm('确定要删除选中的 '+ids.length+' 条报告吗？\n删除后数据将永久移除，不可恢复。'))return;
+    api('POST','/api/client/reports/batch-delete',{session_ids:ids}).then(function(r){
+        if(r.success){
+            showToast('成功删除 '+r.data.deleted+' 条报告','success');
+            // 从本地数据移除
+            window._reportData=(window._reportData||[]).filter(function(d){return ids.indexOf(d.session_id)<0});
+            updateReportStats(window._reportData);
+            renderReportList(window._reportData);
+        }
+    }).catch(function(e){showToast('批量删除失败: '+e.message,'error')})
+}
+function deleteReport(sid,pn){
+    if(!confirm('确定要删除报告「'+esc(pn)+'」吗？\n删除后相关数据将被永久移除，不可恢复。'))return;
+    api('DELETE','/api/client/reports/'+encodeURIComponent(sid)).then(function(r){
+        if(r.success){
+            showToast('报告已删除','success');
+            // 直接从本地移除再刷新
+            window._reportData=(window._reportData||[]).filter(function(d){return d.session_id!==sid});
+            updateReportStats(window._reportData);
+            renderReportList(window._reportData);
+        }
+    }).catch(function(e){showToast('删除失败: '+e.message,'error')})
+}
+function exportExistingReport(sid,fmt,pn){
+    var btn=event&&event.target;
+    if(btn){btn.disabled=true;btn.dataset.origText=btn.textContent;btn.textContent='导出中...'}
+    api('POST','/api/agent/workflow/export',{session_id:sid,format:fmt,project_name:pn}).then(function(r){
+        if(r.success&&r.data&&r.data.file_name){showToast('报告导出成功','success');window.location.href='/api/agent/download/'+encodeURIComponent(r.data.file_name)}
+        else{showToast('导出失败：未获取到文件','error')}
+    }).catch(function(e){showToast('导出失败: '+e.message,'error')})
+    .finally(function(){if(btn){btn.disabled=false;if(btn.dataset.origText)btn.textContent=btn.dataset.origText}})
+}
+function filterReportList(){
+    var raw=window._reportData||[];
+    var kw=(document.getElementById('rSearchInput')?.value||'').trim().toLowerCase();
+    var st=document.getElementById('rStatusFilter')?.value||'all';
+    var filtered=raw.filter(function(d){
+        if(kw&&(d.project_name||'').toLowerCase().indexOf(kw)<0)return false;
+        if(st!=='all'){var s=d.status||'';if(st==='completed'&&s!=='已完成'&&s!=='completed')return false;if(st==='running'&&s!=='运行中'&&s!=='running')return false;if(st==='awaiting_approval'&&s.indexOf('审批')<0&&s!=='awaiting_approval')return false}
+        return true;
+    });
+    updateReportStats(filtered);
+    renderReportList(filtered);
+}
+
