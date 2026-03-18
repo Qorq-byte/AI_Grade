@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>报告预览编辑 — 云海睿评</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: #1e293b;
+            --border: #334155;
+            --text: #e2e8f0;
+            --accent: #6FFF00;
+            --muted: #94a3b8;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            min-height: 100vh;
+        }
+        .layout {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            min-height: 100vh;
+        }
+        @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+        .panel {
+            padding: 20px;
+            overflow-y: auto;
+            border-right: 1px solid var(--border);
+        }
+        .panel:last-child { border-right: none; }
+        .toolbar {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+        .btn {
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            font-weight: 600;
+            transition: all 0.2s;
+            border: 1px solid var(--border);
+            background: var(--card);
+            color: var(--text);
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .btn:hover { background: #334155; }
+        .btn-accent { background: var(--accent); color: #000; border-color: var(--accent); }
+        .btn-accent:hover { background: #5ee600; }
+        .btn-sm { padding: 4px 10px; font-size: 0.7rem; }
+        .btn-danger { border-color: #ef4444; color: #ef4444; }
+        .btn-danger:hover { background: rgba(239,68,68,0.1); }
+        #editor {
+            width: 100%;
+            min-height: 400px;
+            background: #0a0f1e;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+            color: var(--text);
+            font-size: 0.9rem;
+            line-height: 1.7;
+            font-family: 'Consolas', 'Monaco', monospace;
+            resize: vertical;
+        }
+        #editor:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+        #preview {
+            background: #0a0f1e;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 24px;
+            font-size: 0.9rem;
+            line-height: 1.8;
+            white-space: pre-wrap;
+            overflow-wrap: break-word;
+            min-height: 400px;
+            max-height: calc(100vh - 180px);
+            overflow-y: auto;
+        }
+        #preview h1 { font-size: 1.6rem; margin-bottom: 12px; }
+        #preview h2 { font-size: 1.2rem; margin: 16px 0 8px; }
+        #preview h3 { font-size: 1rem; margin: 12px 0 6px; }
+        #preview p { margin: 4px 0; }
+        #preview ul, #preview ol { padding-left: 20px; margin: 6px 0; }
+        .step-section {
+            margin-bottom: 20px;
+            padding: 12px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--card);
+        }
+        .step-section h3 {
+            margin-top: 0;
+            font-size: 0.95rem;
+            color: var(--accent);
+        }
+        .info-banner {
+            background: rgba(59,130,246,0.1);
+            border: 1px solid #3b82f6;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 16px;
+            font-size: 0.85rem;
+        }
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 12px 24px;
+            border-radius: 8px;
+            z-index: 300;
+            animation: slideIn 0.3s ease;
+        }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } }
+        .toast-success { background: #22c55e; color: #fff; }
+        .toast-error { background: #ef4444; color: #fff; }
+    </style>
+</head>
+<body>
+    <div class="layout">
+        <!-- Left: Editor -->
+        <div class="panel">
+            <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
+                <a href="/" style="color:var(--muted); text-decoration:none; font-size:0.8rem;">← 返回</a>
+                <h2 style="font-size:1.1rem;">✏️ 报告编辑器</h2>
+                <span id="modified-badge" style="display:none; background:#f59e0b; color:#000; padding:2px 8px; border-radius:10px; font-size:0.7rem; font-weight:600;">已修改</span>
+            </div>
+
+            <div class="toolbar">
+                <button class="btn btn-accent" onclick="saveReport()">💾 保存</button>
+                <button class="btn" onclick="refreshPreview()">👁️ 刷新预览</button>
+                <button class="btn" onclick="exportEditedReport('word')">📄 导出Word</button>
+                <button class="btn" onclick="exportEditedReport('pdf')">📕 导出PDF</button>
+                <button class="btn btn-sm" onclick="insertTemplate()">📝 插入模板</button>
+                <button class="btn btn-sm btn-danger" onclick="resetToOriginal()">↩️ 恢复原始</button>
+            </div>
+
+            <textarea id="editor" placeholder="报告内容加载中..."></textarea>
+
+            <!-- Step-by-step sections for awareness -->
+            <div id="step-sections" style="margin-top:16px;"></div>
+        </div>
+
+        <!-- Right: Preview -->
+        <div class="panel">
+            <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
+                <h2 style="font-size:1.1rem;">📄 实时预览</h2>
+                <span style="font-size:0.75rem; color:var(--muted);" id="word-count">0 字</span>
+            </div>
+            <div id="preview"><em style="color:var(--muted);">等待编辑器中输入内容...</em></div>
+        </div>
+    </div>
+
+    <div id="toast-container"></div>
+
+    <script>
+    let sessionId = '';
+    let originalReport = '';
+    let isModified = false;
+    const API = '/api/agent';
+
+    document.addEventListener('DOMContentLoaded', () => {
+        lucide.createIcons();
+
+        const params = new URLSearchParams(window.location.search);
+        sessionId = params.get('session') || '';
+
+        if (sessionId) {
+            loadReport();
+        } else {
+            document.getElementById('editor').value = '';
+            document.getElementById('editor').placeholder = '未提供 session ID。请从工作流页面跳转至此，或在URL添加 ?session=xxx';
+        }
+
+        document.getElementById('editor').addEventListener('input', () => {
+            isModified = document.getElementById('editor').value !== originalReport;
+            document.getElementById('modified-badge').style.display = isModified ? 'inline-block' : 'none';
+            debouncedPreview();
+        });
+
+        // Keyboard shortcut: Ctrl+S to save
+        document.addEventListener('keydown', e => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+                e.preventDefault();
+                saveReport();
+            }
+        });
+    });
+
+    async function loadReport() {
+        document.getElementById('editor').placeholder = '加载中...';
+
+        try {
+            const resp = await fetch(`${API}/workflow/${sessionId}/status`);
+            const data = await resp.json();
+
+            if (!data.success || !data.data) {
+                showToast('加载失败: 工作流不存在', 'error');
+                return;
+            }
+
