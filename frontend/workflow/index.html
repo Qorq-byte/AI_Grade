@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>工作报告生成 — 云海睿评</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: #1e293b;
+            --border: #334155;
+            --text: #e2e8f0;
+            --accent: #6FFF00;
+            --muted: #94a3b8;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+        .layout { display: flex; min-height: 100vh; }
+        .sidebar {
+            width: 280px;
+            background: #0a0f1e;
+            border-right: 1px solid var(--border);
+            padding: 20px;
+            flex-shrink: 0;
+            overflow-y: auto;
+        }
+        .main-area {
+            flex: 1;
+            padding: 24px;
+            overflow-y: auto;
+        }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px;
+            transition: all 0.2s;
+        }
+        .card:hover { border-color: #475569; }
+        .btn {
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid var(--border);
+            background: var(--card);
+            color: var(--text);
+            font-weight: 500;
+        }
+        .btn:hover { background: #334155; }
+        .btn-accent {
+            background: var(--accent);
+            color: #000;
+            border-color: var(--accent);
+            font-weight: 700;
+        }
+        .btn-accent:hover { background: #5ee600; }
+        .btn-danger { border-color: #ef4444; color: #ef4444; }
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 0.78rem;
+            border-radius: 6px;
+        }
+        .btn-danger:hover { background: rgba(239,68,68,0.1); }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        input, select, textarea {
+            width: 100%;
+            padding: 10px 12px;
+            background: #0f172a;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            font-size: 0.9rem;
+        }
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+        .step-indicator {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin: 12px 0;
+        }
+        .step-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            transition: all 0.3s;
+            border-left: 3px solid transparent;
+        }
+        .step-row.pending { opacity: 0.4; }
+        .step-row.running {
+            opacity: 1;
+            border-left-color: #3b82f6;
+            background: rgba(59,130,246,0.08);
+            animation: pulse-border 1.5s infinite;
+        }
+        .step-row.completed {
+            opacity: 0.85;
+            border-left-color: #22c55e;
+        }
+        .step-row.awaiting { border-left-color: #f59e0b; background: rgba(245,158,11,0.1); }
+        .step-row.error { border-left-color: #ef4444; background: rgba(239,68,68,0.08); }
+        @keyframes pulse-border {
+            0%,100% { border-left-color: #3b82f6; }
+            50% { border-left-color: #60a5fa; }
+        }
+        .step-dot {
+            width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+        }
+        .step-dot.pending { background: #475569; }
+        .step-dot.running { background: #3b82f6; animation: blink 0.8s infinite; }
+        .step-dot.completed { background: #22c55e; }
+        .step-dot.awaiting { background: #f59e0b; }
+        .step-dot.error { background: #ef4444; }
+        @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0.3;} }
+        .progress-bar-wrap {
+            height: 6px;
+            background: #1e293b;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #3b82f6, #6FFF00);
+            border-radius: 3px;
+            transition: width 0.5s ease;
+        }
+        .approval-panel {
+            background: rgba(245,158,11,0.1);
+            border: 2px solid #f59e0b;
+            border-radius: 12px;
+            padding: 16px;
+            margin: 12px 0;
+            animation: slide-in 0.3s ease;
+        }
+        @keyframes slide-in { from { transform: translateY(-10px); opacity: 0; } }
+        .report-preview {
+            background: #0f172a;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+            max-height: 500px;
+            overflow-y: auto;
+            font-size: 0.9rem;
+            line-height: 1.7;
+            white-space: pre-wrap;
+        }
+        .upload-dropzone {
+            border: 2px dashed var(--border);
+            border-radius: 12px;
+            padding: 30px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .upload-dropzone:hover, .upload-dropzone.drag-over {
+            border-color: var(--accent);
+            background: rgba(111,255,0,0.03);
+        }
+        .file-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 12px;
+            background: rgba(111,255,0,0.1);
+            border: 1px solid rgba(111,255,0,0.3);
+            border-radius: 20px;
+            font-size: 0.8rem;
+            margin: 3px;
+        }
+        .file-tag button {
+            background: none;
+            border: none;
+            color: #ef4444;
+            cursor: pointer;
+            padding: 0 2px;
+            font-size: 1rem;
+        }
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 12px 24px;
+            border-radius: 8px;
+            z-index: 300;
+            animation: slideIn 0.3s ease;
+        }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } }
+        .toast-success { background: #22c55e; color: #fff; }
+        .toast-error { background: #ef4444; color: #fff; }
+        .hidden { display: none !important; }
+        .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        @media (max-width: 768px) { .two-col { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    <div class="layout">
+        <!-- Sidebar — Project Setup -->
+        <aside class="sidebar" id="setup-panel">
+            <h1 style="font-size:1.2rem; font-weight:700; margin-bottom:4px;">⚡ 绩效评价报告生成</h1>
+            <p style="font-size:0.75rem; color:var(--muted); margin-bottom:20px;">Step 0 ~ 14 全自动</p>
+
+            <div style="display:flex; flex-direction:column; gap:12px;">
+                <div>
+                    <label style="font-size:0.8rem; color:var(--muted);">项目名称</label>
+                    <input id="project-name" placeholder="如: 2024年XX部门绩效评价" value="">
+                </div>
+                <div>
+                    <label style="font-size:0.8rem; color:var(--muted);">选择模型</label>
+                    <select id="model-select">
+                        <option value="deepseek-chat">DeepSeek Chat（推荐）</option>
+                        <option value="deepseek-coder">DeepSeek Coder</option>
+                        <option value="deepseek-v4-flash">DeepSeek V4 Flash</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="font-size:0.8rem; color:var(--muted);">温度档位</label>
+                    <select id="temp-profile">
+                        <option value="normal">普通 (0.7)</option>
+                        <option value="creative">发散 (0.9)</option>
+                        <option value="precise">严谨 (0.3)</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="font-size:0.8rem; color:var(--muted);">模式</label>
+                    <select id="comparison-mode">
+                        <option value="single">单模型</option>
+                        <option value="multi_compare">多模型对比</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="font-size:0.8rem; color:var(--muted);">问题/建议语言风格</label>
+                    <select id="language-style">
+                        <option value="中立">中立 — 客观平衡</option>
+                        <option value="尖锐">尖锐 — 直击要害</option>
+                        <option value="委婉">委婉 — 建设性建议</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="font-size:0.8rem; color:var(--muted);">
+                        <input type="checkbox" id="use-rag" style="width:auto; margin-right:6px;"> 启用RAG知识库
+                    </label>
+                </div>
+
