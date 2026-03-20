@@ -256,3 +256,260 @@
                     </label>
                 </div>
 
+                <div>
+                    <label style="font-size:0.8rem; color:var(--muted);">上传资料</label>
+                    <!-- 分类上传标签 -->
+                    <div style="display:flex; gap:4px; margin-bottom:6px;">
+                        <button class="btn btn-sm" onclick="switchUploadTab('all', this)" id="upload-tab-all" style="background:var(--accent);color:#000;">全部</button>
+                        <button class="btn btn-sm" onclick="switchUploadTab('word', this)" id="upload-tab-word">Word</button>
+                        <button class="btn btn-sm" onclick="switchUploadTab('excel', this)" id="upload-tab-excel">Excel</button>
+                        <button class="btn btn-sm" onclick="switchUploadTab('pdf', this)" id="upload-tab-pdf">PDF</button>
+                        <button class="btn btn-sm" onclick="switchUploadTab('image', this)" id="upload-tab-image">图片</button>
+                    </div>
+                    <div class="upload-dropzone" id="dropzone">
+                        <i data-lucide="upload-cloud" style="width:28px;height:28px;margin:0 auto 8px;color:var(--muted);"></i>
+                        <p style="font-size:0.8rem; color:var(--muted);" id="upload-hint">拖拽文件或点击上传</p>
+                        <p style="font-size:0.7rem; color:#64748b;" id="upload-types">PDF/Word/Excel/图片/TXT</p>
+                        <input type="file" id="file-input" multiple hidden>
+                    </div>
+                    <div id="file-list" style="margin-top:8px; max-height:120px; overflow-y:auto;"></div>
+                </div>
+
+                <button class="btn btn-accent" id="start-btn" style="margin-top:8px;">
+                    🚀 开始生成报告
+                </button>
+                <button class="btn btn-danger hidden" id="stop-btn" style="margin-top:4px;">
+                    ⏹ 停止
+                </button>
+            </div>
+
+            <!-- Quick Actions (post-completion) -->
+            <div id="quick-actions" class="hidden" style="margin-top:20px; display:flex; flex-direction:column; gap:8px;">
+                <button class="btn btn-accent" onclick="exportReport('word')">📄 导出 Word</button>
+                <button class="btn" onclick="exportReport('pdf')">📕 导出 PDF</button>
+                <button class="btn" onclick="window.open('/questionnaire?session=' + sessionId, '_blank')">📋 生成问卷</button>
+                <button class="btn" onclick="window.open('/report?session=' + sessionId, '_blank')">✏️ 编辑报告</button>
+            </div>
+        </aside>
+
+        <!-- Main — Progress & Results -->
+        <main class="main-area">
+            <!-- Progress Bar -->
+            <div style="margin-bottom:20px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                    <h2 id="status-title" style="font-size:1.1rem;">📋 进度</h2>
+                    <span id="progress-text" style="font-size:0.85rem; color:var(--muted);">0 / 14</span>
+                </div>
+                <div class="progress-bar-wrap">
+                    <div class="progress-bar-fill" id="progress-bar" style="width:0%;"></div>
+                </div>
+            </div>
+
+            <!-- Step List -->
+            <div id="step-list" class="card" style="margin-bottom:16px;">
+                <p style="color:var(--muted); text-align:center; padding:20px;">等待启动...</p>
+            </div>
+
+            <!-- Feature Toolbar — quick access to all new features -->
+            <div id="feature-toolbar" class="card hidden" style="margin-bottom:16px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                <span style="font-size:0.8rem; color:var(--muted); font-weight:600;">🔧 工具箱:</span>
+                <button class="btn btn-sm" onclick="openTemplateLibrary()" title="步骤3: 指标体系模板库">📋 模板库</button>
+                <button class="btn btn-sm" onclick="openIndicatorTree()" title="步骤6: 指标排序">🔀 指标排序</button>
+                <button class="btn btn-sm" onclick="openIndicatorScoring()" title="步骤7: 逐指标评分">📝 指标评分</button>
+                <button class="btn btn-sm" onclick="extractDeductions()" title="步骤9: 扣分点提取">📌 扣分点</button>
+                <button class="btn btn-sm" onclick="showScoreSummary()" title="步骤11: 评分汇总">📊 评分汇总</button>
+                <button class="btn btn-sm" onclick="verifyLogic()" title="步骤10: 逻辑校对">🔍 逻辑校对</button>
+                <button class="btn btn-sm" onclick="openReportAssembly()" title="步骤14: 报告组装">📑 报告组装</button>
+                <button class="btn btn-sm" onclick="openExportStyle()" title="导出样式设置">🎨 导出样式</button>
+                <button class="btn btn-sm" onclick="addCustomModule()" title="步骤12: 添加模块">➕ 添加模块</button>
+            </div>
+
+            <!-- Approval Panel -->
+            <div id="approval-panel" class="approval-panel hidden">
+                <h3 style="color:#f59e0b;">⚠️ 需要人工确认</h3>
+                <p id="approval-step-name" style="font-size:0.9rem; margin:8px 0;"></p>
+                <div id="approval-preview" class="report-preview" style="max-height:200px; margin:8px 0;"></div>
+                <div style="display:flex; gap:8px; margin-top:8px;">
+                    <textarea id="approval-feedback" placeholder="修改意见（可选）..." rows="2" style="flex:1;"></textarea>
+                </div>
+                <div style="display:flex; gap:8px; margin-top:8px;">
+                    <button class="btn btn-accent" onclick="doApprove(true)">✅ 确认通过</button>
+                    <button class="btn btn-danger" onclick="doApprove(false)">❌ 需要修改</button>
+                </div>
+            </div>
+
+            <!-- Warnings & Errors -->
+            <div id="alerts-area"></div>
+
+            <!-- Final Report Preview -->
+            <div id="report-area" class="card hidden" style="margin-top:16px;">
+                <h3 style="margin-bottom:12px;">📄 最终报告预览</h3>
+                <div id="report-content" class="report-preview"></div>
+            </div>
+
+            <!-- Step Detail Panel — 分步交互区 -->
+            <div id="step-detail-panel" class="card hidden" style="margin-top:16px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                    <h3 id="step-detail-title" style="font-size:1rem;"></h3>
+                    <button class="btn" onclick="document.getElementById('step-detail-panel').classList.add('hidden')">✕</button>
+                </div>
+                <div id="step-detail-content"></div>
+            </div>
+
+            <!-- Score Summary (Step 11) -->
+            <div id="score-summary-panel" class="card hidden" style="margin-top:16px;">
+                <h3 style="margin-bottom:12px;">📊 评分汇总与等级判定</h3>
+                <div id="score-summary-content"></div>
+                <div style="margin-top:12px;">
+                    <canvas id="score-chart" width="400" height="250" style="width:100%; max-width:600px; display:block; margin:0 auto;"></canvas>
+                </div>
+            </div>
+
+            <!-- Logic Verification (Step 10+) -->
+            <div id="logic-verification-panel" class="card hidden" style="margin-top:16px;">
+                <h3 style="margin-bottom:12px;">🔍 逻辑校对结果</h3>
+                <div id="logic-verification-content" class="report-preview"></div>
+            </div>
+
+            <!-- Deduction Points (Step 9) -->
+            <div id="deduction-panel" class="card hidden" style="margin-top:16px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                    <h3>📌 扣分点提取与选择</h3>
+                    <button class="btn" onclick="document.getElementById('deduction-panel').classList.add('hidden')">✕</button>
+                </div>
+                <div id="deduction-list" style="max-height:300px; overflow-y:auto; margin-bottom:12px;"></div>
+                <div style="margin-bottom:12px;">
+                    <label style="font-size:0.8rem; color:var(--muted);">手动添加问题</label>
+                    <div style="display:flex; gap:8px;">
+                        <input id="manual-problem-input" placeholder="输入问题描述..." style="flex:1;">
+                        <button class="btn btn-accent" onclick="addManualProblem()">添加</button>
+                    </div>
+                    <div id="manual-problems-list" style="margin-top:8px;"></div>
+                </div>
+                <button class="btn btn-accent" onclick="confirmDeductions()">✅ 确认选择，进入问题分析</button>
+            </div>
+
+            <!-- Template Library (Step 3) -->
+            <div id="template-panel" class="card hidden" style="margin-top:16px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                    <h3>📋 指标体系模板库</h3>
+                    <button class="btn" onclick="document.getElementById('template-panel').classList.add('hidden')">✕</button>
+                </div>
+                <div id="template-list" style="max-height:300px; overflow-y:auto; margin-bottom:12px;"></div>
+                <div style="display:flex; gap:8px;">
+                    <button class="btn btn-accent" onclick="saveCurrentAsTemplate()">💾 保存当前为模板</button>
+                </div>
+            </div>
+
+            <!-- Report Assembly (Step 14) -->
+            <div id="report-assembly-panel" class="card hidden" style="margin-top:16px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                    <h3>📑 报告章节顺序 (支持拖拽排序)</h3>
+                    <button class="btn" onclick="document.getElementById('report-assembly-panel').classList.add('hidden')">✕</button>
+                </div>
+                <div id="section-order-list" style="margin-bottom:12px;"></div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                    <button class="btn btn-accent" onclick="assembleReport()">📝 组装报告</button>
+                    <button class="btn" onclick="checkReportFormat()">🔍 格式校对</button>
+                    <button class="btn" onclick="fetch('/api/agent/workflow/' + sessionId + '/report-order').then(r=>r.json()).then(d=>{if(d.success)renderSectionOrder(d.data,d.is_custom)})">🔄 刷新</button>
+                </div>
+            </div>
+
+            <!-- Export Style (Cross-step) -->
+            <div id="export-style-panel" class="card hidden" style="margin-top:16px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                    <h3>🎨 导出样式设置</h3>
+                    <button class="btn" onclick="document.getElementById('export-style-panel').classList.add('hidden')">✕</button>
+                </div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                    <div>
+                        <label style="font-size:0.8rem; color:var(--muted);">字体</label>
+                        <select id="export-font">
+                            <option value="SimSun">宋体 (SimSun)</option>
+                            <option value="SimHei">黑体 (SimHei)</option>
+                            <option value="KaiTi">楷体 (KaiTi)</option>
+                            <option value="FangSong">仿宋 (FangSong)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label style="font-size:0.8rem; color:var(--muted);">字号</label>
+                        <input type="number" id="export-font-size" value="12" min="8" max="24">
+                    </div>
+                    <div>
+                        <label style="font-size:0.8rem; color:var(--muted);">行间距</label>
+                        <input type="number" id="export-line-spacing" value="1.5" min="1.0" max="3.0" step="0.1">
+                    </div>
+                    <div>
+                        <label style="font-size:0.8rem; color:var(--muted);">页边距 (cm)</label>
+                        <input type="number" id="export-page-margin" value="2.5" min="1.0" max="5.0" step="0.1">
+                    </div>
+                </div>
+                <button class="btn btn-accent" onclick="saveExportStyle()" style="margin-top:12px;">💾 保存样式</button>
+            </div>
+        </main>
+    </div>
+
+    <div id="toast-container"></div>
+
+    <script>
+    // ══════════════════════════════════════
+    //  State
+    // ══════════════════════════════════════
+    const API = '/api/agent';
+    const STEPS = {
+        1:'整理资料清单',2:'核心有效信息提取',3:'构建指标体系',4:'生成指标分值',
+        5:'生成评分标准',6:'评价指标体系表',7:'指标得分分析',8:'总结经验做法',
+        9:'分析问题及原因',10:'提出改进建议',11:'综合评价分析',12:'基本情况',
+        13:'评价工作简介',14:'组装最终报告'
+    };
+    let sessionId = null;
+    let eventSource = null;
+    let isRunning = false;
+    let completedSteps = new Set();
+    let currentApprovalStep = null;
+    let uploadedFiles = [];
+
+    // ── 登录校验 + 自动携带认证Token ──
+    const AUTH_TOKEN = sessionStorage.getItem('token') || localStorage.getItem('token') || '';
+    if (!AUTH_TOKEN) {
+        window.location.href = '/login?redirect=/workflow';
+    }
+    (function _injectAuthFetch() {
+        const _orig = window.fetch;
+        window.fetch = function (url, opts) {
+            opts = opts || {};
+            if (typeof url === 'string' && url.startsWith('/api/') && AUTH_TOKEN) {
+                const h = opts.headers || {};
+                if (!h.Authorization) h.Authorization = 'Bearer ' + AUTH_TOKEN;
+                opts.headers = h;
+            }
+            return _orig.call(this, url, opts);
+        };
+    })();
+
+    document.addEventListener('DOMContentLoaded', () => {
+        if (!AUTH_TOKEN) return;
+        lucide.createIcons();
+        setupUpload();
+        document.getElementById('start-btn').addEventListener('click', startWorkflow);
+        document.getElementById('stop-btn').addEventListener('click', stopWorkflow);
+    });
+
+    // ══════════════════════════════════════
+    //  File Upload
+    // ══════════════════════════════════════
+    function setupUpload() {
+        const dropzone = document.getElementById('dropzone');
+        const input = document.getElementById('file-input');
+
+        dropzone.addEventListener('click', () => input.click());
+        dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag-over'); });
+        dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-over'));
+        dropzone.addEventListener('drop', e => {
+            e.preventDefault();
+            dropzone.classList.remove('drag-over');
+            handleFiles(e.dataTransfer.files);
+        });
+        input.addEventListener('change', () => handleFiles(input.files));
+    }
+
