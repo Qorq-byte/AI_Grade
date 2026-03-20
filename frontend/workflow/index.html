@@ -769,3 +769,256 @@
         }
     }
 
+    async function pollStatus() {
+        if (!sessionId) return;
+        try {
+            const resp = await fetch(`/api/agent/workflow/${sessionId}/status`);
+            const data = await resp.json();
+            if (data.success && data.data) {
+                const d = data.data;
+                d.step_summaries?.forEach(s => {
+                    updateStepStatus(s.step_number, s.status === 'completed' ? 'completed' : 'running', s.step_name);
+                    if (s.status === 'completed') completedSteps.add(s.step_number);
+                });
+                updateProgressBar();
+
+                if (d.requires_approval) {
+                    showApprovalPanel({
+                        step_number: d.approval_step,
+                        step_name: d.approval_step_name,
+                        content_preview: '',
+                    });
+                }
+                if (d.status === 'completed') {
+                    handleComplete({ session_id: sessionId, completed_steps: d.completed_steps });
+                }
+            }
+        } catch(e) { /* ignore */ }
+    }
+
+    function handleComplete(event) {
+        isRunning = false;
+        document.getElementById('start-btn').disabled = false;
+        document.getElementById('stop-btn').classList.add('hidden');
+        document.getElementById('status-title').textContent = '✅ 报告生成完成';
+        document.getElementById('progress-bar').style.width = '100%';
+        document.getElementById('progress-text').textContent = '14 / 14';
+        document.getElementById('quick-actions').classList.remove('hidden');
+
+        sessionId = event.session_id || sessionId;
+
+        if (event.final_report_preview) {
+            const area = document.getElementById('report-area');
+            area.classList.remove('hidden');
+            document.getElementById('report-content').textContent = event.final_report_preview;
+        }
+
+        showToast('报告生成完成！');
+    }
+
+    function stopWorkflow() {
+        if (sessionId) {
+            fetch(`/api/agent/session/${sessionId}`, { method: 'DELETE' }).catch(() => {});
+        }
+        resetUI();
+    }
+
+    function resetUI() {
+        isRunning = false;
+        sessionId = null;
+        currentApprovalStep = null;
+        completedSteps = new Set();
+        document.getElementById('start-btn').disabled = false;
+        document.getElementById('stop-btn').classList.add('hidden');
+        document.getElementById('approval-panel').classList.add('hidden');
+        document.getElementById('status-title').textContent = '📋 进度';
+        document.getElementById('progress-bar').style.width = '0%';
+        document.getElementById('progress-text').textContent = '0 / 14';
+        renderStepList();
+    }
+
+    // ══════════════════════════════════════
+    //  Step List Rendering
+    // ══════════════════════════════════════
+    function renderStepList() {
+        const container = document.getElementById('step-list');
+        container.innerHTML = Object.entries(STEPS).map(([num, name]) => {
+            const n = parseInt(num);
+            const status = completedSteps.has(n) ? 'completed' : 'pending';
+            const icon = status === 'completed' ? '✅' : '⏳';
+            return `<div class="step-row ${status}" id="step-${n}">
+                <div class="step-dot ${status}"></div>
+                <span style="font-weight:600;">Step ${num}.</span>
+                <span>${name}</span>
+                <span style="margin-left:auto;">${icon}</span>
+            </div>`;
+        }).join('');
+    }
+
+    function updateStepStatus(stepNo, status, name) {
+        const el = document.getElementById('step-' + stepNo);
+        if (!el) { renderStepList(); return; }
+        el.className = `step-row ${status}`;
+        const dot = el.querySelector('.step-dot');
+        if (dot) dot.className = `step-dot ${status}`;
+        const icon = el.querySelector('span:last-child');
+        if (icon) {
+            icon.textContent = status === 'completed' ? '✅' :
+                status === 'running' ? '🔄' :
+                status === 'awaiting' ? '⏸️' : '⏳';
+        }
+    }
+
+    function updateProgressBar() {
+        const count = completedSteps.size;
+        const pct = Math.round((count / 14) * 100);
+        document.getElementById('progress-bar').style.width = pct + '%';
+        document.getElementById('progress-text').textContent = `${count} / 14`;
+    }
+
+    // ══════════════════════════════════════
+    //  Alerts
+    // ══════════════════════════════════════
+    function showAlert(type, messages) {
+        const area = document.getElementById('alerts-area');
+        messages.forEach(msg => {
+            const div = document.createElement('div');
+            div.className = `card ${type === 'error' ? 'btn-danger' : ''}`;
+            div.style.cssText = `margin:4px 0; padding:8px 12px; font-size:0.85rem; color:${type === 'error' ? '#ef4444' : '#f59e0b'};`;
+            div.textContent = (type === 'error' ? '❌ ' : '⚠️ ') + msg;
+            area.appendChild(div);
+            setTimeout(() => div.remove(), 8000);
+        });
+    }
+
+    // ══════════════════════════════════════
+    //  Export
+    // ══════════════════════════════════════
+    async function exportReport(format) {
+        if (!sessionId) return;
+        showToast('正在导出...');
+        try {
+            const resp = await fetch('/api/agent/workflow/export', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId, format }),
+            });
+            const data = await resp.json();
+            if (data.success) {
+                showToast(`导出成功: ${data.data.file_name}`);
+            } else {
+                showToast('导出失败', 'error');
+            }
+        } catch(e) {
+            showToast('导出失败: ' + e.message, 'error');
+        }
+    }
+
+    function showToast(msg, type = 'success') {
+        const container = document.getElementById('toast-container');
+        const t = document.createElement('div');
+        t.className = `toast toast-${type}`;
+        t.textContent = msg;
+        container.appendChild(t);
+        setTimeout(() => t.remove(), 4000);
+    }
+
+    // Initial render
+    renderStepList();
+
+    // ══════════════════════════════════════
+    //  New Features: Step-specific actions
+    // ══════════════════════════════════════
+    let manualProblems = [];
+    let deductionPoints = [];
+
+    // Set language style before running steps
+    async function setLanguageStyle() {
+        if (!sessionId) return;
+        const style = document.getElementById('language-style').value;
+        try {
+            await fetch('/api/agent/workflow/set-language-style', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId, language_style: style }),
+            });
+        } catch(e) { console.warn('Set language style failed:', e); }
+    }
+
+    // Extract deduction points from step 7
+    async function extractDeductions() {
+        if (!sessionId) return;
+        showToast('正在提取扣分点...');
+        try {
+            const resp = await fetch(`/api/agent/workflow/${sessionId}/extract-deductions`);
+            const data = await resp.json();
+            if (data.success) {
+                deductionPoints = data.data.deduction_points || [];
+                renderDeductionList();
+                document.getElementById('deduction-panel').classList.remove('hidden');
+                document.getElementById('deduction-panel').scrollIntoView({ behavior: 'smooth' });
+                showToast(`已提取 ${deductionPoints.length} 个扣分点`);
+            } else {
+                showToast('提取失败', 'error');
+            }
+        } catch(e) {
+            showToast('提取扣分点失败: ' + e.message, 'error');
+        }
+    }
+
+    function renderDeductionList() {
+        const container = document.getElementById('deduction-list');
+        container.innerHTML = deductionPoints.map((p, i) => `
+            <div style="display:flex; align-items:center; gap:10px; padding:6px 0; border-bottom:1px solid var(--border);">
+                <input type="checkbox" id="ded-${i}" ${p.selected !== false ? 'checked' : ''} onchange="deductionPoints[${i}].selected = this.checked">
+                <span style="flex:1; font-size:0.85rem;">
+                    <strong>${p.indicator_name || p.level2_name + ' > ' + (p.indicator_name || '')}</strong>
+                    <span style="color:#ef4444;"> 扣${p.deduction}分</span>
+                    <div style="color:var(--muted); font-size:0.75rem;">${p.score_reason || p.context || ''}</div>
+                </span>
+            </div>
+        `).join('') || '<p style="color:var(--muted);">未发现扣分项</p>';
+    }
+
+    function addManualProblem() {
+        const input = document.getElementById('manual-problem-input');
+        const text = input.value.trim();
+        if (!text) return;
+        manualProblems.push({ problem: text, source: 'manual' });
+        input.value = '';
+        renderManualProblems();
+    }
+
+    function renderManualProblems() {
+        const container = document.getElementById('manual-problems-list');
+        container.innerHTML = manualProblems.map((p, i) => `
+            <div class="file-tag" style="display:inline-flex; margin:3px;">
+                ${p.problem}
+                <button onclick="manualProblems.splice(${i}, 1); renderManualProblems();">✕</button>
+            </div>
+        `).join('');
+    }
+
+    async function confirmDeductions() {
+        if (!sessionId) return;
+        const selected = deductionPoints.filter(p => p.selected !== false);
+        try {
+            const resp = await fetch('/api/agent/workflow/confirm-deductions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    selected_points: selected,
+                    manual_problems: manualProblems,
+                }),
+            });
+            const data = await resp.json();
+            if (data.success) {
+                document.getElementById('deduction-panel').classList.add('hidden');
+                showToast(`已确认 ${selected.length} 个扣分点 + ${manualProblems.length} 个手动问题`);
+            }
+        } catch(e) {
+            showToast('确认失败: ' + e.message, 'error');
+        }
+    }
+
