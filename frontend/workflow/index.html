@@ -1022,3 +1022,271 @@
         }
     }
 
+    // Logic verification (after step 10)
+    async function verifyLogic() {
+        if (!sessionId) return;
+        showToast('正在进行逻辑校对...');
+        try {
+            const resp = await fetch(`/api/agent/workflow/${sessionId}/verify-logic`, { method: 'POST' });
+            const data = await resp.json();
+            if (data.success) {
+                document.getElementById('logic-verification-content').textContent = data.data.verification_result;
+                document.getElementById('logic-verification-panel').classList.remove('hidden');
+                document.getElementById('logic-verification-panel').scrollIntoView({ behavior: 'smooth' });
+                showToast('逻辑校对完成');
+            }
+        } catch(e) {
+            showToast('逻辑校对失败: ' + e.message, 'error');
+        }
+    }
+
+    // Score summary (step 11)
+    async function showScoreSummary() {
+        if (!sessionId) return;
+        showToast('正在计算评分汇总...');
+        try {
+            const resp = await fetch(`/api/agent/workflow/${sessionId}/score-summary`);
+            const data = await resp.json();
+            if (data.success) {
+                const d = data.data;
+                document.getElementById('score-summary-content').innerHTML = `
+                    <div style="font-size:1.2rem; margin-bottom:8px;">
+                        综合得分: <strong style="color:var(--accent);">${d.score_100}分</strong>
+                        &nbsp; 等级: <strong style="font-size:1.3rem; color:${d.grade === '优秀' ? '#22c55e' : d.grade === '良好' ? '#3b82f6' : d.grade === '合格' ? '#f59e0b' : '#ef4444'}">${d.grade}</strong>
+                    </div>
+                    <table style="width:100%; border-collapse:collapse; font-size:0.85rem;">
+                        <tr style="border-bottom:1px solid var(--border);">
+                            <th style="text-align:left; padding:6px;">一级指标</th>
+                            <th style="text-align:right;">满分</th>
+                            <th style="text-align:right;">得分</th>
+                            <th style="text-align:right;">得分率</th>
+                        </tr>
+                        ${d.level1_scores.map(l1 => `
+                            <tr style="border-bottom:1px solid var(--border);">
+                                <td style="padding:6px;">${l1.name}</td>
+                                <td style="text-align:right;">${l1.full_score}</td>
+                                <td style="text-align:right; color:${l1.score_rate >= 80 ? '#22c55e' : l1.score_rate >= 60 ? '#f59e0b' : '#ef4444'};">${l1.actual_score}</td>
+                                <td style="text-align:right;">${l1.score_rate}%</td>
+                            </tr>
+                        `).join('')}
+                        <tr style="font-weight:bold; border-top:2px solid var(--accent);">
+                            <td style="padding:6px;">合计</td>
+                            <td style="text-align:right;">${d.total_full}</td>
+                            <td style="text-align:right; color:var(--accent);">${d.total_score}</td>
+                            <td style="text-align:right;">${d.score_100}%</td>
+                        </tr>
+                    </table>`;
+                document.getElementById('score-summary-panel').classList.remove('hidden');
+                document.getElementById('score-summary-panel').scrollIntoView({ behavior: 'smooth' });
+
+                // Draw chart
+                drawScoreChart(d.chart_data);
+                showToast('评分汇总完成');
+            }
+        } catch(e) {
+            showToast('获取评分汇总失败: ' + e.message, 'error');
+        }
+    }
+
+    function drawScoreChart(chartData) {
+        const canvas = document.getElementById('score-chart');
+        if (!canvas || !chartData) return;
+        const ctx = canvas.getContext('2d');
+        const w = canvas.width, h = canvas.height;
+        ctx.clearRect(0, 0, w, h);
+
+        const { categories, full_scores, actual_scores, score_rates } = chartData;
+        if (!categories || categories.length === 0) return;
+
+        const barWidth = 30;
+        const groupGap = 60;
+        const padding = 60;
+        const chartW = w - padding * 2;
+        const chartH = h - 60;
+        const maxScore = Math.max(...full_scores, 1);
+
+        // Y axis
+        ctx.strokeStyle = '#475569';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(padding, 20);
+        ctx.lineTo(padding, h - 40);
+        ctx.stroke();
+
+        // X axis
+        ctx.beginPath();
+        ctx.moveTo(padding, h - 40);
+        ctx.lineTo(w - 20, h - 40);
+        ctx.stroke();
+
+        categories.forEach((cat, i) => {
+            const x = padding + 30 + i * groupGap;
+            const fullH = (full_scores[i] / maxScore) * chartH;
+            const actualH = (actual_scores[i] / maxScore) * chartH;
+
+            // Full score bar (outline)
+            ctx.fillStyle = 'rgba(100,116,139,0.3)';
+            ctx.fillRect(x, h - 40 - fullH, barWidth, fullH);
+
+            // Actual score bar
+            const color = score_rates[i] >= 80 ? '#22c55e' : score_rates[i] >= 60 ? '#f59e0b' : '#ef4444';
+            ctx.fillStyle = color;
+            ctx.fillRect(x + 2, h - 40 - actualH, barWidth - 4, actualH);
+
+            // Label
+            ctx.fillStyle = '#94a3b8';
+            ctx.font = '11px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText(cat.substring(0, 6) + (cat.length > 6 ? '...' : ''), x + barWidth / 2, h - 10);
+
+            // Rate
+            ctx.fillStyle = '#e2e8f0';
+            ctx.font = '10px sans-serif';
+            ctx.fillText(score_rates[i] + '%', x + barWidth / 2, h - 40 - actualH - 8);
+        });
+    }
+
+    // Step 7: Per-indicator scoring
+    async function openIndicatorScoring() {
+        if (!sessionId) return;
+        showToast('正在加载指标体系...');
+        try {
+            const resp = await fetch(`/api/agent/workflow/${sessionId}/indicators-for-scoring`);
+            const data = await resp.json();
+            if (data.success) {
+                const indicators = data.data.indicators;
+                const panel = document.getElementById('step-detail-panel');
+                panel.classList.remove('hidden');
+                document.getElementById('step-detail-title').textContent = '📝 逐指标评分 (Step 7)';
+                document.getElementById('step-detail-content').innerHTML = `
+                    <div style="max-height:500px; overflow-y:auto;">
+                        ${indicators.map((ind, i) => `
+                            <div style="padding:10px; margin:6px 0; background:#0f172a; border-radius:8px; border:1px solid var(--border);">
+                                <div style="font-size:0.85rem; color:var(--muted);">${ind.level1_name} > ${ind.level2_name}</div>
+                                <div style="font-weight:600; margin:4px 0;">${ind.level3_name} (满分: ${ind.full_score}分)</div>
+                                <div style="font-size:0.8rem; color:var(--muted); margin-bottom:6px;">${ind.indicator_explanation || ''}</div>
+                                <div style="display:flex; gap:8px; align-items:center;">
+                                    <input type="number" id="score-${i}" placeholder="得分" min="0" max="${ind.full_score}" step="0.1" style="width:80px;">
+                                    <input type="text" id="reason-${i}" placeholder="得分/扣分原因..." style="flex:1;">
+                                </div>
+                                ${ind.evaluation_points.length > 0 ? `
+                                    <div style="margin-top:6px; font-size:0.75rem; color:var(--muted);">
+                                        评价要点: ${ind.evaluation_points.join('; ')}
+                                    </div>
+                                ` : ''}
+                            </div>
+                        `).join('')}
+                    </div>
+                    <button class="btn btn-accent" onclick="saveIndicatorScores(${JSON.stringify(indicators).replace(/"/g, '&quot;')})" style="margin-top:12px;">💾 保存评分</button>
+                    <button class="btn" onclick="generateSingleAnalysis(${JSON.stringify(indicators).replace(/"/g, '&quot;')})" style="margin-top:8px; margin-left:8px;">🤖 AI辅助分析</button>`;
+                panel.scrollIntoView({ behavior: 'smooth' });
+            }
+        } catch(e) {
+            showToast('加载指标体系失败: ' + e.message, 'error');
+        }
+    }
+
+    async function generateSingleAnalysis(indicators) {
+        if (!sessionId || indicators.length === 0) return;
+        showToast('正在AI辅助分析...');
+        // 取第一个有评分的指标进行分析
+        let target = null;
+        for (let i = 0; i < indicators.length; i++) {
+            const scoreEl = document.getElementById('score-' + i);
+            const reasonEl = document.getElementById('reason-' + i);
+            const score = scoreEl ? parseFloat(scoreEl.value) || 0 : 0;
+            const reason = reasonEl ? reasonEl.value.trim() : '';
+            if (score > 0 || reason) { target = { ...indicators[i], score, reason, idx: i }; break; }
+        }
+        if (!target) { showToast('请先至少为一个指标填写评分或原因', 'error'); return; }
+        try {
+            const resp = await fetch('/api/agent/workflow/generate-indicator-analysis', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    indicator_id: target.indicator_id,
+                    level1_name: target.level1_name,
+                    level2_name: target.level2_name,
+                    level3_name: target.level3_name,
+                    indicator_explanation: target.indicator_explanation || '',
+                    scoring_standard: target.scoring_standard || '',
+                    score_inputs: [{ evaluation_point: target.level3_name, score: target.score, reason: target.reason }],
+                }),
+            });
+            const data = await resp.json();
+            if (data.success) {
+                document.getElementById('step-detail-content').innerHTML +=
+                    `<div class="card" style="margin-top:8px; white-space:pre-wrap; font-size:0.85rem;"><strong>${target.level3_name} 分析结果：</strong><br>${data.data.analysis}</div>`;
+                showToast('分析完成');
+            }
+        } catch(e) { showToast('分析失败: ' + e.message, 'error'); }
+    }
+
+    async function saveIndicatorScores(indicators) {
+        if (!sessionId) return;
+        const scores = [];
+        indicators.forEach((ind, i) => {
+            const scoreEl = document.getElementById('score-' + i);
+            const reasonEl = document.getElementById('reason-' + i);
+            const score = scoreEl ? parseFloat(scoreEl.value) || 0 : 0;
+            const reason = reasonEl ? reasonEl.value.trim() : '';
+            scores.push({
+                indicator_id: ind.indicator_id,
+                indicator_name: ind.level3_name,
+                level1_name: ind.level1_name,
+                level2_name: ind.level2_name,
+                full_score: ind.full_score,
+                actual_score: score,
+                score_reason: reason,
+            });
+        });
+
+        try {
+            const resp = await fetch('/api/agent/workflow/save-indicator-scores', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId, scores }),
+            });
+            const data = await resp.json();
+            if (data.success) {
+                showToast('评分已保存');
+                document.getElementById('step-detail-panel').classList.add('hidden');
+                if (data.data.score_table) {
+                    document.getElementById('report-content').textContent = data.data.score_table;
+                    document.getElementById('report-area').classList.remove('hidden');
+                }
+            }
+        } catch(e) {
+            showToast('保存失败: ' + e.message, 'error');
+        }
+    }
+
+    // ══════════════════════════════════════
+    //  New features for Step 3 (Template Library), Step 6 (Reorder), Step 12 (Modules), Step 14 (Assembly), Export Style
+    // ══════════════════════════════════════
+
+    // --- Template Library (Step 3) ---
+    async function openTemplateLibrary() {
+        if (!sessionId) return;
+        showToast('正在加载模板库...');
+        try {
+            const resp = await fetch('/api/agent/workflow/templates');
+            const data = await resp.json();
+            if (data.success) {
+                document.getElementById('template-list').innerHTML = data.data.map(t => `
+                    <div style="display:flex; align-items:center; justify-content:space-between; padding:8px; margin:4px 0; background:#0f172a; border-radius:8px; border:1px solid var(--border);">
+                        <div>
+                            <strong>${t.name}</strong>
+                            <span style="color:var(--muted); font-size:0.8rem; margin-left:8px;">${t.type} · ${t.indicator_count}个三级指标</span>
+                            ${t.description ? `<div style="font-size:0.75rem; color:var(--muted);">${t.description}</div>` : ''}
+                        </div>
+                        <button class="btn btn-accent" onclick="importTemplate('${t.id}')">导入</button>
+                    </div>
+                `).join('') || '<p style="color:var(--muted);">暂无模板</p>';
+                document.getElementById('template-panel').classList.remove('hidden');
+                document.getElementById('template-panel').scrollIntoView({ behavior: 'smooth' });
+            }
+        } catch(e) { showToast('加载模板库失败: ' + e.message, 'error'); }
+    }
+
