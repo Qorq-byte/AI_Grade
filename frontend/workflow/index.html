@@ -513,3 +513,259 @@
         input.addEventListener('change', () => handleFiles(input.files));
     }
 
+    // 分类上传标签切换
+    let currentUploadTab = 'all';
+    const UPLOAD_TYPE_MAP = {
+        'all':   { accept: '.pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.bmp,.txt,.csv', hint: '拖拽文件或点击上传', types: 'PDF/Word/Excel/图片/TXT' },
+        'word':  { accept: '.doc,.docx', hint: '上传Word文档', types: '.doc / .docx' },
+        'excel': { accept: '.xls,.xlsx', hint: '上传Excel表格', types: '.xls / .xlsx' },
+        'pdf':   { accept: '.pdf', hint: '上传PDF文件', types: '.pdf' },
+        'image': { accept: '.jpg,.jpeg,.png,.bmp', hint: '上传图片文件', types: 'JPG/PNG/BMP' },
+    };
+
+    function switchUploadTab(type, btn) {
+        currentUploadTab = type;
+        // 更新按钮样式
+        document.querySelectorAll('[id^="upload-tab-"]').forEach(b => {
+            b.style.background = '';
+            b.style.color = '';
+        });
+        btn.style.background = 'var(--accent)';
+        btn.style.color = '#000';
+        // 更新文件输入accept
+        const input = document.getElementById('file-input');
+        const cfg = UPLOAD_TYPE_MAP[type] || UPLOAD_TYPE_MAP['all'];
+        input.accept = cfg.accept;
+        document.getElementById('upload-hint').textContent = cfg.hint;
+        document.getElementById('upload-types').textContent = cfg.types;
+    }
+
+    async function handleFiles(files) {
+        const formData = new FormData();
+        for (const f of files) formData.append('files', f);
+
+        try {
+            const resp = await fetch('/api/agent/upload/batch', { method: 'POST', body: formData });
+            const data = await resp.json();
+            if (data.success) {
+                data.data.uploaded.forEach(f => {
+                    uploadedFiles.push(f);
+                    addFileTag(f);
+                });
+                data.data.errors.forEach(e => showToast(e.error || '上传失败', 'error'));
+            }
+        } catch(e) {
+            showToast('上传失败: ' + e.message, 'error');
+        }
+    }
+
+    function addFileTag(file) {
+        const list = document.getElementById('file-list');
+        const tag = document.createElement('span');
+        tag.className = 'file-tag';
+        tag.innerHTML = `${file.original_name} <button onclick="removeFile('${file.file_path}', this.parentElement)">✕</button>`;
+        list.appendChild(tag);
+    }
+
+    function removeFile(path, el) {
+        uploadedFiles = uploadedFiles.filter(f => f.file_path !== path);
+        el.remove();
+    }
+
+    // ══════════════════════════════════════
+    //  SSE Workflow
+    // ══════════════════════════════════════
+    function startWorkflow() {
+        const projectName = document.getElementById('project-name').value.trim() || '未命名项目';
+        const modelName = document.getElementById('model-select').value;
+        const tempProfile = document.getElementById('temp-profile').value;
+        const compMode = document.getElementById('comparison-mode').value;
+        const useRag = document.getElementById('use-rag').checked;
+
+        if (isRunning) return;
+
+        // Reset state
+        completedSteps = new Set();
+        currentApprovalStep = null;
+        isRunning = true;
+
+        document.getElementById('start-btn').disabled = true;
+        document.getElementById('stop-btn').classList.remove('hidden');
+        document.getElementById('quick-actions').classList.add('hidden');
+        document.getElementById('report-area').classList.add('hidden');
+        document.getElementById('approval-panel').classList.add('hidden');
+        document.getElementById('alerts-area').innerHTML = '';
+        document.getElementById('progress-bar').style.width = '0%';
+        document.getElementById('progress-text').textContent = '0 / 14';
+        document.getElementById('status-title').textContent = '🚀 执行中...';
+
+        renderStepList();
+        updateProgressBar();
+
+        // Show feature toolbar
+        document.getElementById('feature-toolbar').classList.remove('hidden');
+
+        const body = {
+            project_name: projectName,
+            file_paths: uploadedFiles.map(f => f.file_path),
+            model_name: modelName,
+            temperature_profile: tempProfile,
+            comparison_mode: compMode,
+            use_rag: useRag,
+            language_style: document.getElementById('language-style').value,
+        };
+
+        fetch('/api/agent/workflow/start-stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        }).then(response => {
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            return readSSEStream(response);
+        }).catch(err => {
+            showToast('连接失败: ' + err.message, 'error');
+            resetUI();
+        });
+    }
+
+    async function readSSEStream(response) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    try {
+                        const event = JSON.parse(line.slice(6));
+                        handleSSEEvent(event);
+                    } catch(e) {
+                        console.warn('SSE parse error:', e);
+                    }
+                }
+            }
+        }
+    }
+
+    function handleSSEEvent(event) {
+        const type = event.event;
+
+        if (type === 'step_start') {
+            updateStepStatus(event.step_number, 'running', event.step_name);
+            updateProgressBar();
+        } else if (type === 'step_complete') {
+            updateStepStatus(event.step_number, 'completed', event.step_name);
+            completedSteps.add(event.step_number);
+            updateProgressBar();
+            if (event.warnings?.length) showAlert('warning', event.warnings);
+        } else if (type === 'approval_required') {
+            updateStepStatus(event.step_number, 'awaiting', event.step_name);
+            showApprovalPanel(event);
+        } else if (type === 'warning') {
+            showAlert('warning', [event.message]);
+        } else if (type === 'error') {
+            updateStepStatus(event.step_number, 'error', event.step_name);
+            showAlert('error', [event.message]);
+        } else if (type === 'complete') {
+            handleComplete(event);
+        } else if (type === 'questionnaire_ready') {
+            showQuestionnairePrompt(event);
+        } else if (type === 'token_update') {
+            // 更新token消耗显示
+            const tokenEl = document.getElementById('token-used');
+            if (tokenEl) tokenEl.textContent = event.tokens_used || 0;
+        }
+
+        if (event.session_id && !sessionId) {
+            sessionId = event.session_id;
+        }
+    }
+
+    function showQuestionnairePrompt(event) {
+        // 在步骤列表中插入问卷提示
+        const list = document.getElementById('step-list');
+        const existing = document.getElementById('questionnaire-prompt-row');
+        if (existing) return; // 只显示一次
+        const row = document.createElement('div');
+        row.id = 'questionnaire-prompt-row';
+        row.className = 'step-row awaiting';
+        row.style.cssText = 'cursor:pointer;';
+        row.innerHTML = `
+            <span class="step-dot awaiting"></span>
+            <span style="flex:1;">📋 <strong>生成调查问卷</strong></span>
+            <button class="btn btn-accent btn-sm" onclick="event.stopPropagation();generateQuestionnaire()">立即生成</button>
+        `;
+        row.addEventListener('click', () => generateQuestionnaire());
+        list.appendChild(row);
+    }
+
+    async function generateQuestionnaire() {
+        if (!sessionId) { showToast('请先启动工作流', 'error'); return; }
+        try {
+            const resp = await fetch('/api/agent/workflow/questionnaire', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId, max_questions: 30 }),
+            });
+            const data = await resp.json();
+            if (data.success) {
+                showToast(`已生成 ${data.total_questions} 道问卷题目`, 'success');
+                const row = document.getElementById('questionnaire-prompt-row');
+                if (row) {
+                    row.className = 'step-row completed';
+                    row.innerHTML = `
+                        <span class="step-dot completed"></span>
+                        <span>📋 调查问卷已生成 (${data.total_questions} 题)</span>
+                        <button class="btn btn-sm" onclick="event.stopPropagation();window.open('/questionnaire?session=${sessionId}','_blank')">打开问卷</button>
+                    `;
+                }
+            } else {
+                showToast('问卷生成失败: ' + (data.message || '未知错误'), 'error');
+            }
+        } catch(e) {
+            showToast('问卷生成失败: ' + e.message, 'error');
+        }
+    }
+
+    function showApprovalPanel(event) {
+        currentApprovalStep = event.step_number;
+        const panel = document.getElementById('approval-panel');
+        panel.classList.remove('hidden');
+        document.getElementById('approval-step-name').textContent =
+            `Step ${event.step_number} — ${event.step_name}`;
+        document.getElementById('approval-preview').textContent =
+            event.content_preview || '(暂无预览)';
+    }
+
+    async function doApprove(approved) {
+        const feedback = document.getElementById('approval-feedback')?.value || '';
+        document.getElementById('approval-panel').classList.add('hidden');
+        document.getElementById('approval-feedback').value = '';
+
+        try {
+            const resp = await fetch('/api/agent/workflow/approve', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId, approved, feedback }),
+            });
+            const data = await resp.json();
+            if (data.success) {
+                updateStepStatus(currentApprovalStep, 'completed', '');
+                completedSteps.add(currentApprovalStep);
+                updateProgressBar();
+                // Restart SSE polling for remaining steps
+                pollStatus();
+            }
+            currentApprovalStep = null;
+        } catch(e) {
+            showToast('审批失败: ' + e.message, 'error');
+        }
+    }
+
