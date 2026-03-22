@@ -1290,3 +1290,249 @@
         } catch(e) { showToast('加载模板库失败: ' + e.message, 'error'); }
     }
 
+    async function importTemplate(tid) {
+        if (!sessionId) return;
+        try {
+            const resp = await fetch('/api/agent/workflow/templates/import', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId, template_id: tid }),
+            });
+            const data = await resp.json();
+            if (data.success) {
+                showToast('模板导入成功');
+                document.getElementById('template-panel').classList.add('hidden');
+            }
+        } catch(e) { showToast('导入失败: ' + e.message, 'error'); }
+    }
+
+    async function saveCurrentAsTemplate() {
+        if (!sessionId) return;
+        const name = prompt('请输入模板名称：');
+        if (!name) return;
+        const type = prompt('请输入模板类型（如：项目支出/部门整体/自定义）：', '自定义') || '自定义';
+        try {
+            const resp = await fetch('/api/agent/workflow/templates/save', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId, template_name: name, template_type: type }),
+            });
+            const data = await resp.json();
+            if (data.success) showToast('模板保存成功');
+        } catch(e) { showToast('保存失败: ' + e.message, 'error'); }
+    }
+
+    // --- Indicator Reorder (Step 6) ---
+    async function reorderIndicators(level, fromIdx, toIdx, parentL1, parentL2) {
+        if (!sessionId) return;
+        try {
+            const body = { session_id: sessionId, level, from_index: fromIdx, to_index: toIdx };
+            if (parentL1 !== undefined) body.parent_l1_idx = parentL1;
+            if (parentL2 !== undefined) body.parent_l2_idx = parentL2;
+            await fetch('/api/agent/workflow/reorder-indicators', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+        } catch(e) { console.warn('Reorder failed:', e); }
+    }
+
+    async function moveIndicator(level, fromIdx, toIdx, parentL1, parentL2) {
+        await reorderIndicators(level, fromIdx, toIdx, parentL1, parentL2);
+        showToast('排序已更新');
+    }
+
+    // --- Report Assembly (Step 14) ---
+    async function renderSectionOrder(sections, isCustom) {
+        document.getElementById('report-assembly-panel').classList.remove('hidden');
+        document.getElementById('report-assembly-panel').scrollIntoView({ behavior: 'smooth' });
+        const container = document.getElementById('section-order-list');
+        container.innerHTML = sections.map((s, i) => `
+            <div style="display:flex; align-items:center; gap:10px; padding:8px; margin:4px 0; background:#0f172a; border-radius:8px; border:1px solid var(--border); cursor:move;" draggable="true"
+                 ondragstart="dragSection(event, ${i})" ondragover="event.preventDefault()" ondrop="dropSection(event, ${i})">
+                <span style="color:var(--muted);">☰</span>
+                <label style="flex:1;">
+                    <input type="checkbox" ${s.enabled !== false ? 'checked' : ''} onchange="window._sections[${i}].enabled = this.checked">
+                    &nbsp; ${s.name}
+                </label>
+                ${s.has_content ? '<span style="color:#22c55e; font-size:0.75rem;">(已有内容)</span>' : '<span style="color:var(--muted); font-size:0.75rem;">(暂无内容)</span>'}
+            </div>
+        `).join('');
+        window._sections = sections;
+        window._isCustom = isCustom;
+    }
+
+    let _dragFrom = -1;
+    function dragSection(e, idx) { _dragFrom = idx; }
+    function dropSection(e, toIdx) {
+        if (_dragFrom < 0 || _dragFrom === toIdx) return;
+        const s = window._sections.splice(_dragFrom, 1)[0];
+        window._sections.splice(toIdx, 0, s);
+        _dragFrom = -1;
+        renderSectionOrder(window._sections, true);
+        // Save order
+        fetch('/api/agent/workflow/report-order', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sessionId, sections: window._sections }),
+        }).catch(() => {});
+    }
+
+    async function assembleReport() {
+        if (!sessionId) return;
+        showToast('正在组装报告...');
+        const includeSections = (window._sections || []).filter(s => s.enabled !== false).map(s => s.key);
+        try {
+            const resp = await fetch('/api/agent/workflow/assemble-report', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId, show_title: true, include_sections: includeSections }),
+            });
+            const data = await resp.json();
+            if (data.success) {
+                document.getElementById('report-content').textContent = data.data.report;
+                document.getElementById('report-area').classList.remove('hidden');
+                document.getElementById('report-area').scrollIntoView({ behavior: 'smooth' });
+                showToast(`报告组装完成，共 ${data.data.section_count} 个章节`);
+            }
+        } catch(e) { showToast('组装失败: ' + e.message, 'error'); }
+    }
+
+    async function openReportAssembly() {
+        if (!sessionId) return;
+        const resp = await fetch('/api/agent/workflow/' + sessionId + '/report-order');
+        const data = await resp.json();
+        if (data.success) renderSectionOrder(data.data, data.is_custom);
+    }
+
+    async function checkReportFormat() {
+        if (!sessionId) return;
+        showToast('正在格式校对...');
+        try {
+            const resp = await fetch('/api/agent/workflow/' + sessionId + '/format-check', { method: 'POST' });
+            const data = await resp.json();
+            if (data.success) {
+                document.getElementById('logic-verification-content').textContent = data.data.check_result;
+                document.getElementById('logic-verification-panel').classList.remove('hidden');
+                document.getElementById('logic-verification-panel').scrollIntoView({ behavior: 'smooth' });
+                showToast('格式校对完成');
+            }
+        } catch(e) { showToast('校对失败: ' + e.message, 'error'); }
+    }
+
+    // --- Export Style ---
+    async function openExportStyle() {
+        if (!sessionId) return;
+        try {
+            const resp = await fetch('/api/agent/workflow/' + sessionId + '/export-style');
+            const data = await resp.json();
+            if (data.success) {
+                document.getElementById('export-font').value = data.data.font_family || 'SimSun';
+                document.getElementById('export-font-size').value = data.data.font_size || 12;
+                document.getElementById('export-line-spacing').value = data.data.line_spacing || 1.5;
+                document.getElementById('export-page-margin').value = data.data.page_margin || 2.5;
+            }
+        } catch(e) {}
+        document.getElementById('export-style-panel').classList.remove('hidden');
+        document.getElementById('export-style-panel').scrollIntoView({ behavior: 'smooth' });
+    }
+
+    async function saveExportStyle() {
+        if (!sessionId) return;
+        try {
+            await fetch('/api/agent/workflow/export-style', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    font_family: document.getElementById('export-font').value,
+                    font_size: parseInt(document.getElementById('export-font-size').value),
+                    line_spacing: parseFloat(document.getElementById('export-line-spacing').value),
+                    page_margin: parseFloat(document.getElementById('export-page-margin').value),
+                }),
+            });
+            showToast('导出样式已保存');
+        } catch(e) { showToast('保存失败: ' + e.message, 'error'); }
+    }
+
+    // --- Dynamic Module Management (Step 12) ---
+    async function addCustomModule() {
+        if (!sessionId) return;
+        const moduleName = prompt('请输入新模块名称（如：项目合规性分析）：');
+        if (!moduleName) return;
+        const key = 'custom_' + Date.now();
+        try {
+            const resp = await fetch('/api/agent/workflow/add-custom-module', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId, module_key: key, module_name: moduleName, content: '' }),
+            });
+            const data = await resp.json();
+            if (data.success) showToast('模块已添加');
+        } catch(e) { showToast('添加失败: ' + e.message, 'error'); }
+    }
+
+    // --- Indicator Tree View (Step 6: Drag-and-drop reorder) ---
+    async function openIndicatorTree() {
+        if (!sessionId) return;
+        showToast('正在加载指标体系...');
+        try {
+            const resp = await fetch('/api/agent/workflow/' + sessionId + '/indicators-for-scoring');
+            const data = await resp.json();
+            if (!data.success) return;
+
+            const indicators = data.data.indicators;
+            if (!indicators || indicators.length === 0) { showToast('指标体系尚未生成'); return; }
+
+            // Group by L1 → L2 → L3
+            const tree = {};
+            indicators.forEach(ind => {
+                if (!tree[ind.level1_name]) tree[ind.level1_name] = {};
+                if (!tree[ind.level1_name][ind.level2_name]) tree[ind.level1_name][ind.level2_name] = [];
+                tree[ind.level1_name][ind.level2_name].push(ind);
+            });
+
+            let html = '<div style="max-height:550px; overflow-y:auto;">';
+            let l1Idx = 0;
+            for (const [l1Name, l2Map] of Object.entries(tree)) {
+                html += `<div style="margin:8px 0; padding:8px; background:#1e293b; border-radius:8px; border:1px solid var(--accent);">
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <span style="cursor:pointer; color:var(--muted);" onclick="moveIndicator('level1',${l1Idx},${l1Idx-1})" title="上移">▲</span>
+                        <span style="cursor:pointer; color:var(--muted);" onclick="moveIndicator('level1',${l1Idx},${l1Idx+1})" title="下移">▼</span>
+                        <strong style="color:var(--accent);">${l1Name}</strong>
+                    </div>`;
+                let l2Idx = 0;
+                for (const [l2Name, l3List] of Object.entries(l2Map)) {
+                    const l2FullScore = l3List.reduce((s, i) => s + i.full_score, 0);
+                    html += `<div style="margin:4px 0 4px 20px; padding:6px; background:#0f172a; border-radius:6px; border:1px solid var(--border);">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <span style="cursor:pointer; color:var(--muted);" onclick="moveIndicator('level2',${l2Idx},${l2Idx-1},${l1Idx})" title="上移">▲</span>
+                            <span style="cursor:pointer; color:var(--muted);" onclick="moveIndicator('level2',${l2Idx},${l2Idx+1},${l1Idx})" title="下移">▼</span>
+                            <strong>${l2Name}</strong> <span style="color:var(--muted); font-size:0.75rem;">(${l2FullScore}分)</span>
+                        </div>`;
+                    l3List.forEach((l3, l3Idx) => {
+                        html += `<div style="margin:2px 0 2px 20px; padding:4px; font-size:0.8rem; display:flex; align-items:center; gap:6px;">
+                            <span style="cursor:pointer; color:var(--muted);" onclick="moveIndicator('level3',${l3Idx},${l3Idx-1},${l1Idx},${l2Idx})" title="上移">▲</span>
+                            <span style="cursor:pointer; color:var(--muted);" onclick="moveIndicator('level3',${l3Idx},${l3Idx+1},${l1Idx},${l2Idx})" title="下移">▼</span>
+                            <span style="flex:1;">${l3.level3_name}</span>
+                            <span style="color:var(--muted);">${l3.full_score}分</span>
+                        </div>`;
+                    });
+                    html += `</div>`;
+                    l2Idx++;
+                }
+                html += `</div>`;
+                l1Idx++;
+            }
+            html += '</div>';
+
+            document.getElementById('step-detail-title').textContent = '🔀 指标体系排序 (Step 6)';
+            document.getElementById('step-detail-content').innerHTML = html;
+            document.getElementById('step-detail-panel').classList.remove('hidden');
+            document.getElementById('step-detail-panel').scrollIntoView({ behavior: 'smooth' });
+        } catch(e) { showToast('加载指标体系失败: ' + e.message, 'error'); }
+    }
+
+    </script>
+</body>
+</html>"
