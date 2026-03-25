@@ -260,3 +260,264 @@ async function renderDashboard(){
     '<div class="card"><h3 style="font-size:0.95rem;margin-bottom:12px">🏆 Token消耗 Top 10 用户</h3>'+(tokData&&tokData.top_users.length?renderTopUsers(tokData.top_users):'<p style="color:var(--muted);font-size:0.85rem">暂无数据</p>')+'</div>'+
     '</div>'+
 
+    '<div class="card"><h3 style="font-size:0.95rem;margin-bottom:12px">📋 最近操作</h3>'+
+    '<table class="table-view"><thead><tr><th>用户</th><th>操作</th><th>详情</th><th>时间</th></tr></thead><tbody>'+
+    (logs||[]).map(function(l){return '<tr><td>'+esc(l.username||'-')+'</td><td><span class="badge badge-info">'+esc(l.action)+'</span></td><td>'+esc(l.detail||'-')+'</td><td style="font-size:0.78rem;color:var(--muted)">'+formatTime(l.created_at)+'</td></tr>'}).join('')+
+    '</tbody></table></div>';
+}
+
+function statCard2(label,value,sub){return '<div class="stat-card"><div class="label">'+label+'</div><div class="value">'+value+'</div><div class="sub">'+sub+'</div></div>'}
+
+function renderTokenTrend(trend){
+    var max=0;trend.forEach(function(d){if(d.tokens>max)max=d.tokens});
+    if(max===0)max=1;
+    var h='<div class="token-bar">';
+    trend.forEach(function(d){var pct=Math.max(2,(d.tokens/max)*100);h+='<div class="token-bar-item" style="height:'+pct+'%"><span class="tip">'+d.date.slice(5)+': '+tok(d.tokens)+'</span></div>'});
+    h+='</div><div style="display:flex;justify-content:space-between;font-size:0.65rem;color:var(--muted);margin-top:4px"><span>'+trend[0].date.slice(5)+'</span><span>'+trend[trend.length-1].date.slice(5)+'</span></div>';
+    return h
+}
+
+function renderTopUsers(users){
+    var max=users[0].tokens_used||1;
+    var h='';users.forEach(function(u,i){
+        var pct=(u.tokens_used/max)*100;
+        h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:0.82rem"><span style="width:20px;color:var(--muted)">'+(i+1)+'</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(u.username)+'</span><span style="width:80px;text-align:right;font-weight:600;color:var(--accent)">'+tok(u.tokens_used)+'</span><div style="width:100px;height:6px;background:#e2e8f0;border-radius:3px"><div style="width:'+pct+'%;height:100%;background:var(--accent);border-radius:3px"></div></div></div>'
+    });
+    return h
+}
+
+// ===========================
+//  CLIENT CONTROL CENTER
+// ===========================
+async function renderClientControl(){
+    var main=document.getElementById('main-content');
+    main.innerHTML='<div class="empty-state"><p>加载中...</p></div>';
+    var sett=await api(API_BASE+'/settings');
+    var token=await api(API_BASE+'/token-stats');
+    var chatStat=await api(API_BASE+'/ai-chat-stats');
+    if(!sett||!sett.success){main.innerHTML='<p style="color:#ef4444">加载失败</p>';return}
+    var aiEnabled=sett.data.ai_chat_enabled;
+    var tokData=token&&token.success?token.data:null;
+    var cData=chatStat&&chatStat.success?chatStat.data:null;
+
+    main.innerHTML=
+    '<div class="page-header"><h2>🛡️ 客户端管控中心</h2><p>集中管理客户端AI能力开关、Token配额与使用情况</p></div>'+
+
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">'+
+
+    '<div class="card" style="border:2px solid '+(aiEnabled?'var(--accent)':'var(--danger)')+'">'+
+    '<h3 style="font-size:1rem;margin-bottom:12px;display:flex;align-items:center;gap:8px"><span class="status-dot '+(aiEnabled?'online':'offline')+'"></span>AI聊天服务</h3>'+
+    '<div style="display:flex;align-items:center;gap:16px;margin-bottom:14px">'+
+    '<label class="toggle-switch" style="width:52px;height:28px"><input type="checkbox" id="cc-ai-toggle" '+(aiEnabled?'checked':'')+' onchange="toggleAIChatCc(this.checked)"><span class="toggle-slider" style="height:28px"></span><span class="toggle-slider:before" style="height:22px;width:22px"></span></label>'+
+    '<div><div style="font-weight:600;font-size:1.1rem;color:'+(aiEnabled?'var(--accent)':'var(--danger)')+'">'+(aiEnabled?'已启用':'已禁用')+'</div>'+
+    '<div style="font-size:0.8rem;color:var(--muted)">客户端\'AI助手\'功能开关</div></div></div>'+
+    (cData?'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;border-top:1px solid var(--border);padding-top:12px">'+
+    '<div style="text-align:center"><div style="font-size:1.3rem;font-weight:700">'+tok(cData.total_conversations)+'</div><div style="font-size:0.72rem;color:var(--muted)">总对话数</div></div>'+
+    '<div style="text-align:center"><div style="font-size:1.3rem;font-weight:700">'+tok(cData.total_messages)+'</div><div style="font-size:0.72rem;color:var(--muted)">总消息数</div></div>'+
+    '<div style="text-align:center"><div style="font-size:1.3rem;font-weight:700">'+tok(cData.active_conversations_today)+'</div><div style="font-size:0.72rem;color:var(--muted)">今日活跃</div></div></div>':'')+
+    '</div>'+
+
+    '<div class="card">'+
+    '<h3 style="font-size:1rem;margin-bottom:12px">🪙 Token消耗概览</h3>'+
+    (tokData?'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'+
+    '<div class="stat-card" style="padding:10px"><div class="value" style="font-size:1.2rem">'+tok(tokData.overview.total_tokens)+'</div><div class="label">累计消耗</div></div>'+
+    '<div class="stat-card" style="padding:10px"><div class="value" style="font-size:1.2rem;color:var(--accent)">'+tok(tokData.overview.today_tokens)+'</div><div class="label">今日消耗</div></div>'+
+    '<div class="stat-card" style="padding:10px"><div class="value" style="font-size:1.2rem">'+tok(tokData.overview.week_tokens)+'</div><div class="label">本周消耗</div></div>'+
+    '<div class="stat-card" style="padding:10px"><div class="value" style="font-size:1.2rem">'+tok(tokData.overview.month_tokens)+'</div><div class="label">本月消耗</div></div>'+
+    '</div>':'<p style="color:var(--muted)">暂无数据</p>')+
+    '</div></div>'+
+
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">'+
+    '<div class="card"><h3 style="font-size:0.95rem;margin-bottom:12px">🪙 Token消耗趋势（近30天）</h3>'+(tokData&&tokData.daily_trend.length?renderTokenTrend(tokData.daily_trend):'<p style="color:var(--muted);font-size:0.85rem">暂无数据</p>')+'</div>'+
+    '<div class="card"><h3 style="font-size:0.95rem;margin-bottom:12px">🤖 模型使用分布</h3>'+(tokData&&tokData.model_usage.length?'<table class="table-view"><thead><tr><th>模型</th><th>Token</th><th>调用次数</th></tr></thead><tbody>'+tokData.model_usage.map(function(m){return '<tr><td>'+esc(m.model)+'</td><td>'+tok(m.tokens)+'</td><td>'+m.calls+'</td></tr>'}).join('')+'</tbody></table>':'<p style="color:var(--muted);font-size:0.85rem">暂无数据</p>')+'</div>'+
+    '</div>'+
+
+    '<div class="card"><h3 style="font-size:0.95rem;margin-bottom:12px">🏆 Token消耗 Top 10 用户</h3>'+(tokData&&tokData.top_users.length?renderTopUsers(tokData.top_users):'<p style="color:var(--muted)">暂无数据</p>')+'</div>';
+}
+
+async function toggleAIChatCc(enabled){
+    var resp=await api(API_BASE+'/settings/ai-chat-toggle','POST',{ai_chat_enabled:enabled});
+    if(resp&&resp.success){showToast(resp.message);navigateTo('client-control')}else showToast('操作失败','error');
+}
+
+async function toggleAIDash(enabled){
+    var resp=await api(API_BASE+'/settings/ai-chat-toggle','POST',{ai_chat_enabled:enabled});
+    if(resp&&resp.success){showToast(resp.message);navigateTo('dashboard')}else{showToast('操作失败','error');document.getElementById('dash-ai-toggle').checked=!enabled}
+}
+
+// ===========================
+//  USERS (Enhanced with Token sorting)
+// ===========================
+var usersPage=1,usersSearch='',usersRole='',usersSort='';
+async function loadUsers(){
+    var main=document.getElementById('main-content');
+    main.innerHTML=
+        '<div class="page-header"><h2>👥 用户管理</h2><p>管理系统用户账号、权限与Token消耗</p></div>'+
+        '<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">'+
+        '<input id="user-search" placeholder="搜索用户名..." style="padding:7px 11px;background:white;border:1px solid var(--border);border-radius:7px;color:var(--text);width:160px;font-size:0.85rem">'+
+        '<select id="user-role-filter" style="padding:7px 11px;background:white;border:1px solid var(--border);border-radius:7px;color:var(--text);font-size:0.85rem"><option value="">全部角色</option><option value="admin">管理员</option><option value="user">普通用户</option></select>'+
+        '<select id="user-sort" style="padding:7px 11px;background:white;border:1px solid var(--border);border-radius:7px;color:var(--text);font-size:0.85rem"><option value="">默认排序</option><option value="tokens_desc">Token最多</option><option value="tokens_asc">Token最少</option></select>'+
+        '<button class="btn btn-primary" onclick="showCreateUserModal()">+ 创建用户</button>'+
+        '</div>'+
+        '<div id="users-table-container" class="card"><div class="empty-state">加载中...</div></div>'+
+        '<div id="users-pagination" class="pagination"></div>';
+    document.getElementById('user-search').addEventListener('input',debounce(function(){usersSearch=this.value;usersPage=1;refreshUsers()},300));
+    document.getElementById('user-role-filter').addEventListener('change',function(){usersRole=this.value;usersPage=1;refreshUsers()});
+    document.getElementById('user-sort').addEventListener('change',function(){usersSort=this.value;usersPage=1;refreshUsers()});
+    await refreshUsers();
+}
+
+async function refreshUsers(){
+    var params=new URLSearchParams({page:usersPage,page_size:20});
+    if(usersSearch)params.set('search',usersSearch);
+    if(usersRole)params.set('role',usersRole);
+    var resp=await api(API_BASE+'/users?'+params);
+    var c=document.getElementById('users-table-container');
+    var pagDiv=document.getElementById('users-pagination');
+    if(!resp||!resp.success){c.innerHTML='<p style="color:#ef4444">加载失败</p>';return}
+    var users=resp.data.users,total=resp.data.total,page=resp.data.page,ps=resp.data.page_size;
+    // Sort client-side if token sort selected
+    if(usersSort==='tokens_desc')users.sort(function(a,b){return (b.tokens_used||0)-(a.tokens_used||0)});
+    else if(usersSort==='tokens_asc')users.sort(function(a,b){return (a.tokens_used||0)-(b.tokens_used||0)});
+    var tp=Math.ceil(total/ps);
+    c.innerHTML='<table class="table-view"><thead><tr><th>ID</th><th>用户名</th><th>角色</th><th>状态</th><th>🪙 Token</th><th>最近登录</th><th>注册时间</th><th>操作</th></tr></thead><tbody>'+
+    users.map(function(u){return '<tr><td>'+u.id+'</td><td><strong>'+esc(u.username)+'</strong></td><td><span class="badge '+(u.role==='admin'?'badge-warning':'badge-info')+'">'+u.role+'</span></td><td><span class="badge '+(u.is_active?'badge-success':'badge-danger')+'">'+(u.is_active?'启用':'禁用')+'</span></td><td style="font-weight:600;color:'+((u.tokens_used||0)>10000?'var(--warning)':'var(--accent)')+'">'+tok(u.tokens_used)+'</td><td style="font-size:0.78rem;color:var(--muted)">'+formatTime(u.last_login)+'</td><td style="font-size:0.78rem;color:var(--muted)">'+formatTime(u.created_at)+'</td><td><button class="btn btn-sm" data-action="detail" data-uid="'+u.id+'">详情</button><button class="btn btn-sm '+(u.is_active?'btn-danger':'')+'" data-action="toggle" data-uid="'+u.id+'" data-enable="'+(!u.is_active)+'">'+(u.is_active?'禁用':'启用')+'</button>'+(u.role!=='admin'?'<button class="btn btn-sm btn-danger" data-action="deactivate" data-uid="'+u.id+'" style="background:#c53030;color:#fff;border:none">注销</button>':'')+'</td></tr>'}).join('')+
+    '</tbody></table>';
+    pagDiv.innerHTML='';
+    if(tp>1){for(var i=1;i<=tp;i++){var b=document.createElement('button');b.textContent=i;if(i===page)b.classList.add('active');b.addEventListener('click',function(p){return function(){usersPage=p;refreshUsers()}}(i));pagDiv.appendChild(b)}}
+}
+
+// 用户表格事件委托（避免 inline onclick 中的字符串转义问题）
+document.addEventListener('click', function(e){
+    var btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    var action = btn.getAttribute('data-action');
+    var uid = parseInt(btn.getAttribute('data-uid'));
+    if (!uid) return;
+    if (action === 'detail') viewUserDetail(uid);
+    else if (action === 'toggle') toggleUser(uid, btn.getAttribute('data-enable') === 'true');
+    else if (action === 'deactivate') {
+        var row = btn.closest('tr');
+        var nameEl = row ? row.querySelector('td:nth-child(2) strong') : null;
+        var userName = nameEl ? nameEl.textContent : '用户#' + uid;
+        deactivateUser(uid, userName);
+    }
+});
+
+async function viewUserDetail(userId){
+    var resp=await api(API_BASE+'/users/'+userId);
+    if(!resp||!resp.success)return;
+    var u=resp.data;
+    showModal('<h3 style="margin-bottom:14px">用户详情: '+esc(u.username)+'</h3>'+
+        '<p><strong>ID:</strong> '+u.id+'</p>'+
+        '<p><strong>角色:</strong> <span class="badge '+(u.role==='admin'?'badge-warning':'badge-info')+'">'+u.role+'</span></p>'+
+        '<p><strong>状态:</strong> <span class="badge '+(u.is_active?'badge-success':'badge-danger')+'">'+(u.is_active?'启用':'禁用')+'</span></p>'+
+        '<p><strong>手机:</strong> '+(u.phone||'-')+'</p>'+
+        '<p><strong>🔑 密码(加密):</strong> <code style="font-size:0.75rem;background:#f7fafc;padding:2px 6px;border-radius:4px;word-break:break-all">'+esc(u.password_hash||'无')+'</code></p>'+
+        '<p><strong>🪙 Token消耗:</strong> <span style="color:var(--accent);font-weight:700">'+tok(u.tokens_used)+'</span></p>'+
+        '<p><strong>项目数:</strong> '+(u.project_count||0)+'</p>'+
+        '<p><strong>最近登录:</strong> '+formatTime(u.last_login)+'</p>'+
+        '<p><strong>注册时间:</strong> '+formatTime(u.created_at)+'</p>'+
+        '<h4 style="margin-top:12px;margin-bottom:6px">最近操作</h4>'+
+        '<ul style="list-style:none;padding:0">'+(u.recent_operations||[]).map(function(o){return '<li style="font-size:0.82rem;color:var(--muted)">'+esc(o.action)+' - '+esc(o.detail||'')+' ('+formatTime(o.time)+')</li>'}).join('')+'</ul>'+
+        '<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:flex;gap:8px">'+
+        '<button class="btn btn-primary" onclick="closeModal();showChangePasswordModal('+u.id+',\''+esc(u.username).replace(/\\/g,"\\\\").replace(/'/g,"\\'")+'\')">🔒 修改密码</button>'+
+        '<button class="btn" onclick="closeModal()">关闭</button></div>');
+}
+
+async function toggleUser(userId,enable){var resp=await api(API_BASE+'/users/'+userId,'PUT',{is_active:enable});if(resp&&resp.success){showToast(resp.message||'操作成功');refreshUsers()}else{showToast(resp&&resp.detail||'操作失败','error')}}
+
+async function deactivateUser(userId,userName){
+    if(!confirm('确认注销用户 "'+userName+'" 吗？\n\n此操作将彻底删除该用户及其所有关联数据（报告、问卷、项目、Token记录等），不可恢复！'))return;
+    try{
+        var resp=await api(API_BASE+'/users/'+userId+'/deactivate','POST');
+        if(resp&&resp.success){showToast(resp.message||'用户已注销');refreshUsers()}
+        else{showToast((resp&&resp.detail)||'注销失败（未知错误）','error')}
+    }catch(e){
+        showToast('注销请求失败: '+(e.message||'网络错误'),'error');
+    }
+}
+
+function showCreateUserModal(){
+    showModal('<h3 style="margin-bottom:12px">创建新用户</h3>'+
+        '<label>用户名</label><input id="new-username" placeholder="请输入用户名">'+
+        '<label>密码</label><input id="new-password" type="password" placeholder="请输入密码">'+
+        '<label>手机号（选填）</label><input id="new-phone" placeholder="请输入手机号">'+
+        '<label>角色</label><select id="new-role"><option value="user">普通用户</option><option value="admin">管理员</option></select>'+
+        '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px"><button class="btn" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="createUser()">创建</button></div>');
+}
+
+async function createUser(){
+    var username=document.getElementById('new-username').value.trim(),password=document.getElementById('new-password').value;
+    var phone=document.getElementById('new-phone').value.trim()||null,role=document.getElementById('new-role').value;
+    if(!username||!password){showToast('请填写用户名和密码','error');return}
+    var createBtn=document.querySelector('[onclick="createUser()"]');
+    if(createBtn){createBtn.disabled=true;createBtn.dataset.origText=createBtn.textContent;createBtn.textContent='创建中...'}
+    var resp=await api(API_BASE+'/users','POST',{username:username,password:password,phone:phone,role:role});
+    if(createBtn){createBtn.disabled=false;if(createBtn.dataset.origText)createBtn.textContent=createBtn.dataset.origText}
+    if(resp&&resp.success){showToast('创建成功');closeModal();refreshUsers()}else{showToast(resp&&resp.detail||'创建失败','error')}
+}
+
+async function showChangePasswordModal(userId,userName){
+    showModal('<h3 style="margin-bottom:12px">修改密码: '+esc(userName)+'</h3>'+
+        '<label>新密码</label><input id="change-pwd" type="password" placeholder="请输入新密码" style="width:100%">'+
+        '<label>确认新密码</label><input id="change-pwd2" type="password" placeholder="请再次输入新密码" style="width:100%">'+
+        '<p id="pwd-error" style="font-size:0.8rem;color:#ef4444;margin-top:6px;display:none"></p>'+
+        '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">'+
+        '<button class="btn" onclick="closeModal()">取消</button>'+
+        '<button class="btn btn-primary" onclick="changeUserPassword('+userId+',\''+esc(userName).replace(/\\/g,"\\\\").replace(/'/g,"\\'")+'\')">确认修改</button></div>');
+}
+
+async function changeUserPassword(userId,userName){
+    var pwd=document.getElementById('change-pwd').value;
+    var pwd2=document.getElementById('change-pwd2').value;
+    var errEl=document.getElementById('pwd-error');
+    if(!pwd||pwd.length<6){errEl.textContent='密码至少6位';errEl.style.display='block';return}
+    if(pwd!==pwd2){errEl.textContent='两次密码不一致';errEl.style.display='block';return}
+    var resp=await api(API_BASE+'/users/'+userId,'PUT',{password:pwd});
+    if(resp&&resp.success){showToast('密码修改成功');closeModal();refreshUsers()}else{showToast(resp&&resp.detail||'密码修改失败','error')}
+}
+
+// ===========================
+//  MODELS (simplified - keep existing)
+// ===========================
+async function loadModels(){
+    var main=document.getElementById('main-content');
+    main.innerHTML='<div class="page-header"><h2>🧠 模型管理</h2><p>配置AI模型平台、API密钥与开关</p></div>'+
+        '<div style="display:flex;gap:10px;margin-bottom:14px"><button class="btn btn-primary" onclick="showModelModal()">+ 添加模型</button></div>'+
+        '<div id="models-container" class="card"><div class="empty-state">加载中...</div></div>';
+    await refreshModels();
+}
+async function refreshModels(){
+    var resp=await api(API_BASE+'/models'),c=document.getElementById('models-container');
+    if(!resp||!resp.success){c.innerHTML='<p style="color:#ef4444">加载失败</p>';return}
+    var models=resp.data;
+    c.innerHTML='<table class="table-view"><thead><tr><th>ID</th><th>平台</th><th>模型名称</th><th>API Key</th><th>状态</th><th>操作</th></tr></thead><tbody>'+
+    models.map(function(m){return '<tr><td>'+m.id+'</td><td>'+esc(m.platform)+'</td><td><strong>'+esc(m.model_name)+'</strong></td><td style="font-family:monospace;font-size:0.75rem">'+(m.api_key||'-')+'</td><td><label class="toggle-switch"><input type="checkbox" '+(m.is_enabled?'checked':'')+' onchange="toggleModel('+m.id+',this.checked)"><span class="toggle-slider"></span></label></td><td><button class="btn btn-sm" onclick="showModelModal('+m.id+')">编辑</button><button class="btn btn-sm btn-danger" onclick="deleteModel('+m.id+')">删除</button></td></tr>'}).join('')+
+    '</tbody></table>';
+}
+function showModelModal(id){
+    var isEdit=!!id;
+    showModal('<h3 style="margin-bottom:12px">'+(isEdit?'编辑模型':'添加模型')+'</h3>'+
+        '<label>平台</label><input id="m-platform" placeholder="如: dashscope / openai">'+
+        '<label>模型名称</label><input id="m-name" placeholder="如: qwen-plus">'+
+        '<label>模型ID</label><input id="m-id" placeholder="如: qwen-plus">'+
+        '<label>API Key</label><input id="m-key" type="password" placeholder="sk-...">'+
+        '<label>API Base URL</label><input id="m-url" placeholder="如: https://dashscope.aliyuncs.com/...">'+
+        '<div class="form-row"><div><label>支持图像</label><select id="m-vision"><option value="0">否</option><option value="1">是</option></select></div><div><label>支持文件</label><select id="m-file"><option value="0">否</option><option value="1">是</option></select></div></div>'+
+        '<label>启用</label><select id="m-enabled"><option value="1">是</option><option value="0">否</option></select>'+
+        '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px"><button class="btn" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveModel('+(id||0)+')">保存</button></div>');
+    if(isEdit)api(API_BASE+'/models').then(function(r){if(r&&r.data){var m=r.data.find(function(x){return x.id===id});if(!m)return;document.getElementById('m-platform').value=m.platform||'';document.getElementById('m-name').value=m.model_name||'';document.getElementById('m-id').value=m.model_id||'';document.getElementById('m-url').value=m.api_base_url||'';document.getElementById('m-vision').value=m.supports_vision?'1':'0';document.getElementById('m-file').value=m.supports_file?'1':'0';document.getElementById('m-enabled').value=m.is_enabled?'1':'0'}}).catch(function(e){console.warn('加载模型信息失败:',e);showToast('加载模型信息失败','error')});
+}
+async function saveModel(id){
+    var data={platform:document.getElementById('m-platform').value.trim(),model_name:document.getElementById('m-name').value.trim(),model_id:document.getElementById('m-id').value.trim(),api_key:document.getElementById('m-key').value.trim(),api_base_url:document.getElementById('m-url').value.trim(),supports_vision:document.getElementById('m-vision').value==='1',supports_file:document.getElementById('m-file').value==='1',is_enabled:document.getElementById('m-enabled').value==='1'};
+    if(!data.platform||!data.model_name){showToast('请填写平台和模型名称','error');return}
+    var saveBtn=document.querySelector('[onclick="saveModel('+(id||0)+')"]');
+    if(saveBtn){saveBtn.disabled=true;saveBtn.dataset.origText=saveBtn.textContent;saveBtn.textContent='保存中...'}
+    var resp=id>0?await api(API_BASE+'/models/'+id,'PUT',data):await api(API_BASE+'/models','POST',data);
+    if(saveBtn){saveBtn.disabled=false;if(saveBtn.dataset.origText)saveBtn.textContent=saveBtn.dataset.origText}
+    if(resp&&resp.success){showToast(resp.message||'保存成功');closeModal();refreshModels()}else{showToast(resp&&resp.detail||'保存失败','error')}
+}
+async function toggleModel(id,e){var r=await api(API_BASE+'/models/'+id+'/toggle','PATCH',{is_enabled:e});if(r&&r.success)showToast(r.message);else{showToast('操作失败','error');refreshModels()}}
+async function deleteModel(id){if(!confirm('确定删除？'))return;var r=await api(API_BASE+'/models/'+id,'DELETE');if(r&&r.success){showToast('已删除');refreshModels()}else{showToast(r&&r.detail||'删除失败','error')}}
+
