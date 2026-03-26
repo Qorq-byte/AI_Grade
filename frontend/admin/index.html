@@ -521,3 +521,232 @@ async function saveModel(id){
 async function toggleModel(id,e){var r=await api(API_BASE+'/models/'+id+'/toggle','PATCH',{is_enabled:e});if(r&&r.success)showToast(r.message);else{showToast('操作失败','error');refreshModels()}}
 async function deleteModel(id){if(!confirm('确定删除？'))return;var r=await api(API_BASE+'/models/'+id,'DELETE');if(r&&r.success){showToast('已删除');refreshModels()}else{showToast(r&&r.detail||'删除失败','error')}}
 
+// ===========================
+//  KNOWLEDGE / TEMPLATES / INDICATORS
+//  (Prompt管理已升级为细粒度版本，见文件末尾)
+// ===========================
+
+// Knowledge base
+var kbPage=1,kbStep='',kbCat='';
+async function loadKnowledge(){
+    var main=document.getElementById('main-content');
+    main.innerHTML='<div class="page-header"><h2>📚 知识库</h2><p>管理RAG检索增强的专业知识条目</p></div>'+
+        '<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap"><select id="kb-step-filter" style="padding:7px 11px;background:white;border:1px solid var(--border);border-radius:7px;color:var(--text);font-size:0.85rem"><option value="">全部步骤</option>'+[1,2,3,4,5,6,7,8,9,10,11,12,13,14].map(function(i){return '<option value="'+i+'">Step '+i+'</option>'}).join('')+'</select>'+
+        '<input id="kb-cat-filter" placeholder="分类筛选..." style="padding:7px 11px;background:white;border:1px solid var(--border);border-radius:7px;color:var(--text);width:130px;font-size:0.85rem">'+
+        '<button class="btn btn-primary" onclick="showKnowledgeModal()">+ 添加条目</button></div>'+
+        '<div id="kb-container" class="card"><div class="empty-state">加载中...</div></div><div id="kb-pagination" class="pagination"></div>';
+    document.getElementById('kb-step-filter').addEventListener('change',function(){kbStep=this.value;kbPage=1;refreshKnowledge()});
+    document.getElementById('kb-cat-filter').addEventListener('input',debounce(function(){kbCat=this.value;kbPage=1;refreshKnowledge()},300));
+    await refreshKnowledge();
+}
+async function refreshKnowledge(){
+    var params=new URLSearchParams({page:kbPage,page_size:15});if(kbStep)params.set('step_number',kbStep);if(kbCat)params.set('category',kbCat);
+    var resp=await api(API_BASE+'/knowledge?'+params),c=document.getElementById('kb-container'),pagDiv=document.getElementById('kb-pagination');
+    if(!resp||!resp.success){c.innerHTML='<p style="color:#ef4444">加载失败</p>';return}
+    var items=resp.data.items,total=resp.data.total,page=resp.data.page,ps=resp.data.page_size,tp=Math.ceil(total/ps);
+    c.innerHTML='<table class="table-view"><thead><tr><th>ID</th><th>名称</th><th>分类</th><th>步骤</th><th>内容</th><th>状态</th><th>操作</th></tr></thead><tbody>'+items.map(function(k){return '<tr><td>'+k.id+'</td><td><strong>'+esc(k.name)+'</strong></td><td><span class="badge badge-info">'+esc(k.category||'-')+'</span></td><td>'+(k.step_number||'-')+'</td><td><div class="kb-preview">'+esc(k.content)+'</div></td><td><span class="badge '+(k.is_active?'badge-success':'badge-danger')+'">'+(k.is_active?'启用':'禁用')+'</span></td><td><button class="btn btn-sm" onclick="showKnowledgeModal('+k.id+')">编辑</button><button class="btn btn-sm btn-danger" onclick="deleteKnowledge('+k.id+')">删除</button></td></tr>'}).join('')+'</tbody></table>';
+    pagDiv.innerHTML='';if(tp>1)for(var i=1;i<=tp;i++){var b=document.createElement('button');b.textContent=i;if(i===page)b.classList.add('active');b.addEventListener('click',function(p){return function(){kbPage=p;refreshKnowledge()}}(i));pagDiv.appendChild(b)}
+}
+function showKnowledgeModal(id){
+    var isEdit=!!id;
+    showModal('<h3 style="margin-bottom:12px">'+(isEdit?'编辑':'添加')+'知识库条目</h3>'+
+        '<label>名称</label><input id="kb-name" placeholder="条目名称"><label>分类</label><input id="kb-category" placeholder="如: 绩效管理">'+
+        '<div class="form-row"><div><label>关联步骤</label><input id="kb-step" type="number" min="1" max="14"></div><div><label>指标层级</label><input id="kb-level" type="number" min="1" max="3"></div></div>'+
+        '<label>内容</label><textarea id="kb-content" placeholder="知识库内容..." style="min-height:150px"></textarea>'+
+        '<label>状态</label><select id="kb-active"><option value="1">启用</option><option value="0">禁用</option></select>'+
+        '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px"><button class="btn" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveKnowledge('+(id||0)+')">保存</button></div>');
+    if(isEdit)api(API_BASE+'/knowledge/'+id).then(function(r){if(!r||!r.success)return;var k=r.data;document.getElementById('kb-name').value=k.name||'';document.getElementById('kb-category').value=k.category||'';document.getElementById('kb-step').value=k.step_number||'';document.getElementById('kb-level').value=k.indicator_level||'';document.getElementById('kb-content').value=k.content||'';document.getElementById('kb-active').value=k.is_active?'1':'0';});
+}
+async function saveKnowledge(id){
+    var data={name:document.getElementById('kb-name').value.trim(),category:document.getElementById('kb-category').value.trim()||null,step_number:parseInt(document.getElementById('kb-step').value)||null,indicator_level:parseInt(document.getElementById('kb-level').value)||null,content:document.getElementById('kb-content').value.trim(),is_active:document.getElementById('kb-active').value==='1'};
+    if(!data.name||!data.content){showToast('请填写名称和内容','error');return}
+    var resp=id>0?await api(API_BASE+'/knowledge/'+id,'PUT',data):await api(API_BASE+'/knowledge','POST',data);
+    if(resp&&resp.success){showToast('保存成功');closeModal();refreshKnowledge()}else{showToast(resp&&resp.detail||'保存失败','error')}
+}
+async function deleteKnowledge(id){if(!confirm('确定删除？'))return;var r=await api(API_BASE+'/knowledge/'+id,'DELETE');if(r&&r.success){showToast('已删除');refreshKnowledge()}else{showToast(r&&r.detail||'删除失败','error')}}
+
+// Templates
+var templateSections=[{id:'cover',name:'封面',order:1,enabled:true},{id:'toc',name:'目录',order:2,enabled:true},{id:'step12',name:'基本情况',order:3,enabled:true},{id:'step1',name:'资料清单',order:4,enabled:true},{id:'step2',name:'核心数据提取',order:5,enabled:true},{id:'step6',name:'指标体系表',order:6,enabled:true},{id:'step7',name:'得分分析',order:7,enabled:true},{id:'step8',name:'经验做法',order:8,enabled:true},{id:'step9',name:'问题分析',order:9,enabled:true},{id:'step10',name:'改进建议',order:10,enabled:true},{id:'step11',name:'综合评价',order:11,enabled:true},{id:'step13',name:'工作简介',order:12,enabled:true},{id:'step14',name:'附录',order:13,enabled:true}];
+function loadTemplates(){
+    var main=document.getElementById('main-content');
+    main.innerHTML='<div class="page-header"><h2>📄 报告模板管理</h2><p>管理最终报告章节顺序与显示开关</p></div>'+
+        '<div class="card"><p style="font-size:0.85rem;color:var(--muted);margin-bottom:14px">拖拽调整章节排列顺序，控制最终报告中各模块的呈现</p><div id="template-sections" style="display:flex;flex-direction:column;gap:6px"></div>'+
+        '<div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-primary" onclick="saveTemplateOrder()">💾 保存模板</button><button class="btn" onclick="exportAdminCSV()">📥 导出用户CSV</button></div></div>';
+    var sdiv=document.getElementById('template-sections');
+    templateSections.sort(function(a,b){return a.order-b.order}).forEach(function(s,i){
+        sdiv.innerHTML+='<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:white;border:1px solid var(--border);border-radius:7px"><span style="color:var(--muted);font-size:0.78rem">'+s.order+'</span><span style="flex:1;font-size:0.9rem">'+esc(s.name)+'</span>'+
+        '<label class="toggle-switch"><input type="checkbox" '+(s.enabled?'checked':'')+' onchange="templateSections['+i+'].enabled=this.checked"><span class="toggle-slider"></span></label>'+
+        '<button class="btn btn-sm" onclick="moveTemplateSection('+i+',-1)" '+(i===0?'disabled':'')+'>▲</button><button class="btn btn-sm" onclick="moveTemplateSection('+i+',1)" '+(i===templateSections.length-1?'disabled':'')+'>▼</button></div>'});
+}
+function moveTemplateSection(idx,dir){var ni=idx+dir;if(ni<0||ni>=templateSections.length)return;var to=templateSections[idx].order;templateSections[idx].order=templateSections[ni].order;templateSections[ni].order=to;loadTemplates()}
+function saveTemplateOrder(){templateSections.forEach(function(s,i){s.order=i+1});var data=templateSections.map(function(s){return{id:s.id,name:s.name,order:s.order,enabled:s.enabled}});try{localStorage.setItem('admin_template_order',JSON.stringify(data));showToast('模板顺序已保存')}catch(e){showToast('保存失败','error')}}
+async function exportAdminCSV(){
+    var resp=await api(API_BASE+'/users?page=1&page_size=9999');if(!resp||!resp.success){showToast('获取用户数据失败','error');return}
+    var csv='ID,用户名,角色,状态,Token用量,手机号,最近登录,注册时间\n';resp.data.users.forEach(function(u){csv+=u.id+','+u.username+','+u.role+','+(u.is_active?'启用':'禁用')+','+(u.tokens_used||0)+','+(u.phone||'')+','+formatTime(u.last_login)+','+formatTime(u.created_at)+'\n'});
+    var blob=new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'});var url=URL.createObjectURL(blob);var a=document.createElement('a');a.href=url;a.download='users_export_'+new Date().toISOString().slice(0,10)+'.csv';a.click();URL.revokeObjectURL(url);showToast('CSV已下载')
+}
+
+// Indicators
+var indicatorTypes=[{id:'budget',name:'项目支出绩效评价',desc:'通用财政预算项目绩效评价',active:true},{id:'procurement',name:'政府采购绩效评价',desc:'政府采购项目绩效评价',active:false},{id:'service',name:'政府购买服务绩效评价',desc:'政府购买第三方服务绩效评价',active:false},{id:'bond',name:'专项债绩效评价',desc:'政府专项债券项目绩效评价',active:false},{id:'social',name:'社保基金绩效评价',desc:'社会保险基金运行绩效评价',active:false},{id:'asset',name:'国有资产绩效评价',desc:'国有资本经营项目绩效评价',active:false}];
+function loadIndicatorTypes(){
+    var main=document.getElementById('main-content');
+    main.innerHTML='<div class="page-header"><h2>📊 指标类型管理</h2><p>管理绩效评价指标体系的项目分类（客户端可选项）</p></div>'+
+        '<div class="card"><button class="btn btn-primary" style="margin-bottom:14px" onclick="showIndicatorTypeModal()">+ 添加类型</button>'+
+        '<table class="table-view"><thead><tr><th>ID</th><th>名称</th><th>描述</th><th>状态</th><th>操作</th></tr></thead><tbody>'+indicatorTypes.map(function(it,i){return '<tr><td style="font-family:monospace">'+it.id+'</td><td><strong>'+esc(it.name)+'</strong></td><td style="font-size:0.82rem;color:var(--muted)">'+esc(it.desc)+'</td><td><label class="toggle-switch"><input type="checkbox" '+(it.active?'checked':'')+' onchange="indicatorTypes['+i+'].active=this.checked;saveIndicatorTypes()"><span class="toggle-slider"></span></label></td><td><button class="btn btn-sm" onclick="showIndicatorTypeModal('+i+')">编辑</button><button class="btn btn-sm btn-danger" onclick="deleteIndicatorType('+i+')">删除</button></td></tr>'}).join('')+'</tbody></table></div>';
+}
+function showIndicatorTypeModal(idx){var isEdit=typeof idx==='number',it=isEdit?indicatorTypes[idx]:{id:'',name:'',desc:'',active:false};showModal('<h3 style="margin-bottom:12px">'+(isEdit?'编辑':'添加')+'指标类型</h3><label>ID</label><input id="it-id" placeholder="如: budget" value="'+esc(it.id)+'"'+(isEdit?' readonly style="background:#f8f9fa"':'')+'><label>名称</label><input id="it-name" placeholder="如: 项目支出绩效评价" value="'+esc(it.name)+'"><label>描述</label><input id="it-desc" placeholder="描述..." value="'+esc(it.desc)+'"><label>状态</label><select id="it-active"><option value="1"'+(it.active?' selected':'')+'>启用</option><option value="0"'+(it.active?'':' selected')+'>禁用</option></select><div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px"><button class="btn" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveIndicatorType('+(isEdit?idx:-1)+')">保存</button></div>')}
+function saveIndicatorType(idx){var data={id:document.getElementById('it-id').value.trim(),name:document.getElementById('it-name').value.trim(),desc:document.getElementById('it-desc').value.trim(),active:document.getElementById('it-active').value==='1'};if(!data.id||!data.name){showToast('请填写ID和名称','error');return}if(idx>=0)indicatorTypes[idx]=data;else indicatorTypes.push(data);saveIndicatorTypes();closeModal();loadIndicatorTypes()}
+function deleteIndicatorType(idx){if(!confirm('确定删除？'))return;indicatorTypes.splice(idx,1);saveIndicatorTypes();loadIndicatorTypes()}
+function saveIndicatorTypes(){try{localStorage.setItem('admin_indicator_types',JSON.stringify(indicatorTypes));showToast('已保存')}catch(e){showToast('保存失败','error')}}
+
+// ===========================
+//  WORKFLOWS / AUDIT / SETTINGS
+// ===========================
+var wfPage=1,wfStatus='';
+async function loadWorkflows(){
+    var main=document.getElementById('main-content');
+    main.innerHTML='<div class="page-header"><h2>⚙️ 工作流监控</h2><p>查看所有用户的工作流执行状态</p></div>'+
+        '<div style="display:flex;gap:10px;margin-bottom:14px"><select id="wf-status-filter" style="padding:7px 11px;background:white;border:1px solid var(--border);border-radius:7px;color:var(--text);font-size:0.85rem"><option value="">全部状态</option><option value="created">已创建</option><option value="running">运行中</option><option value="awaiting_approval">待审批</option><option value="completed">已完成</option><option value="failed">失败</option><option value="cancelled">已取消</option></select></div>'+
+        '<div id="wf-table-container" class="card"><div class="empty-state">加载中...</div></div><div id="wf-pagination" class="pagination"></div>';
+    document.getElementById('wf-status-filter').addEventListener('change',function(){wfStatus=this.value;wfPage=1;refreshWorkflows()});
+    await refreshWorkflows();
+}
+async function refreshWorkflows(){
+    var params=new URLSearchParams({page:wfPage,page_size:20});if(wfStatus)params.set('status',wfStatus);
+    var resp=await api(API_BASE+'/workflows?'+params),c=document.getElementById('wf-table-container'),pagDiv=document.getElementById('wf-pagination');
+    if(!resp||!resp.success){c.innerHTML='<p style="color:#ef4444">加载失败</p>';return}
+    var wfs=resp.data.workflows,total=resp.data.total,page=resp.data.page,ps=resp.data.page_size,tp=Math.ceil(total/ps);
+    c.innerHTML='<table class="table-view"><thead><tr><th>Session</th><th>用户</th><th>项目</th><th>状态</th><th>步骤</th><th>Token</th><th>创建</th><th>完成</th></tr></thead><tbody>'+wfs.map(function(w){var sc=w.status==='completed'?'badge-success':w.status==='failed'?'badge-danger':w.status==='running'?'badge-info':w.status==='awaiting_approval'?'badge-warning':'badge-warning';return '<tr><td style="font-family:monospace;font-size:0.75rem">'+(w.session_id||'').substring(0,14)+'...</td><td>'+w.user_id+'</td><td>'+esc(w.project_name)+'</td><td><span class="badge '+sc+'">'+esc(w.status)+'</span></td><td>'+w.current_step+'/14</td><td>'+tok(w.token_used)+'</td><td style="font-size:0.78rem;color:var(--muted)">'+formatTime(w.created_at)+'</td><td style="font-size:0.78rem;color:var(--muted)">'+formatTime(w.completed_at)+'</td></tr>'}).join('')+'</tbody></table>';
+    pagDiv.innerHTML='';if(tp>1)for(var i=1;i<=tp;i++){var b=document.createElement('button');b.textContent=i;if(i===page)b.classList.add('active');b.addEventListener('click',function(p){return function(){wfPage=p;refreshWorkflows()}}(i));pagDiv.appendChild(b)}
+}
+
+var auditPage=1,auditAction='',auditUserId='';
+async function loadAuditLogs(){
+    var main=document.getElementById('main-content');
+    main.innerHTML='<div class="page-header"><h2>📋 审计日志</h2><p>追踪所有关键操作记录</p></div>'+
+        '<div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap"><select id="audit-action-filter" style="padding:7px 11px;background:white;border:1px solid var(--border);border-radius:7px;color:var(--text);font-size:0.85rem"><option value="">全部操作</option><option value="login">登录</option><option value="logout">登出</option><option value="admin_create_user">创建用户</option><option value="admin_update_user">更新用户</option><option value="admin_delete_user">删除用户</option><option value="workflow_start">启动工作流</option><option value="workflow_complete">完成工作流</option></select>'+
+        '<input id="audit-user-filter" placeholder="用户ID" style="padding:7px 11px;background:white;border:1px solid var(--border);border-radius:7px;color:var(--text);width:100px;font-size:0.85rem"><button class="btn btn-sm" onclick="loadAuditSummary()">📊 统计</button></div>'+
+        '<div id="audit-table-container" class="card"><div class="empty-state">加载中...</div></div><div id="audit-pagination" class="pagination"></div>';
+    document.getElementById('audit-action-filter').addEventListener('change',function(){auditAction=this.value;auditPage=1;refreshAuditLogs()});
+    document.getElementById('audit-user-filter').addEventListener('input',debounce(function(){auditUserId=this.value;auditPage=1;refreshAuditLogs()},300));
+    await refreshAuditLogs();
+}
+async function refreshAuditLogs(){
+    var params=new URLSearchParams({page:auditPage,page_size:50});if(auditAction)params.set('action',auditAction);if(auditUserId)params.set('user_id',auditUserId);
+    var resp=await api(API_BASE+'/audit-logs?'+params),c=document.getElementById('audit-table-container'),pagDiv=document.getElementById('audit-pagination');
+    if(!resp||!resp.success){c.innerHTML='<p style="color:#ef4444">加载失败</p>';return}
+    var logs=resp.data.logs,total=resp.data.total,page=resp.data.page,ps=resp.data.page_size,tp=Math.ceil(total/ps);
+    c.innerHTML='<table class="table-view"><thead><tr><th>ID</th><th>用户</th><th>操作</th><th>资源</th><th>详情</th><th>时间</th></tr></thead><tbody>'+logs.map(function(l){return '<tr><td>'+l.id+'</td><td>'+esc(l.username||'-')+'</td><td><span class="badge badge-info">'+esc(l.action)+'</span></td><td style="font-size:0.8rem">'+esc(l.resource_type||'-')+' / '+esc(l.resource_id||'-')+'</td><td style="font-size:0.82rem">'+esc(l.detail||'-')+'</td><td style="font-size:0.78rem;color:var(--muted)">'+formatTime(l.created_at)+'</td></tr>'}).join('')+'</tbody></table>';
+    pagDiv.innerHTML='';if(tp>1)for(var i=1;i<=tp;i++){var b=document.createElement('button');b.textContent=i;if(i===page)b.classList.add('active');b.addEventListener('click',function(p){return function(){auditPage=p;refreshAuditLogs()}}(i));pagDiv.appendChild(b)}
+}
+async function loadAuditSummary(){
+    var r=await api(API_BASE+'/audit-logs/summary');if(!r||!r.success)return;
+    showModal('<h3 style="margin-bottom:12px">📊 操作统计</h3><table class="table-view"><thead><tr><th>操作类型</th><th>次数</th><th>最近时间</th></tr></thead><tbody>'+r.data.map(function(d){return '<tr><td><span class="badge badge-info">'+esc(d.action)+'</span></td><td><strong>'+d.count+'</strong></td><td style="font-size:0.8rem;color:var(--muted)">'+formatTime(d.last_time)+'</td></tr>'}).join('')+'</tbody></table>')
+}
+
+async function loadSettings(){
+    var main=document.getElementById('main-content');
+    main.innerHTML='<div class="empty-state"><p>加载中...</p></div>';
+    var resp=await api(API_BASE+'/settings'),c=document.getElementById('main-content');
+    if(!resp||!resp.success){c.innerHTML='<p style="color:#ef4444">加载失败</p>';return}
+    var s=resp.data;
+    c.innerHTML='<div class="page-header"><h2>⚙️ 系统设置</h2><p>配置系统全局参数</p></div>'+
+        '<div class="card" style="margin-bottom:16px"><h3 style="margin-bottom:14px">🤖 AI聊天功能</h3>'+
+        '<div style="display:flex;align-items:center;gap:16px"><label class="toggle-switch"><input type="checkbox" id="ai-chat-toggle" '+(s.ai_chat_enabled?'checked':'')+' onchange="toggleAIChat(this.checked)"><span class="toggle-slider"></span></label>'+
+        '<div><div style="font-weight:600">'+(s.ai_chat_enabled?'已启用':'已禁用')+'</div><div style="font-size:0.8rem;color:var(--muted)">客户端AI助手功能</div></div></div></div>'+
+        '<div class="card" style="margin-bottom:16px"><h3 style="margin-bottom:14px">🔒 修改管理员密码</h3>'+
+        '<div style="display:flex;flex-direction:column;gap:12px;max-width:360px">'+
+        '<div><label style="font-size:0.82rem;color:var(--muted);display:block;margin-bottom:4px">旧密码</label><input type="password" id="adminOldPassword" class="input-field" placeholder="输入旧密码"></div>'+
+        '<div><label style="font-size:0.82rem;color:var(--muted);display:block;margin-bottom:4px">新密码</label><input type="password" id="adminNewPassword" class="input-field" placeholder="输入新密码（至少6位）"></div>'+
+        '<div><label style="font-size:0.82rem;color:var(--muted);display:block;margin-bottom:4px">确认新密码</label><input type="password" id="adminConfirmPassword" class="input-field" placeholder="再次输入新密码"></div>'+
+        '<div id="adminPwdError" style="color:var(--danger);font-size:0.82rem;display:none"></div>'+
+        '<button class="btn btn-primary" id="adminPwdBtn" onclick="changeAdminPassword()">修改密码</button>'+
+        '<p id="adminPwdSuccess" style="color:var(--success);font-size:0.82rem;margin-top:8px;display:none">密码修改成功！</p></div></div>'+
+        '<div class="card"><h3 style="margin-bottom:14px">📏 评分等级阈值</h3><p style="font-size:0.85rem;color:var(--muted);margin-bottom:14px">绩效评价自动等级判定标准</p>'+
+        '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:14px"><div><label>优秀 ≥</label><input id="rt-excellent" type="number" min="0" max="100" step="0.1" value="'+(s.rating_thresholds.excellent||90)+'"></div><div><label>良好 ≥</label><input id="rt-good" type="number" min="0" max="100" step="0.1" value="'+(s.rating_thresholds.good||75)+'"></div><div><label>合格 ≥</label><input id="rt-pass" type="number" min="0" max="100" step="0.1" value="'+(s.rating_thresholds.pass||60)+'"></div></div>'+
+        '<button class="btn btn-primary" onclick="saveRatingThresholds()">💾 保存阈值</button></div>';
+}
+async function toggleAIChat(e){var r=await api(API_BASE+'/settings/ai-chat-toggle','POST',{ai_chat_enabled:e});if(r&&r.success)showToast(r.message);else showToast('操作失败','error')}
+async function saveRatingThresholds(){
+    var e=parseFloat(document.getElementById('rt-excellent').value)||90,g=parseFloat(document.getElementById('rt-good').value)||75,p=parseFloat(document.getElementById('rt-pass').value)||60;
+    if(e<=g||g<=p){showToast('优秀 > 良好 > 合格','error');return}
+    var r=await api(API_BASE+'/settings/rating-thresholds','POST',{excellent:e,good:g,pass_:p});
+    if(r&&r.success){showToast(r.message);loadSettings()}else{showToast(r&&r.detail||'保存失败','error')}
+}
+async function changeAdminPassword(){
+    var o=document.getElementById('adminOldPassword').value.trim(),n=document.getElementById('adminNewPassword').value,cn=document.getElementById('adminConfirmPassword').value,err=document.getElementById('adminPwdError'),ok=document.getElementById('adminPwdSuccess'),btn=document.getElementById('adminPwdBtn');
+    err.style.display='none';ok.style.display='none';
+    if(!o||!n||!cn){err.textContent='请填写所有密码字段';err.style.display='block';return}
+    if(n.length<6){err.textContent='新密码长度不能少于6位';err.style.display='block';return}
+    if(n!==cn){err.textContent='两次输入的新密码不一致';err.style.display='block';return}
+    btn.disabled=true;btn.textContent='修改中...';
+    var r=await api('/api/client/password','PUT',{old_password:o,new_password:n});
+    if(r&&r.success){ok.style.display='block';document.getElementById('adminOldPassword').value='';document.getElementById('adminNewPassword').value='';document.getElementById('adminConfirmPassword').value='';showToast('密码修改成功')}
+    else{err.textContent=r&&r.detail||'修改失败';err.style.display='block'}
+    btn.disabled=false;btn.textContent='修改密码';
+}
+
+// ===========================
+//  NOTIFICATIONS
+// ===========================
+var notifPage=1,notifAllUsers=[];
+async function renderNotifications(){
+    var main=document.getElementById('main-content');
+    main.innerHTML='<div class="page-header"><h2>🔔 通知管理</h2><p>向客户端用户发送系统通知</p></div>'+
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">'+
+        '<div class="card"><h3 style="margin-bottom:14px">✉️ 发送通知</h3>'+
+        '<label>通知标题</label><input id="notif-title" class="input-field" placeholder="请输入通知标题" style="margin-bottom:10px">'+
+        '<label>通知内容</label><textarea id="notif-content" style="width:100%;min-height:120px;background:white;border:1px solid var(--border);border-radius:8px;padding:10px;font-size:.88rem;color:var(--text);resize:vertical;margin-bottom:10px;font-family:inherit" placeholder="请输入通知内容..."></textarea>'+
+        '<label>发送对象</label>'+
+        '<div style="margin-bottom:10px"><label style="display:flex;align-items:center;gap:8px;font-size:.88rem;cursor:pointer"><input type="radio" name="notif-target" value="all" checked onchange="toggleNotifTarget()"> 全部用户</label>'+
+        '<label style="display:flex;align-items:center;gap:8px;font-size:.88rem;cursor:pointer;margin-top:4px"><input type="radio" name="notif-target" value="specific" onchange="toggleNotifTarget()"> 指定用户</label></div>'+
+        '<div id="notif-user-select" style="display:none;margin-bottom:10px"><select id="notif-users" multiple style="width:100%;height:120px;background:white;border:1px solid var(--border);border-radius:8px;padding:6px;font-size:.85rem;color:var(--text)"></select><p style="font-size:.75rem;color:var(--muted);margin-top:4px">按住 Ctrl 可多选</p></div>'+
+        '<button class="btn btn-primary" onclick="sendNotification()">📨 发送通知</button></div>'+
+        '<div class="card"><h3 style="margin-bottom:14px">📋 发送记录</h3><div id="notif-history"><div class="empty-state">加载中...</div></div>'+
+        '<div id="notif-pagination" class="pagination"></div></div></div>';
+    // 加载用户列表
+    try{
+        var ur=await api(API_BASE+'/users?page=1&page_size=9999&role=user');
+        if(ur&&ur.success){notifAllUsers=ur.data.users||[];var sel=document.getElementById('notif-users');if(sel){sel.innerHTML=notifAllUsers.map(function(u){return '<option value="'+u.id+'">'+esc(u.username)+' (ID:'+u.id+')</option>'}).join('')}}
+    }catch(e){}
+    refreshNotifHistory();
+}
+function toggleNotifTarget(){
+    var sel=document.getElementById('notif-user-select');
+    var radio=document.querySelector('input[name="notif-target"]:checked');
+    sel.style.display=radio&&radio.value==='specific'?'block':'none';
+}
+async function sendNotification(){
+    var title=document.getElementById('notif-title').value.trim();
+    var content=document.getElementById('notif-content').value.trim();
+    if(!title){showToast('请输入通知标题','error');return}
+    if(!content){showToast('请输入通知内容','error');return}
+    var target=document.querySelector('input[name="notif-target"]:checked').value;
+    var body={title:title,content:content};
+    if(target==='specific'){
+        var sel=document.getElementById('notif-users');
+        var ids=[];for(var i=0;i<sel.options.length;i++){if(sel.options[i].selected)ids.push(parseInt(sel.options[i].value))}
+        if(!ids.length){showToast('请选择至少一个用户','error');return}
+        body.user_ids=ids;
+    }
+    var sendBtn=document.querySelector('[onclick="sendNotification()"]');
+    if(sendBtn){sendBtn.disabled=true;sendBtn.dataset.origText=sendBtn.textContent;sendBtn.textContent='发送中...'}
+    var resp=await api(API_BASE+'/notifications','POST',body);
+    if(sendBtn){sendBtn.disabled=false;if(sendBtn.dataset.origText)sendBtn.textContent=sendBtn.dataset.origText}
+    if(resp&&resp.success){showToast(resp.message);document.getElementById('notif-title').value='';document.getElementById('notif-content').value='';notifPage=1;refreshNotifHistory()}else{showToast(resp&&resp.detail||'发送失败','error')}
+}
+async function refreshNotifHistory(){
+    var resp=await api(API_BASE+'/notifications?page='+notifPage+'&page_size=15');
+    var c=document.getElementById('notif-history'),pagDiv=document.getElementById('notif-pagination');
+    if(!resp||!resp.success){c.innerHTML='<p style="color:#ef4444">加载失败</p>';return}
+    var items=resp.data.notifications,total=resp.data.total,page=resp.data.page,ps=resp.data.page_size,tp=Math.ceil(total/ps);
+    if(!items.length){c.innerHTML='<div class="empty-state"><p>暂无发送记录</p></div>';pagDiv.innerHTML='';return}
+    c.innerHTML='<table class="table-view"><thead><tr><th>ID</th><th>接收用户</th><th>标题</th><th>内容</th><th>状态</th><th>发送时间</th><th>操作</th></tr></thead><tbody>'+items.map(function(n){return '<tr><td>'+n.id+'</td><td>'+esc(n.username)+' (ID:'+n.user_id+')</td><td>'+esc(n.title)+'</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(n.content)+'</td><td><span class="badge '+(n.is_read?'badge-success':'badge-warning')+'">'+(n.is_read?'已读':'未读')+'</span></td><td style="font-size:0.78rem;color:var(--muted)">'+formatTime(n.created_at)+'</td><td><button class="btn btn-sm" style="background:#fee2e2;color:#dc2626;padding:4px 10px;font-size:.78rem;border:none;border-radius:6px;cursor:pointer" onclick="withdrawNotification('+n.id+')">撤回</button></td></tr>'}).join('')+'</tbody></table>';
+    pagDiv.innerHTML='';if(tp>1)for(var i=1;i<=tp;i++){var b=document.createElement('button');b.textContent=i;if(i===page)b.classList.add('active');b.addEventListener('click',function(p){return function(){notifPage=p;refreshNotifHistory()}}(i));pagDiv.appendChild(b)}
+}
+async function withdrawNotification(id){
+    if(!confirm('确认撤回此通知？撤回后所有客户端将不可见。'))return;
+    var resp=await api(API_BASE+'/notifications/'+id,'DELETE');
+    if(resp&&resp.success){showToast('通知已撤回');refreshNotifHistory()}else{showToast(resp&&resp.detail||'撤回失败','error')}
+}
+
