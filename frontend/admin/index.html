@@ -750,3 +750,291 @@ async function withdrawNotification(id){
     if(resp&&resp.success){showToast('通知已撤回');refreshNotifHistory()}else{showToast(resp&&resp.detail||'撤回失败','error')}
 }
 
+// ═══════════════════════════════════════════════
+//  模块排序管理（步骤6/13/14）
+// ═══════════════════════════════════════════════
+var moduleSeqStep='', moduleSeqItems=[];
+async function loadModuleSequences(){
+    var main=document.getElementById('main-content');
+    main.innerHTML='<div class="page-header"><h2>📋 模块排序管理</h2><p>配置步骤6/13/14中报告模块的显示顺序与名称（管理端独有配置，客户端不可修改名称）</p></div>'+
+        '<div style="display:flex;gap:8px;margin-bottom:14px;align-items:center;flex-wrap:wrap">'+
+        '<select id="ms-step-filter" style="padding:7px 11px;background:white;border:1px solid var(--border);border-radius:7px;color:var(--text);font-size:0.85rem;min-width:180px">'+
+        '<option value="">全部步骤</option>'+
+        [6,13,14].map(function(i){return '<option value="'+i+'">步骤 '+i+'</option>'}).join('')+'</select>'+
+        '<button class="btn btn-primary" onclick="showModuleSeqModal()">+ 添加模块</button>'+
+        '<button class="btn btn-sm" onclick="saveAllModuleSeq()">💾 批量保存排序</button></div>'+
+        '<div class="card"><div id="ms-container"><div class="empty-state">加载中...</div></div></div>';
+    document.getElementById('ms-step-filter').addEventListener('change',function(){moduleSeqStep=this.value;refreshModuleSequences()});
+    await refreshModuleSequences();
+}
+async function refreshModuleSequences(){
+    var params=moduleSeqStep?'?step_number='+moduleSeqStep:'',c=document.getElementById('ms-container');
+    var resp=await api(API_BASE+'/module-sequences'+params);
+    if(!resp||!resp.success){c.innerHTML='<p style="color:#ef4444">加载失败</p>';return}
+    moduleSeqItems=resp.data;
+    if(!moduleSeqItems.length){c.innerHTML='<div class="empty-state"><p>暂无模块顺序配置</p><p style="font-size:0.82rem;color:var(--muted)">点击"添加模块"开始配置</p></div>';return}
+    // 按步骤分组
+    var groups={};
+    moduleSeqItems.forEach(function(m){
+        var k=''+m.step_number;if(!groups[k])groups[k]=[];groups[k].push(m);
+    });
+    Object.keys(groups).forEach(function(k){groups[k].sort(function(a,b){return a.sort_order-b.sort_order})});
+    var h='';
+    Object.keys(groups).sort().forEach(function(step){
+        h+='<h4 style="margin:16px 0 8px;color:var(--accent)">📌 步骤 '+step+'</h4>';
+        groups[step].forEach(function(m,i){
+            h+='<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:white;border:1px solid var(--border);border-radius:7px;margin-bottom:4px">'+
+                '<span style="color:var(--muted);font-size:0.78rem;min-width:20px">'+(i+1)+'</span>'+
+                '<span style="flex:1;font-size:0.9rem">'+esc(m.module_name)+'</span>'+
+                '<span style="font-size:0.75rem;color:var(--muted)">key: '+esc(m.module_key)+'</span>'+
+                '<label class="toggle-switch" title="客户端可见"><input type="checkbox" '+(m.is_visible?'checked':'')+' onchange="toggleModuleSeqVisible('+m.id+',this.checked)"><span class="toggle-slider"></span></label>'+
+                '<label class="toggle-switch" title="客户端可调序"><input type="checkbox" '+(m.client_editable?'checked':'')+' onchange="toggleModuleSeqEditable('+m.id+',this.checked)"><span class="toggle-slider"></span></label>'+
+                '<button class="btn btn-sm" onclick="moveModuleSeq('+m.id+',-1)">▲</button>'+
+                '<button class="btn btn-sm" onclick="moveModuleSeq('+m.id+',1)">▼</button>'+
+                '<button class="btn btn-sm" onclick="showModuleSeqModal('+m.id+')">编辑</button>'+
+                '<button class="btn btn-sm btn-danger" onclick="deleteModuleSeq('+m.id+')">删除</button></div>';
+        });
+    });
+    c.innerHTML=h+'<div style="margin-top:12px;font-size:0.78rem;color:var(--muted)">💡 提示：🔘左开关=客户端可见性 | 🔘右开关=客户端是否可调序（不可改名）</div>';
+}
+function showModuleSeqModal(id){
+    var isEdit=!!id,item=isEdit?moduleSeqItems.find(function(m){return m.id===id}):null;
+    showModal('<h3 style="margin-bottom:12px">'+(isEdit?'编辑':'添加')+'模块</h3>'+
+        '<label>步骤编号</label><select id="ms-step"><option value="6">步骤6 - 指标体系表</option><option value="13">步骤13 - 工作开展情况</option><option value="14">步骤14 - 评价报告</option></select>'+
+        '<label>模块Key（唯一标识）</label><input id="ms-key" placeholder="如: indicator_table" value="'+esc(item?item.module_key:'')+'">'+
+        '<label>模块名称</label><input id="ms-name" placeholder="如: 指标体系分析表" value="'+esc(item?item.module_name:'')+'">'+
+        '<div class="form-row"><div><label>排序</label><input id="ms-order" type="number" min="0" value="'+(item?item.sort_order:0)+'"></div></div>'+
+        '<div class="form-row"><div><label>客户端可见</label><select id="ms-visible"><option value="1"'+(item&&item.is_visible?' selected':'')+'>是</option><option value="0"'+(item&&!item.is_visible?' selected':'')+'>否</option></select></div><div><label>客户端可调序</label><select id="ms-editable"><option value="1"'+(item&&item.client_editable?' selected':'')+'>是</option><option value="0"'+(item&&!item.client_editable?' selected':'')+'>否</option></select></div></div>'+
+        '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px"><button class="btn" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveModuleSeq('+(id||0)+')">保存</button></div>');
+    document.getElementById('ms-step').value=item?item.step_number:6;
+}
+async function saveModuleSeq(id){
+    var data={step_number:parseInt(document.getElementById('ms-step').value),module_key:document.getElementById('ms-key').value.trim(),module_name:document.getElementById('ms-name').value.trim(),sort_order:parseInt(document.getElementById('ms-order').value)||0,is_visible:document.getElementById('ms-visible').value==='1',client_editable:document.getElementById('ms-editable').value==='1'};
+    if(!data.module_key||!data.module_name){showToast('请填写Key和名称','error');return}
+    var resp=await api(API_BASE+'/module-sequences','POST',data);
+    if(resp&&resp.success){showToast(resp.message);closeModal();refreshModuleSequences()}else{showToast(resp&&resp.detail||'保存失败','error')}
+}
+async function moveModuleSeq(id,dir){
+    var idx=-1;for(var i=0;i<moduleSeqItems.length;i++){if(moduleSeqItems[i].id===id){idx=i;break}}
+    if(idx<0)return;var ni=idx+dir;if(ni<0||ni>=moduleSeqItems.length)return;
+    var tmp=moduleSeqItems[idx].sort_order;moduleSeqItems[idx].sort_order=moduleSeqItems[ni].sort_order;moduleSeqItems[ni].sort_order=tmp;
+    await saveAllModuleSeq();
+}
+async function saveAllModuleSeq(){
+    var modules=moduleSeqItems.map(function(m){return{step_number:m.step_number,module_key:m.module_key,module_name:m.module_name,sort_order:m.sort_order,is_visible:m.is_visible,client_editable:m.client_editable}});
+    var resp=await api(API_BASE+'/module-sequences/batch','PUT',{modules:modules});
+    if(resp&&resp.success){showToast(resp.message);refreshModuleSequences()}else{showToast(resp&&resp.detail||'保存失败','error')}
+}
+async function toggleModuleSeqVisible(id,v){var m=moduleSeqItems.find(function(x){return x.id===id});if(m)m.is_visible=v;await saveAllModuleSeq()}
+async function toggleModuleSeqEditable(id,v){var m=moduleSeqItems.find(function(x){return x.id===id});if(m)m.client_editable=v;await saveAllModuleSeq()}
+async function deleteModuleSeq(id){if(!confirm('确定删除？'))return;var r=await api(API_BASE+'/module-sequences/'+id,'DELETE');if(r&&r.success){showToast('已删除');refreshModuleSequences()}else{showToast(r&&r.detail||'删除失败','error')}}
+
+
+// ═══════════════════════════════════════════════
+//  步骤配置概览
+// ═══════════════════════════════════════════════
+var stepConfigData=[];
+async function loadStepConfig(){
+    var main=document.getElementById('main-content');
+    main.innerHTML='<div class="page-header"><h2>🔍 步骤配置概览</h2><p>14步工作流每步的Prompt + 知识库 + 模块序列配置情况总览</p></div>'+
+        '<div class="card"><div id="sc-container"><div class="empty-state">加载中...</div></div></div>';
+    var resp=await api(API_BASE+'/step-config');
+    if(!resp||!resp.success){document.getElementById('sc-container').innerHTML='<p style="color:#ef4444">加载失败</p>';return}
+    stepConfigData=resp.data;
+    var stepNames=['资料清单','核心数据提取','指标体系构建','分值设定','评分标准','指标体系表生成','指标分析','经验做法','问题及原因分析','改进建议','综合评价','基本情况','工作开展情况','评价报告'];
+    var h='<table class="table-view"><thead><tr><th>步骤</th><th>名称</th><th>Prompt数</th><th>知识库条目</th><th>模块序列</th><th>状态</th></tr></thead><tbody>';
+    stepConfigData.forEach(function(s,i){
+        var total=s.prompt_count+s.kb_count+s.module_count,statusIcon=total>0?'✅':'⚠️',statusColor=total>0?'var(--success)':'var(--warning)';
+        h+='<tr>'+
+            '<td style="font-family:monospace;font-weight:700">S'+(i+1)+'</td>'+
+            '<td>'+esc(stepNames[i]||'步骤'+(i+1))+'</td>'+
+            '<td><span class="badge '+(s.prompt_count>0?'badge-info':'badge-warning')+'">'+s.prompt_count+'个</span></td>'+
+            '<td><span class="badge '+(s.kb_count>0?'badge-info':'badge-warning')+'">'+s.kb_count+'个</span></td>'+
+            '<td><span class="badge '+(s.module_count>0?'badge-info':'')+'">'+s.module_count+'个</span></td>'+
+            '<td style="color:'+statusColor+'">'+statusIcon+' '+(total>0?'已配置':'待配置')+'</td>'+
+            '</tr>';
+    });
+    h+='</tbody></table>';
+    document.getElementById('sc-container').innerHTML=h;
+}
+
+
+// ═══════════════════════════════════════════════
+//  提示词管理（增强：支持指标层级/维度）
+// ═══════════════════════════════════════════════
+var P_DIMENSIONS=['','决策','过程','产出','效益'];
+var P_LEVELS=['','一级','二级','三级'];
+
+async function loadPrompts(){
+    var main=document.getElementById('main-content');
+    main.innerHTML='<div class="page-header"><h2>📝 提示词管理</h2><p>编辑各工作流步骤的Prompt模板（支持按指标层级/维度独立配置）</p></div>'+
+        '<div style="display:flex;gap:8px;margin-bottom:14px;align-items:center;flex-wrap:wrap">'+
+        '<label style="font-size:0.85rem;color:var(--muted);white-space:nowrap">步骤：</label>'+
+        '<select id="prompts-filter-s" style="padding:7px 11px;background:white;border:1px solid var(--border);border-radius:7px;color:var(--text);font-size:0.85rem;min-width:140px">'+
+        '<option value="">全部步骤</option>'+[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14].map(function(i){return '<option value="'+i+'">步骤 '+i+'</option>'}).join('')+'</select>'+
+        '<label style="font-size:0.85rem;color:var(--muted);white-space:nowrap">层级：</label>'+
+        '<select id="prompts-filter-l" style="padding:7px 11px;background:white;border:1px solid var(--border);border-radius:7px;color:var(--text);font-size:0.85rem;min-width:100px">'+
+        '<option value="">全部</option><option value="1">一级指标</option><option value="2">二级指标</option><option value="3">三级指标</option></select>'+
+        '<label style="font-size:0.85rem;color:var(--muted);white-space:nowrap">维度：</label>'+
+        '<select id="prompts-filter-d" style="padding:7px 11px;background:white;border:1px solid var(--border);border-radius:7px;color:var(--text);font-size:0.85rem;min-width:110px">'+
+        '<option value="">全部</option><option value="决策">决策</option><option value="过程">过程</option><option value="产出">产出</option><option value="效益">效益</option></select>'+
+        '<button class="btn btn-sm" onclick="toggleAllAccordions()">展开/折叠全部</button>'+
+        '<button class="btn btn-primary btn-sm" onclick="showGranularPromptModal()">+ 添加提示词</button></div>'+
+        '<div id="prompts-container"><div class="empty-state">加载中...</div></div>';
+    var filterS=document.getElementById('prompts-filter-s');
+    var filterL=document.getElementById('prompts-filter-l');
+    var filterD=document.getElementById('prompts-filter-d');
+    var applyFilter=function(){promptsFilterStep=filterS.value;promptsFilterLevel=filterL.value;promptsFilterDim=filterD.value;refreshPrompts()};
+    filterS.addEventListener('change',applyFilter);filterL.addEventListener('change',applyFilter);filterD.addEventListener('change',applyFilter);
+    try{var dr=await api(API_BASE+'/prompts/defaults');if(dr&&dr.success)promptsDefaults=dr.data}catch(e){}
+    await refreshPrompts();
+}
+var promptsFilterStep='',promptsFilterLevel='',promptsFilterDim='',promptsDefaults={};
+async function refreshPrompts(){
+    var params=new URLSearchParams();if(promptsFilterStep!=='')params.set('step_number',promptsFilterStep);if(promptsFilterLevel!=='')params.set('indicator_level',promptsFilterLevel);if(promptsFilterDim!=='')params.set('dimension',promptsFilterDim);
+    var resp=await api(API_BASE+'/prompts?'+params),c=document.getElementById('prompts-container');
+    if(!resp||!resp.success){c.innerHTML='<p style="color:#ef4444">加载失败</p>';return}
+    var prompts=resp.data;
+    if(!prompts.length){c.innerHTML='<div class="empty-state"><p>暂无提示词数据</p></div>';return}
+    var h='';prompts.forEach(function(p){
+        // 粒度标签
+        var tags='';if(p.indicator_level)tags+='<span class="badge badge-info">'+P_LEVELS[p.indicator_level]+'指标</span>';if(p.parent_indicator)tags+='<span class="badge" style="background:#e0e7ff;color:#4338ca">'+esc(p.parent_indicator)+'</span>';if(p.dimension)tags+='<span class="badge" style="background:#fce7f3;color:#be185d">'+esc(p.dimension)+'</span>';
+        h+='<div class="step-accordion"><div class="step-accordion-header" onclick="toggleAccordion(this)"><span style="font-weight:700;color:var(--accent);min-width:30px">S'+p.step_number+'</span><span style="flex:1">'+esc(p.step_name)+'</span>'+tags+'<span class="badge badge-info">v'+p.version+'</span><span style="font-size:0.75rem;color:var(--muted)">'+formatTime(p.updated_at)+'</span></div>'+
+        '<div class="step-accordion-body">'+
+        (!p.is_system?'<div style="margin-bottom:8px;font-size:0.8rem;color:var(--muted)">层级: '+(P_LEVELS[p.indicator_level||0]||'全部')+' | 维度: '+(p.dimension||'全部')+' | 上级指标: '+(p.parent_indicator||'无')+'</div>':'')+
+        '<textarea id="prompt-'+p.id+'" style="width:100%;min-height:180px;background:white;border:1px solid var(--border);border-radius:7px;color:var(--text);padding:10px;font-size:0.85rem;font-family:monospace;resize:vertical">'+esc(p.prompt_content||'')+'</textarea>'+
+        '<div style="margin-top:8px;display:flex;gap:8px;align-items:center"><input id="changelog-'+p.id+'" placeholder="变更说明..." style="flex:1;min-width:150px;padding:6px 10px;background:white;border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.82rem">'+
+        '<button class="btn btn-primary btn-sm" onclick="saveGranularPrompt('+p.id+')">💾 保存</button>'+
+        (!p.is_system?'<button class="btn btn-sm btn-danger" onclick="deleteGranularPrompt('+p.id+')">🗑 删除</button>':'')+
+        '<button class="btn btn-sm" onclick="resetPrompt('+p.id+')">↺ 重置</button></div>'+
+        (p.change_log?'<div style="margin-top:6px;font-size:0.75rem;color:var(--muted)">📋 '+esc(p.change_log)+' (v'+p.version+')</div>':'')+
+        '</div></div>'
+    });c.innerHTML=h
+}
+async function saveGranularPrompt(id){
+    var p=document.getElementById('prompt-'+id).value,l=document.getElementById('changelog-'+id).value.trim();
+    // 获取原有属性
+    var old=promptsDefaults[id];
+    var saveBtn=document.querySelector('[onclick="saveGranularPrompt('+id+')"]');
+    if(saveBtn){saveBtn.disabled=true;saveBtn.dataset.origText=saveBtn.textContent;saveBtn.textContent='保存中...'}
+    var r=await api(API_BASE+'/prompts/'+id,'PUT',{prompt_content:p,change_log:l||'手动更新'});
+    if(saveBtn){saveBtn.disabled=false;if(saveBtn.dataset.origText)saveBtn.textContent=saveBtn.dataset.origText}
+    if(r&&r.success){showToast(r.message);refreshPrompts()}else{showToast(r&&r.detail||'保存失败','error')}
+}
+async function deleteGranularPrompt(id){if(!confirm('确定删除此提示词？'))return;var r=await api(API_BASE+'/prompts/'+id,'DELETE');if(r&&r.success){showToast('已删除');refreshPrompts()}else{showToast(r&&r.detail||'删除失败','error')}}
+function toggleAccordion(header){var body=header.nextElementSibling;if(!body)return;if(body.style.display==='block'){body.style.display='none'}else{body.style.display='block'}}
+function toggleAllAccordions(){var bodies=document.querySelectorAll('.step-accordion-body');if(!bodies.length)return;var allOpen=[].every.call(bodies,function(b){return b.style.display==='block'});for(var i=0;i<bodies.length;i++){bodies[i].style.display=allOpen?'none':'block'}}
+async function resetPrompt(id){
+    if(!confirm('确定重置此提示词为系统默认？'))return;
+    var r=await api(API_BASE+'/prompts/'+id+'/reset','POST');
+    if(r&&r.success){showToast(r.message);refreshPrompts()}else{showToast(r&&r.detail||'重置失败','error')}
+}
+function showGranularPromptModal(){
+    showModal('<h3 style="margin-bottom:12px">添加细粒度提示词</h3>'+
+        '<div class="form-row"><div><label>步骤编号</label><select id="gp-step">'+[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14].map(function(i){return '<option value="'+i+'">步骤 '+i+'</option>'}).join('')+'</select></div><div><label>指标层级（可选）</label><select id="gp-level"><option value="">全部级别</option><option value="1">一级指标</option><option value="2">二级指标</option><option value="3">三级指标</option></select></div></div>'+
+        '<label>步骤名称</label><input id="gp-name" placeholder="如: 指标体系构建-一级指标">'+
+        '<div class="form-row"><div><label>上级指标（可选）</label><input id="gp-parent" placeholder="如: 决策类"></div><div><label>维度（步骤11用）</label><select id="gp-dim"><option value="">无</option><option value="决策">决策</option><option value="过程">过程</option><option value="产出">产出</option><option value="效益">效益</option></select></div></div>'+
+        '<label>Prompt内容</label><textarea id="gp-content" placeholder="输入提示词内容..." style="min-height:120px"></textarea>'+
+        '<label>变更说明</label><input id="gp-clog" placeholder="初始创建">'+
+        '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px"><button class="btn" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveNewGranularPrompt()">保存</button></div>');
+}
+async function saveNewGranularPrompt(){
+    var data={step_number:parseInt(document.getElementById('gp-step').value),step_name:document.getElementById('gp-name').value.trim(),prompt_content:document.getElementById('gp-content').value.trim(),indicator_level:document.getElementById('gp-level').value?parseInt(document.getElementById('gp-level').value):null,parent_indicator:document.getElementById('gp-parent').value.trim()||null,dimension:document.getElementById('gp-dim').value||null,change_log:document.getElementById('gp-clog').value.trim()||'初始创建'};
+    if(!data.step_name||!data.prompt_content){showToast('请填写名称和内容','error');return}
+    var resp=await api(API_BASE+'/prompts/granular','POST',data);
+    if(resp&&resp.success){showToast(resp.message);closeModal();refreshPrompts()}else{showToast(resp&&resp.detail||'创建失败','error')}
+}
+
+// ═══════════════════════════════════════
+//  文件管理页面
+// ═══════════════════════════════════════
+async function loadFileManagement(){
+    var c=document.getElementById('main-content');
+    c.innerHTML='<div class="page-header"><h2>📂 文件管理</h2><p>查看系统文件存储统计与保留策略</p></div><div id="file-stats-content" style="text-align:center;padding:40px;color:var(--muted)">加载中...</div>';
+    try{
+        var d=await api(API_BASE+'/file-stats','GET');
+        if(!d||!d.success||!d.data){c.innerHTML='<div class="page-header"><h2>📂 文件管理</h2></div><div class="empty-state">加载失败</div>';return}
+        var s=d.data;
+        var h='<div class="page-header"><h2>📂 文件管理</h2><p>保留策略：工作流完成后 <strong>90天</strong> 自动清理文件和数据库记录（依据《数据安全法》）</p></div>';
+        // 总览卡片
+        h+='<div class="dashboard-grid">';
+        h+='<div class="stat-card"><div class="value">'+s.total_files+'</div><div class="label">文件总数</div></div>';
+        h+='<div class="stat-card"><div class="value">'+s.total_size_mb+'</div><div class="label">总容量 (MB)</div></div>';
+        h+='<div class="stat-card"><div class="value">'+s.expiring_in_90_days+'</div><div class="label">90天内到期</div></div>';
+        h+='<div class="stat-card"><div class="value">'+s.retention_days+'</div><div class="label">保留天数</div></div>';
+        h+='</div>';
+        // 按类型统计
+        h+='<div class="content-panel"><div class="panel-title">按文件类型统计</div><div class="panel-content"><table class="table-view"><thead><tr><th>类型</th><th>数量</th><th>容量 (MB)</th></tr></thead><tbody>';
+        for(var i=0;i<(s.by_type||[]).length;i++){var t=s.by_type[i];h+='<tr><td>'+esc(t.type)+'</td><td>'+t.count+'</td><td>'+t.size_mb+'</td></tr>'}
+        h+='</tbody></table></div></div>';
+        // 按上传类别统计
+        if(s.by_upload_type&&s.by_upload_type.length){
+            h+='<div class="content-panel"><div class="panel-title">按上传类别统计</div><div class="panel-content"><table class="table-view"><thead><tr><th>类别</th><th>数量</th></tr></thead><tbody>';
+            for(var i=0;i<s.by_upload_type.length;i++){var u=s.by_upload_type[i];h+='<tr><td>'+esc(u.type)+'</td><td>'+u.count+'</td></tr>'}
+            h+='</tbody></table></div></div>';
+        }
+        c.innerHTML=h;
+    }catch(e){c.innerHTML='<div class="page-header"><h2>📂 文件管理</h2></div><div class="empty-state">加载失败: '+esc(e.message||'')+'</div>'}
+}
+
+// ═══════════════════════════════════════
+//  数据清理页面
+// ═══════════════════════════════════════
+async function loadCleanupPage(){
+    var c=document.getElementById('main-content');
+    c.innerHTML='<div class="page-header"><h2>🗑 数据清理</h2><p>管理过期文件和卡住工作流的清理</p></div><div style="text-align:center;padding:40px;color:var(--muted)">加载中...</div>';
+    try{
+        var preview=await api(API_BASE+'/cleanup/preview','GET');
+        if(!preview||!preview.success){c.innerHTML='<div class="page-header"><h2>🗑 数据清理</h2></div><div class="empty-state">加载预览失败</div>';return}
+        var p=preview.data;
+        var h='<div class="page-header"><h2>🗑 数据清理</h2><p>截止日期: '+esc(p.cutoff_date||'')+' | 保留天数: '+p.retention_days+'天</p></div>';
+        // 预览卡片
+        h+='<div class="dashboard-grid">';
+        h+='<div class="stat-card"><div class="value">'+p.expired_sessions+'</div><div class="label">过期工作流</div></div>';
+        h+='<div class="stat-card"><div class="value">'+p.expired_files+'</div><div class="label">过期文件</div></div>';
+        h+='<div class="stat-card"><div class="value">'+p.expired_reports+'</div><div class="label">过期报告</div></div>';
+        h+='<div class="stat-card"><div class="value">'+p.estimated_disk_mb+' MB</div><div class="label">预计释放磁盘</div></div>';
+        h+='</div>';
+        // 操作按钮
+        h+='<div class="content-panel"><div class="panel-title">清理操作</div><div class="panel-content" style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">';
+        h+='<button class="btn btn-primary btn-lg" onclick="executeCleanup()" id="cleanup-exec-btn">🔧 执行清理（90天）</button>';
+        h+='<button class="btn btn-lg" onclick="executeCleanup(30)" style="background:#fff3cd;border-color:#f59e0b;color:#92400e">⚡ 执行清理（30天）</button>';
+        h+='<button class="btn btn-lg" onclick="cleanupStuckWorkflows()" style="background:#fff5f5;border-color:#ef4444;color:#dc2626">⚠ 清理卡住工作流</button>';
+        h+='</div><div id="cleanup-result" style="margin-top:12px;font-size:0.85rem"></div></div>';
+        // 说明
+        h+='<div class="content-panel" style="background:#fffbeb;border:1px solid #fbd38d"><div class="panel-title">清理说明</div><div class="panel-content" style="font-size:0.85rem;color:#92400e">';
+        h+='<ul style="padding-left:20px;line-height:1.8"><li>系统<strong>每天凌晨3点</strong>自动执行清理任务</li><li>清理对象：已完成/失败的过期工作流、关联文件、Token记录、操作日志等</li><li>卡住工作流：超过24小时仍未完成的运行中工作流</li><li>依据《数据安全法》要求，数据保留90天后自动清除</li><li><strong>重要数据请及时导出！</strong></li></ul>';
+        h+='</div></div>';
+        c.innerHTML=h;
+    }catch(e){c.innerHTML='<div class="page-header"><h2>🗑 数据清理</h2></div><div class="empty-state">加载失败: '+esc(e.message||'')+'</div>'}
+}
+
+async function executeCleanup(days){
+    var btn=document.getElementById('cleanup-exec-btn');if(btn){btn.disabled=true;btn.textContent='执行中...'}
+    try{
+        var body=days?{retention_days:days}:{};
+        var r=await api(API_BASE+'/cleanup/execute','POST',body);
+        var el=document.getElementById('cleanup-result');
+        if(r&&r.success&&r.data){
+            var d=r.data;
+            el.innerHTML='<div style="padding:12px;background:#f0fff4;border-radius:8px;color:#22543d">✅ 清理完成: 删除文件 '+d.deleted_files+' 个, 释放磁盘 '+(d.freed_disk_bytes/(1024*1024)).toFixed(2)+' MB'+(d.errors&&d.errors.length>0?'<br>⚠ 警告: '+d.errors.join(', '):'')+'</div>';
+            showToast('清理完成');
+            // 重新加载预览
+            setTimeout(function(){loadCleanupPage()},800);
+        }else{el.innerHTML='<div style="padding:12px;background:#fff5f5;border-radius:8px;color:#742a2a">❌ 清理失败</div>'}
+    }catch(e){
+        var el=document.getElementById('cleanup-result');if(el)el.innerHTML='<div style="padding:12px;background:#fff5f5;border-radius:8px;color:#742a2a">❌ '+esc(e.message||'清理失败')+'</div>';
+    }
+    var btn=document.getElementById('cleanup-exec-btn');if(btn){btn.disabled=false;btn.textContent='🔧 执行清理（90天）'}
+}
+
+async function cleanupStuckWorkflows(){
+    if(!confirm('确定要标记所有超过24小时的运行中工作流为失败状态吗？'))return;
+    try{
+        var r=await api(API_BASE+'/cleanup/fix-failed?max_age_hours=24','POST');
+        if(r&&r.success){showToast('已清理 '+r.data.cleaned_count+' 个卡住工作流','success');loadCleanupPage()}else{showToast('清理失败','error')}
+    }catch(e){showToast('清理失败: '+e.message,'error')}
+}
+</script>
+</body>
+</html>
