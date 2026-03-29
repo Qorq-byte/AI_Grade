@@ -103,3 +103,92 @@ if user_token:
     test("对话列表 GET /api/client/ai/conversations", lambda: expect_success(
         api("GET", "/api/client/ai/conversations", token=user_token)))
 
+    conv_resp = api("POST", "/api/client/ai/conversations", {"title": "测试对话"}, token=user_token)
+    test("新建对话", lambda: expect_success(conv_resp))
+    conv_id = conv_resp.json().get("data", {}).get("id")
+    test("删除对话", lambda: expect_success(
+        api("DELETE", f"/api/client/ai/conversations/{conv_id}", token=user_token))) if conv_id else None
+
+    test("修改用户名并还原", lambda: expect_success(api("PUT", "/api/client/profile",
+        {"username": test_username + "_x"}, token=user_token)) and expect_success(
+        api("PUT", "/api/client/profile", {"username": test_username}, token=user_token)) == True)
+else:
+    print("  跳过客户端测试（无 token）")
+
+# =================== 管理端 API 测试 ===================
+print("\n" + "=" * 60)
+print("3. 管理端 API 测试")
+print("=" * 60)
+
+admin_login = api("POST", "/api/auth/login", {"username": "admin", "password": "Admin@123456"})
+admin_ok = admin_login.status_code == 200 and admin_login.json().get("success")
+
+if admin_ok:
+    admin_token = admin_login.json().get("data", {}).get("access_token", "")
+
+    for name, path in [
+        ("管理端仪表盘", "/api/admin/dashboard"),
+        ("Token统计", "/api/admin/token-stats"),
+        ("AI对话统计", "/api/admin/ai-chat-stats"),
+        ("系统设置", "/api/admin/settings"),
+        ("用户列表", "/api/admin/users?page=1&page_size=20"),
+        ("模型配置", "/api/admin/models"),
+        ("Prompt模板", "/api/admin/prompts"),
+        ("默认Prompt", "/api/admin/prompts/defaults"),
+        ("知识库列表", "/api/admin/knowledge?page=1&page_size=10"),
+        ("工作流监控", "/api/admin/workflows?page=1&page_size=20"),
+        ("审计日志", "/api/admin/audit-logs?page=1&page_size=10"),
+        ("审计摘要", "/api/admin/audit-logs/summary"),
+        ("文件统计", "/api/admin/file-stats"),
+        ("步骤配置", "/api/admin/step-config"),
+        ("模块序列", "/api/admin/module-sequences"),
+        ("通知历史", "/api/admin/notifications?page=1&page_size=15"),
+        ("清理预览", "/api/admin/cleanup/preview"),
+    ]:
+        test(name, lambda p=path: expect_success(api("GET", p, token=admin_token)))
+
+    test("无token访问管理端 → 401", lambda: expect_code(api("GET", "/api/admin/dashboard"), 401))
+    if user_token:
+        test("普通用户访问管理端 → 403", lambda: expect_code(
+            api("GET", "/api/admin/dashboard", token=user_token), 403))
+else:
+    print("  WARNING: 管理员登录失败，跳过管理端测试")
+
+# =================== 文件上传测试 ===================
+print("\n" + "=" * 60)
+print("4. 文件上传测试")
+print("=" * 60)
+
+sample_txt = "测试项目资料：某道路建设工程，总投资5000万元。"
+with open("_api_test_sample.txt", "w", encoding="utf-8") as f:
+    f.write(sample_txt)
+
+with open("_api_test_sample.txt", "rb") as f:
+    up_resp = api("POST", "/api/agent/upload", token=user_token,
+                  files={"file": ("_api_test_sample.txt", f, "text/plain")})
+test("单文件上传", lambda: expect_success(up_resp))
+
+with open("_api_test_sample.txt", "rb") as f:
+    batch_resp = api("POST", "/api/agent/upload/batch", token=user_token,
+                     files=[("files", ("_api_test_sample.txt", f, "text/plain"))])
+test("批量上传", lambda: expect_success(batch_resp))
+
+# =================== 前端页面加载测试 ===================
+print("\n" + "=" * 60)
+print("5. 前端页面加载测试")
+print("=" * 60)
+
+for p in ["/", "/login", "/login?redirect=/client", "/client", "/admin",
+          "/workflow", "/report", "/questionnaire"]:
+    test(f"页面加载 {p}", lambda p=p: expect_code(api("GET", p), 200))
+
+# =================== 结果汇总 ===================
+print("\n" + "=" * 60)
+total = passed + failed
+print(f"测试结果: {passed}/{total} 通过, {failed}/{total} 失败")
+if failed > 0:
+    print(f"存在 {failed} 个失败用例！")
+    sys.exit(1)
+else:
+    print("全部通过")
+    sys.exit(0)
