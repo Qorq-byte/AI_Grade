@@ -197,3 +197,105 @@ else:
     r = req("DELETE", "/api/client/notifications", token=user_token)
     log(body_of(r).get("success"), "DELETE /api/client/notifications（清空）", str(body_of(r))[:100])
 
+print("=" * 66)
+print("D. 管理端页面端点（/admin 实际调用）")
+print("=" * 66)
+if not admin_token:
+    print("  [SKIP] 无管理员token，跳过管理端测试")
+else:
+    checks = [
+        ("GET", "/api/admin/dashboard", None),
+        ("GET", "/api/admin/token-stats", None),
+        ("GET", "/api/admin/ai-chat-stats", None),
+        ("GET", "/api/admin/settings", None),
+        ("GET", "/api/admin/users?page=1&page_size=20", None),
+        ("GET", "/api/admin/models", None),
+        ("GET", "/api/admin/prompts", None),
+        ("GET", "/api/admin/prompts/defaults", None),
+        ("GET", "/api/admin/knowledge?page=1&page_size=10", None),
+        ("GET", "/api/admin/workflows?page=1&page_size=20", None),
+        ("GET", "/api/admin/audit-logs?page=1&page_size=10", None),
+        ("GET", "/api/admin/audit-logs/summary", None),
+        ("GET", "/api/admin/file-stats", None),
+        ("GET", "/api/admin/step-config", None),
+        ("GET", "/api/admin/module-sequences", None),
+        ("GET", "/api/admin/notifications?page=1&page_size=15", None),
+        ("GET", "/api/admin/cleanup/preview", None),
+    ]
+    for m, path, jb in checks:
+        r = req(m, path, token=admin_token)
+        d = body_of(r)
+        log(r.status_code == 200 and d.get("success"), f"{m} {path}", f"status={r.status_code} {str(d)[:120]}")
+
+    # 未授权访问管理端 → 401
+    r = req("GET", "/api/admin/dashboard")
+    log(r.status_code == 401, "无token访问 /api/admin/dashboard → 401", f"status={r.status_code}")
+    if user_token:
+        r = req("GET", "/api/admin/dashboard", token=user_token)
+        log(r.status_code == 403, "普通用户访问 /api/admin/dashboard → 403", f"status={r.status_code}")
+
+    # 发送通知（管理端 → 客户端铃铛联通）
+    r = req("POST", "/api/admin/notifications", token=admin_token,
+            json_body={"title": "前端检测通知", "content": "前后端联通测试", "usernames": [uname]})
+    d = body_of(r)
+    log(d.get("success"), "POST /api/admin/notifications（发给测试用户）", str(d)[:120])
+    # 客户端应能收到
+    r = req("GET", "/api/client/notifications", token=user_token)
+    d = body_of(r)
+    got = d.get("data", {}).get("notifications", [])
+    log(any(n.get("title") == "前端检测通知" for n in got), "客户端收到管理端通知", f"count={len(got)}")
+    # 标记单条已读
+    if got:
+        nid = got[0]["id"]
+        r = req("PUT", f"/api/client/notifications/{nid}/read", token=user_token)
+        log(body_of(r).get("success"), "PUT 单条通知已读", str(body_of(r))[:100])
+    # 按标题撤回
+    r = req("DELETE", "/api/admin/notifications/by-title?title=前端检测通知", token=admin_token)
+    log(body_of(r).get("success"), "DELETE /api/admin/notifications/by-title（撤回）", str(body_of(r))[:100])
+
+    # 评分阈值设置（管理端系统设置，写入当前值——读后再写同值）
+    r = req("GET", "/api/admin/settings", token=admin_token)
+    sd = body_of(r).get("data", {})
+    thr = sd.get("rating_thresholds") or {}
+    if thr:
+        r = req("POST", "/api/admin/settings/rating-thresholds", token=admin_token,
+                json_body={"excellent": thr.get("excellent", 90), "good": thr.get("good", 75), "pass_": thr.get("pass_", 60)})
+        log(body_of(r).get("success"), "POST /api/admin/settings/rating-thresholds", str(body_of(r))[:120])
+
+print("=" * 66)
+print("E. 文件上传（客户端/工作流页实际调用）")
+print("=" * 66)
+sample_txt = "本项目为示例市政道路建设工程，总投资5000万元，工期2年。\n主要建设内容：道路工程、排水工程、照明工程、绿化工程。"
+with open("fe_sample_upload.txt", "w", encoding="utf-8") as f:
+    f.write(sample_txt)
+with open("fe_sample_upload.txt", "rb") as f:
+    r = req("POST", "/api/agent/upload", token=user_token, files={"file": ("fe_sample_upload.txt", f, "text/plain")})
+d = body_of(r)
+log(r.status_code == 200 and d.get("success") and d.get("data", {}).get("file_path"), "POST /api/agent/upload", str(d)[:150])
+up_path = d.get("data", {}).get("file_path", "")
+up_name = d.get("data", {}).get("original_name", "")
+
+# 批量上传（工作流页）
+with open("fe_sample_upload.txt", "rb") as f:
+    r = req("POST", "/api/agent/upload/batch", token=user_token, files=[("files", ("fe_sample_upload.txt", f, "text/plain"))])
+d = body_of(r)
+log(r.status_code == 200 and d.get("success"), "POST /api/agent/upload/batch", str(d)[:150])
+
+print("=" * 66)
+print("F. 问卷页面端点（/questionnaire 实际调用）")
+print("=" * 66)
+r = req("POST", "/api/agent/workflow/questionnaire", token=user_token,
+        json_body={"session_id": "fe-no-such-session", "max_questions": 5})
+d = body_of(r)
+log(r.status_code in (200, 400, 404), "POST 问卷生成（无效session应报错而非500崩溃）", f"status={r.status_code} {str(d)[:120]}")
+r = req("GET", "/api/agent/workflow/questionnaire/list", token=user_token)
+d = body_of(r)
+log(r.status_code == 200 and d.get("success") and isinstance(d.get("data", []), list), "GET 问卷列表", str(d)[:120])
+
+print()
+print("=" * 66)
+print(f"结果: {PASS} 通过 / {FAIL} 失败")
+for f_ in FAILURES:
+    print(f"  ✗ {f_}")
+print("=" * 66)
+sys.exit(1 if FAIL else 0)
