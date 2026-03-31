@@ -150,3 +150,97 @@ def main():
     elapsed = time.time() - start
     log(f"SSE流结束: {elapsed:.0f}s completed={completed} errored={errored} session={session_id}")
 
+    results = {"session_id": session_id, "project_name": project_name, "completed": completed,
+               "elapsed_s": round(elapsed), "checks": []}
+
+    def check(name, ok, extra=""):
+        results["checks"].append({"name": name, "ok": bool(ok), "extra": extra[:200]})
+        log(f"  [{'PASS' if ok else 'FAIL'}] {name} {extra[:150]}")
+
+    check("SSE流完成事件", completed)
+    check("SSE无错误事件", not errored)
+    if not session_id:
+        with open(RESULT_FILE, "w", encoding="utf-8") as f:
+            json.dump(results, f, ensure_ascii=False, indent=2)
+        return 1
+
+    # 3. 状态端点（报告页/工作流页）
+    r = req("GET", f"/api/agent/workflow/{session_id}/status", token=token)
+    d = bof(r)
+    ok = d.get("success") and d.get("data")
+    check("GET workflow/status", ok, str(d)[:150])
+    if ok:
+        data = d["data"]
+        summaries = data.get("step_summaries") or []
+        check("status含step_summaries", isinstance(summaries, list) and len(summaries) > 0, f"n={len(summaries)}")
+        check("status状态completed", data.get("status") == "completed", f"status={data.get('status')}")
+
+    # 4. 报告获取（报告页）
+    r = req("GET", f"/api/agent/workflow/{session_id}/report", token=token)
+    d = bof(r)
+    ok = d.get("success") and d.get("data", {}).get("content")
+    check("GET workflow/report", ok, f"content_len={len(d.get('data', {}).get('content', ''))}")
+
+    # 5. 保存报告（报告页“保存”按钮）
+    r = req("POST", "/api/agent/workflow/save-report", token=token,
+            json_body={"session_id": session_id, "content": "【测试】报告内容已由前端保存。\n\n一、概述\n这是联通性测试。"})
+    d = bof(r)
+    check("POST workflow/save-report", d.get("success"), str(d)[:150])
+
+    # 6. 导出Word（客户端导出按钮 → /api/agent/download）
+    r = req("POST", "/api/agent/workflow/export", token=token,
+            json_body={"session_id": session_id, "format": "word", "project_name": project_name})
+    d = bof(r)
+    ok = d.get("success") and d.get("data", {}).get("file_name")
+    check("POST export word", ok, str(d)[:200])
+    if ok:
+        fn = d["data"]["file_name"]
+        r = req("GET", f"/api/agent/download/{fn}", token=token)
+        check("GET download word文件", r.status_code == 200 and len(r.content) > 1000,
+              f"status={r.status_code} bytes={len(r.content)}")
+
+    # 7. 导出PDF（应返回真实 .pdf 文件）
+    r = req("POST", "/api/agent/workflow/export", token=token,
+            json_body={"session_id": session_id, "format": "pdf", "project_name": project_name})
+    d = bof(r)
+    pdf_name = d.get("data", {}).get("file_name", "") if d.get("success") else ""
+    ok = bool(pdf_name) and pdf_name.lower().endswith(".pdf")
+    check("POST export pdf (真实PDF)", ok, f"file={pdf_name}")
+    if ok:
+        r = req("GET", f"/api/agent/download/{pdf_name}", token=token)
+        is_pdf = r.status_code == 200 and r.content[:5] == b"%PDF-"
+        check("GET download pdf文件为真实PDF", is_pdf,
+              f"status={r.status_code} bytes={len(r.content)} head={r.content[:8]!r}")
+
+    # 8. 问卷生成（客户端/问卷页）
+    r = req("POST", "/api/agent/workflow/questionnaire", token=token,
+            json_body={"session_id": session_id, "max_questions": 10})
+    d = bof(r)
+    ok = d.get("success") and (d.get("data") or {}).get("questions") or (d.get("data") or {}).get("questionnaire")
+    qdata = d.get("data") or {}
+    questions = qdata.get("questions") or qdata.get("questionnaire") or []
+    check("POST 问卷生成", ok, f"n={len(questions) if isinstance(questions, list) else '?'}")
+    qlist = questions if isinstance(questions, list) else []
+
+    # 9. 问卷列表（客户端问卷Tab）
+    r = req("GET", "/api/agent/workflow/questionnaire/list", token=token)
+    d = bof(r)
+    lst = d.get("data") or []
+    check("GET 问卷列表含本session", any((x.get("session_id") == session_id) for x in lst if isinstance(x, dict)),
+          f"n={len(lst)}")
+
+    # 10. 问卷提交（问卷页submit）
+    answers = []
+    for i, q in enumerate(qlist[:5]):
+        qid = q.get("id") if isinstance(q, dict) else f"q{i}"
+        answers.append({"question_id": str(qid), "answer": 4})
+    r = req("POST", "/api/agent/workflow/questionnaire/submit", token=token,
+            json_body={"session_id": session_id, "answers": answers})
+    d = bof(r)
+    check("POST 问卷提交", d.get("success") or r.status_code == 200, f"status={r.status_code} {str(d)[:150]}")
+
+    # 11. 问卷答案查询
+    r = req("GET", f"/api/agent/workflow/{session_id}/questionnaire/answers", token=token)
+    d = bof(r)
+    check("GET 问卷答案", r.status_code == 200, f"status={r.status_code} {str(d)[:100]}")
+
