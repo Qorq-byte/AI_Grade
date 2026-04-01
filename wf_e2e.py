@@ -244,3 +244,127 @@ def main():
     d = bof(r)
     check("GET 问卷答案", r.status_code == 200, f"status={r.status_code} {str(d)[:100]}")
 
+    # 12. 评分相关（工作流页各按钮）
+    r = req("GET", f"/api/agent/workflow/{session_id}/score-summary", token=token)
+    d = bof(r)
+    check("GET score-summary", d.get("success"), str(d)[:150])
+
+    r = req("GET", f"/api/agent/workflow/{session_id}/indicators-for-scoring", token=token)
+    d = bof(r)
+    check("GET indicators-for-scoring", d.get("success"), str(d)[:150])
+
+    r = req("POST", f"/api/agent/workflow/{session_id}/verify-logic", token=token, json_body={})
+    d = bof(r)
+    check("POST verify-logic", d.get("success"), str(d)[:150])
+
+    r = req("GET", f"/api/agent/workflow/{session_id}/extract-deductions", token=token)
+    d = bof(r)
+    check("GET extract-deductions", d.get("success"), str(d)[:150])
+
+    r = req("GET", f"/api/agent/workflow/{session_id}/report-order", token=token)
+    d = bof(r)
+    check("GET report-order", d.get("success"), str(d)[:150])
+
+    r = req("GET", f"/api/agent/workflow/{session_id}/export-style", token=token)
+    d = bof(r)
+    check("GET export-style", d.get("success") or r.status_code == 200, f"status={r.status_code} {str(d)[:120]}")
+
+    r = req("GET", f"/api/agent/workflow/{session_id}/modules", token=token)
+    d = bof(r)
+    check("GET modules", d.get("success") or r.status_code == 200, f"status={r.status_code} {str(d)[:120]}")
+
+    # 13. 模板
+    r = req("GET", "/api/agent/workflow/templates", token=token)
+    d = bof(r)
+    check("GET 工作流模板", d.get("success"), str(d)[:150])
+
+    # 14. 报告组装（工作流页 Step14 核心功能）
+    r = req("GET", f"/api/agent/workflow/{session_id}/report-order", token=token)
+    d = bof(r)
+    sections = d.get("data") or []
+    ok = d.get("success") and isinstance(sections, list) and len(sections) > 0
+    check("GET report-order（章节列表）", ok, f"n={len(sections)} sections")
+    if ok:
+        has_content_count = sum(1 for s in sections if s.get("has_content"))
+        check("report-order has_content 标记正确", has_content_count >= 6, f"has_content={has_content_count}")
+        # 保存自定义顺序
+        reordered = list(reversed(sections))
+        r = req("POST", "/api/agent/workflow/report-order", token=token,
+                json_body={"session_id": session_id, "sections": reordered})
+        check("POST report-order（保存章节顺序）", bof(r).get("success"), str(bof(r))[:120])
+
+    r = req("POST", "/api/agent/workflow/assemble-report", token=token,
+            json_body={"session_id": session_id, "show_title": True,
+                       "include_sections": [s.get("key") for s in sections]})
+    d = bof(r)
+    rep = (d.get("data") or {}).get("report", "")
+    sec_cnt = (d.get("data") or {}).get("section_count", 0)
+    check("POST assemble-report（组装报告有内容）", d.get("success") and len(rep) > 500 and sec_cnt > 0,
+          f"len={len(rep)} sections={sec_cnt}")
+
+    # 15. 格式校对（LLM调用，约30-60秒）
+    r = req("POST", f"/api/agent/workflow/{session_id}/format-check", token=token, json_body={}, timeout=180)
+    d = bof(r)
+    check("POST format-check（格式校对）", d.get("success") and bool((d.get("data") or {}).get("check_result")),
+          f"result_len={len((d.get('data') or {}).get('check_result', ''))}")
+
+    # 16. 导出样式
+    r = req("GET", f"/api/agent/workflow/{session_id}/export-style", token=token)
+    d = bof(r)
+    check("GET export-style", d.get("success") or r.status_code == 200, f"status={r.status_code} {str(d)[:100]}")
+    r = req("POST", "/api/agent/workflow/export-style", token=token,
+            json_body={"session_id": session_id, "font_family": "SimSun", "font_size": 12,
+                       "line_spacing": 1.5, "page_margin": 2.5})
+    d = bof(r)
+    check("POST export-style（保存样式）", d.get("success"), str(d)[:120])
+
+    # 17. 自定义模块（Step12）
+    r = req("POST", "/api/agent/workflow/add-custom-module", token=token,
+            json_body={"session_id": session_id, "module_key": "custom_test_module",
+                       "module_name": "项目合规性分析", "content": "测试自定义模块内容"})
+    d = bof(r)
+    check("POST add-custom-module", d.get("success"), str(d)[:120])
+    r = req("GET", f"/api/agent/workflow/{session_id}/modules", token=token)
+    d = bof(r)
+    mods = (d.get("data") or {}).get("modules", [])
+    check("GET modules 包含自定义模块",
+          any(isinstance(m, dict) and m.get("key") == "custom_test_module" for m in mods),
+          f"n={len(mods)}")
+
+    # 18. 管理端工作流监控包含本会话
+    r = req("GET", "/api/client/reports", token=token)
+    d = bof(r)
+    rep_list = d.get("data") or []
+    check("客户端报告列表包含本会话", any((x.get("session_id") == session_id) for x in rep_list if isinstance(x, dict)),
+          f"n={len(rep_list)}")
+
+    # 15. 管理端工作流监控应包含本会话（验证WorkflowSession持久化）
+    r = req("GET", "/api/admin/workflows?page=1&page_size=50", token=token)
+    d = bof(r)
+    wf_list = (d.get("data") or {}).get("workflows", [])
+    hit = [w for w in wf_list if w.get("session_id") == session_id]
+    check("管理端工作流监控包含本会话", len(hit) > 0, f"n={len(wf_list)}")
+    if hit:
+        check("会话状态completed且current_step=14",
+              hit[0].get("status") == "completed" and hit[0].get("current_step") == 14,
+              f"status={hit[0].get('status')} step={hit[0].get('current_step')} user={hit[0].get('user_id')}")
+
+    n_fail = sum(1 for c in results["checks"] if not c["ok"])
+    results["fail_count"] = n_fail
+    with open(RESULT_FILE, "w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
+    log(f"工作流E2E完成: {len(results['checks'])} 项检查, 失败 {n_fail}")
+    return 1 if n_fail else 0
+
+
+if __name__ == "__main__":
+    try:
+        code = main()
+    except Exception as e:
+        log(f"异常: {e}")
+        import traceback
+        traceback.print_exc()
+        code = 1
+    with open(LOG_FILE, "w", encoding="utf-8") as f:
+        f.write("\n".join(log_lines))
+    sys.exit(code)
