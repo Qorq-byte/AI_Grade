@@ -72,3 +72,102 @@
   - OpenAI: gpt-3.5-turbo, gpt-4, gpt-4-turbo, gpt-4o
   - Anthropic: claude-3-opus, claude-3-sonnet, claude-3-haiku, claude-2.1
 
+### 向量数据库与RAG
+- **ChromaDB**: chromadb >= 0.4.22（向量存储）
+- **FAISS**: faiss-cpu >= 1.7.4（相似度搜索）
+- **Sentence Transformers**: sentence-transformers >= 2.3.1（文本嵌入）
+
+### 数据库
+- **关系型数据库**: MySQL（SQLAlchemy >= 2.0.0, PyMySQL >= 1.1.0）
+- **迁移工具**: Alembic >= 1.13.0（可选）
+- **缓存**: Redis >= 5.0.1（可选）
+
+### 文件处理与导出
+- **Word文档**: python-docx >= 1.1.0
+- **Excel表格**: openpyxl >= 3.1.2
+- **PDF生成**: reportlab >= 4.0.0
+- **PDF解析**: PyPDF2 >= 3.0.1
+- **图片OCR**: Pillow >= 10.2.0, pytesseract >= 0.3.10
+- **通用解析**: docx2txt >= 0.8, unstructured >= 0.12.0
+
+### 认证与安全
+- **JWT认证**: python-jose[cryptography] >= 3.3.0
+- **密码加密**: passlib[bcrypt] >= 1.7.4
+
+### 前端技术
+- **纯HTML/CSS/JavaScript**: 无框架依赖，轻量级实现
+- **图标库**: Lucide Icons
+- **字体**: Inter, Helvetica Now Display Bold
+
+---
+
+## 项目结构
+
+```
+AI_Grade/
+├── backend/                          # 后端代码
+│   ├── agents/                       # Agent核心模块
+│   │   ├── base_agent.py             # Agent基类（多模型支持、记忆管理）
+│   │   ├── performance_agent.py      # 绩效评价Agent（14步工作流，LangGraph编排）
+│   │   ├── states/                   # 状态定义
+│   │   │   └── performance_state.py  # 绩效评价状态模型（TypedDict）
+│   │   ├── tools/                    # 工具模块
+│   │   │   ├── content_indexer.py    # 内容索引器
+│   │   │   ├── score_validator.py    # 分数校验器（四维校验）
+│   │   │   ├── indicator_manager.py  # 指标管理器（内置模板）
+│   │   │   ├── multi_model_compare.py # 多模型对比
+│   │   │   ├── questionnaire_gen.py  # 问卷生成器
+│   │   │   └── export_service.py     # 导出服务（Word / 真实PDF）
+│   │   └── prompts/                  # Prompt模板管理
+│   │       ├── prompt_manager.py     # Prompt管理器（DB优先，默认兜底）
+│   │       └── default_prompts.py    # 默认Prompt模板
+│   ├── routes/                       # API路由
+│   │   ├── agent_routes.py           # Agent工作流接口（SSE流式、问卷、导出、组装等）
+│   │   ├── auth_routes.py            # 认证接口（登录/注册/刷新）
+│   │   ├── admin_routes.py           # 管理端接口
+│   │   └── client_routes.py          # 客户端接口（报告/对话/通知/AI聊天）
+│   ├── services/                     # 业务服务
+│   │   ├── auth_service.py           # 认证服务
+│   │   ├── file_processor.py         # 文件处理服务
+│   │   ├── memory_service.py         # 记忆服务
+│   │   ├── rag_service.py            # RAG检索增强服务
+│   │   ├── token_service.py          # Token消耗记录服务
+│   │   └── cleanup_service.py        # 数据清理服务（90天过期策略）
+│   ├── models/                       # 数据模型
+│   │   ├── user_models.py            # 用户/项目/工作流/报告/Token/提示词/通知等
+│   │   └── memory_models.py          # 记忆模型
+│   ├── middleware/                   # 中间件
+│   │   ├── auth_middleware.py        # JWT认证中间件（依赖注入）
+│   │   └── rate_limit.py             # 限流中间件
+│   ├── utils/                        # 工具函数
+│   │   ├── llm_helper.py             # LLM辅助函数（模型/凭证管理）
+│   │   └── log_utils.py              # 日志工具
+│   ├── config.py                     # 配置管理（pydantic-settings）
+│   ├── database.py                   # 数据库初始化
+│   └── main.py                       # FastAPI应用入口（前端页面托管 + 路由注册）
+├── frontend/                         # 前端页面（后端静态托管）
+│   ├── index.html                    # 首页（落地页）
+│   ├── login/index.html              # 登录注册页面
+│   ├── client/index.html             # 客户端（14步工作流/AI聊天/报告/问卷/设置）
+│   ├── admin/index.html              # 管理端
+│   ├── workflow/index.html           # 独立工作流页面
+│   ├── report/index.html             # 报告预览编辑页面
+│   ├── questionnaire/index.html      # 问卷填写页面
+│   └── avatars/                      # 用户头像存储
+├── uploads/                          # 用户上传文件（90天保留）
+├── templates/                        # 指标体系模板（indicator_templates.json）
+├── state_backups/                    # 工作流状态磁盘备份（重启恢复）
+├── backend/exports/                  # 导出报告存储目录
+├── backend/data/chroma_db/           # ChromaDB向量数据库
+├── backend/knowledge_base/           # 知识库文件
+├── .env                              # 环境变量配置（不入库）
+├── .env.example                      # 环境变量示例
+├── requirements.txt                  # Python依赖
+├── start_backend.bat                 # Windows 一键启动脚本（cmd）
+├── start_backend.ps1                 # Windows 一键启动脚本（PowerShell）
+├── test_all_apis.py                  # API 全功能测试
+├── frontend_e2e_check.py             # 前端联通性检查（65项）
+├── wf_e2e.py                         # 工作流端到端测试（需真实LLM密钥）
+└── README.md                         # 项目说明文档
+```
+
