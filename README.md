@@ -219,3 +219,76 @@ DEEPSEEK_API_KEY=your-deepseek-key
 OPENAI_API_KEY=your-openai-key
 ANTHROPIC_API_KEY=your-anthropic-key
 
+# 数据库配置
+MYSQL_HOST=localhost
+MYSQL_PORT=3306
+MYSQL_USER=root
+MYSQL_PASSWORD=your-mysql-password
+MYSQL_DATABASE=ai_grade_db
+
+# JWT 配置（生产环境请使用随机生成的强密钥）
+JWT_SECRET_KEY=your-random-secret-key
+
+# 默认模型（建议配置为已具备有效密钥的模型）
+DEFAULT_MODEL=deepseek-chat
+
+# 模型参数
+TEMPERATURE=0.7
+TOP_P=0.9
+MAX_TOKENS=4000
+```
+
+> **注意**：`DEFAULT_MODEL` 决定了未显式选择模型时的工作流/AI聊天默认模型，请务必设置为密钥有效的模型。
+
+### 4. 创建数据库
+
+在 MySQL 中执行：
+
+```sql
+CREATE DATABASE IF NOT EXISTS ai_grade_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```
+
+> 数据表会在首次启动时自动创建（`init_db`），默认管理员账号与系统提示词模板也会自动初始化。
+
+### 5. 启动服务器
+
+**方式一：一键脚本（Windows）**
+```bash
+start_backend.bat        # cmd
+# 或
+.\start_backend.ps1      # PowerShell
+```
+
+**方式二：手动启动**
+```bash
+python -m backend.main
+# 或
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+```
+
+服务器启动后访问 **http://localhost:8000**。
+
+### 6. 快速验证
+
+```bash
+# 健康检查
+curl http://localhost:8000/health
+# → {"status":"healthy","service":"云海睿评 - AI绩效评价报告生成系统","version":"1.0.0"}
+```
+
+---
+
+## 使用指南
+
+### 页面入口
+
+| 页面 | 路径 | 说明 |
+|------|------|------|
+| 首页 | `/` | 平台介绍与入口 |
+| 登录/注册 | `/login` | 登录、注册、记住登录状态 |
+| 客户端 | `/client` | 主工作台：绩效评价、AI助手、我的报告、问卷填写、个人设置 |
+| 管理端 | `/admin` | 系统管理（仅管理员） |
+| 独立工作流 | `/workflow` | 精简版工作流页面（需登录） |
+| 报告编辑 | `/report?session=<会话ID>` | 报告在线预览与编辑 |
+| 问卷填写 | `/questionnaire?session=<会话ID>` | 独立问卷填写页 |
+
