@@ -171,3 +171,51 @@ AI_Grade/
 └── README.md                         # 项目说明文档
 ```
 
+---
+
+## 快速开始
+
+### 1. 环境要求
+- Python 3.9+
+- MySQL 5.7+ / 8.0（或 MariaDB）
+
+### 2. 创建虚拟环境并安装依赖
+
+**Windows（cmd）:**
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+**Windows（PowerShell）:**
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+**Linux / macOS:**
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 3. 配置环境变量
+
+复制 `.env.example` 为 `.env` 并修改配置：
+
+```bash
+cp .env.example .env
+```
+
+编辑 `.env` 文件，至少配置以下项：
+
+```env
+# LLM API 密钥（至少配置一个）
+DASHSCOPE_API_KEY=sk-your-dashscope-key
+DEEPSEEK_API_KEY=your-deepseek-key
+OPENAI_API_KEY=your-openai-key
+ANTHROPIC_API_KEY=your-anthropic-key
+
