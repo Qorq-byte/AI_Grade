@@ -442,3 +442,72 @@ curl http://localhost:8000/health
 
 ## API接口概览
 
+> 认证接口返回统一包装格式：`{"success": true, "data": {...}, "message": "..."}`。除登录/注册/健康检查外，`/api/client/*` 与 `/api/admin/*` 需要 `Authorization: Bearer <token>`。
+
+### 认证接口 `/api/auth`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/auth/register` | 注册（username/password/phone） |
+| POST | `/api/auth/login` | 登录，返回 access_token + refresh_token |
+| POST | `/api/auth/refresh?refresh_token_str=xxx` | 刷新访问令牌 |
+| GET | `/api/auth/me` | 当前用户信息 |
+| POST | `/api/auth/admin/create-user` | 管理员创建用户 |
+| GET | `/api/auth/users` | 用户列表 |
+| POST | `/api/auth/users/{id}/toggle-status` | 切换用户状态 |
+| GET | `/api/auth/init-admin` | 初始化默认管理员 |
+
+#### 登录示例
+```
+POST /api/auth/login
+Content-Type: application/json
+
+{"username": "admin", "password": "Admin@123456"}
+```
+响应：
+```json
+{
+  "success": true,
+  "message": "登录成功",
+  "data": {
+    "user_id": 1,
+    "username": "admin",
+    "role": "admin",
+    "tokens_used": 198,
+    "access_token": "eyJhbGciOiJIUzI1NiIs...",
+    "refresh_token": "eyJhbGciOiJIUzI1NiIs..."
+  }
+}
+```
+
+### Agent 工作流接口 `/api/agent`
+
+#### 启动工作流（SSE 流式，前端主用）
+```
+POST /api/agent/workflow/start-stream
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "project_name": "测试项目",
+  "file_paths": ["D:/AI_Grade/uploads/xxx.txt"],
+  "model_name": "deepseek-chat",
+  "comparison_mode": "single",
+  "temperature_profile": "normal",
+  "top_p": 0.9,
+  "indicator_type": "项目支出指标体系"
+}
+```
+
+SSE 事件（`data: {...}` 格式）：
+| 事件 | 说明 |
+|------|------|
+| `step_start` | 步骤开始 |
+| `step_complete` | 步骤完成（含 content 与 content_preview） |
+| `token_update` | Token 消耗更新 |
+| `questionnaire_ready` | 步骤6完成，问卷可生成 |
+| `complete` | 工作流完成（含 final_report_preview） |
+| `error` | 错误信息 |
+
+#### 工作流相关
+
