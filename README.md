@@ -368,3 +368,77 @@ curl http://localhost:8000/health
 - 新建用户、编辑、启用/禁用、修改密码
 - 导出用户 CSV
 
+### 模型管理
+- AI 模型配置的增删改查、启用/禁用开关
+- 支持平台、模型名、API Key、Base URL、视觉/文件能力配置
+
+### 提示词管理
+- 14 个步骤的 Prompt 模板查看/编辑
+- 按步骤、指标层级、维度筛选
+- 支持细粒度提示词（层级/维度级）
+- 修改日志追踪、重置为系统默认
+
+### 知识库
+- 知识库条目的增删改查，按步骤/分类筛选
+- 内容编辑、启用/禁用
+
+### 模板管理 / 模块序列
+- 报告模块顺序配置，支持拖拽排序、批量保存
+- 指标类型本地配置
+
+### 工作流监控
+- 所有用户工作流会话列表（状态、进度、Token）
+- 状态筛选
+
+### 审计日志
+- 操作日志查询（按操作类型、用户筛选）
+- 审计摘要统计
+
+### 文件管理
+- 文件总览、按类型/上传类别统计
+- 90 天到期预警
+
+### 数据清理
+- 过期数据预览（90天/30天）
+- 手动执行清理
+- 清理卡住的工作流
+
+### 系统设置
+- AI 聊天功能开关
+- 评分等级阈值设置（优秀/良好/合格）
+- 管理员密码修改
+
+### 通知中心
+- 向指定用户发送通知、查看发送记录、撤回通知
+
+---
+
+## 数据库设计
+
+> 所有表在首次启动时自动创建。`workflow_sessions.final_report` 等大文本列使用 `MEDIUMTEXT`（16MB），支持大型报告存储。
+
+### 主要数据表
+
+| 表名 | 说明 | 主要字段 |
+|------|------|---------|
+| `users` | 用户表 | id, username, password_hash, role, phone, is_active, tokens_used, avatar_url, last_login_at, created_at |
+| `projects` | 项目表 | id, user_id, name, type, status, uploaded_files, created_at |
+| `project_files` | 项目文件表 | id, user_id, project_id, original_name, file_type, file_path, upload_type, expires_at |
+| `workflow_sessions` | 工作流会话表 | id, session_id(唯一), user_id(可空), project_name, status, current_step, model_name, final_report(MEDIUMTEXT), token_used, created_at, completed_at |
+| `reports` | 报告表 | id, project_id, user_id, step_number, step_name, content(MEDIUMTEXT), model_used, is_final, created_at |
+| `token_usage` | Token消耗记录 | id, user_id, session_id, step_number, model_name, prompt_tokens, completion_tokens, total_tokens |
+| `prompt_templates` | 提示词模板 | id, step_number, step_name, prompt_content, is_system, version, change_log, indicator_level, dimension |
+| `ai_conversations` | AI对话 | id, user_id, title, created_at, updated_at |
+| `ai_messages` | AI消息 | id, conversation_id, role, content, created_at |
+| `notifications` | 通知 | id, user_id, title, content, is_read, sender_id, created_at |
+| `operation_logs` | 操作日志 | id, user_id, username, action, resource_type, resource_id, detail, ip_address, created_at |
+| `report_module_sequences` | 报告模块排序 | id, step_number, module_key, module_name, sort_order, is_visible, client_editable |
+| `knowledge_base` | 知识库 | id, name, content, category, step_number, indicator_level, is_active |
+| `model_configs` | 模型配置 | id, platform, model_name, model_id, api_key, api_base_url, is_enabled, supports_vision, supports_file, sort_order |
+| `questionnaire_answers` | 问卷答案 | id, session_id, question_id, question_text, question_type, selected_level_index, text_answer, submitted_at |
+| `user_sessions` / `short_term_memories` / `long_term_memories` / `conversation_summaries` | 记忆表 | Agent 短期/长期记忆与会话摘要 |
+
+---
+
+## API接口概览
+
