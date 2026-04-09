@@ -589,3 +589,77 @@ SSE 事件（`data: {...}` 格式）：
 | GET/POST | `/api/client/ai/conversations` | 对话列表/新建对话 |
 | GET/PUT/DELETE | `/api/client/ai/conversations/{id}` | 对话详情/改名/删除 |
 
+### 管理端接口 `/api/admin`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/admin/dashboard` | 仪表盘（总览 + 最近操作） |
+| GET | `/api/admin/token-stats` | Token 统计（趋势/分布/Top用户） |
+| GET | `/api/admin/ai-chat-stats` | AI 对话统计 |
+| GET | `/api/admin/settings` | 系统设置 |
+| POST | `/api/admin/settings/ai-chat-toggle` | 切换 AI 聊天开关 |
+| POST | `/api/admin/settings/rating-thresholds` | 评分等级阈值 |
+| GET/POST/PUT/DELETE | `/api/admin/users` | 用户管理 |
+| GET/POST/PUT/PATCH/DELETE | `/api/admin/models` | 模型管理 |
+| GET/POST/PUT/DELETE | `/api/admin/prompts` | 提示词管理（含 granular/defaults/reset） |
+| GET/POST/PUT/DELETE | `/api/admin/knowledge` | 知识库管理 |
+| GET | `/api/admin/workflows` | 工作流监控 |
+| GET | `/api/admin/audit-logs` | 审计日志 |
+| GET | `/api/admin/audit-logs/summary` | 审计摘要 |
+| GET | `/api/admin/file-stats` | 文件统计 |
+| GET | `/api/admin/step-config` | 步骤配置总览 |
+| GET/POST/PUT/DELETE | `/api/admin/module-sequences` | 报告模块排序 |
+| GET/POST | `/api/admin/notifications` | 通知发送/记录 |
+| DELETE | `/api/admin/notifications/by-title` | 按标题撤回 |
+| GET | `/api/admin/cleanup/preview` | 清理预览 |
+| POST | `/api/admin/cleanup/execute` | 执行清理 |
+| POST | `/api/admin/cleanup/fix-failed` | 清理卡住工作流 |
+
+### 健康检查
+```
+GET /health
+→ {"status": "healthy", "service": "云海睿评 - AI绩效评价报告生成系统", "version": "1.0.0"}
+```
+
+---
+
+## 安全与权限
+
+### 认证机制
+- 基于 JWT 的 Token 认证（`Authorization: Bearer <token>`）
+- Access Token 有效期：24 小时（可配置）
+- Refresh Token 有效期：30 天（可配置）
+- 密码使用 bcrypt（加盐哈希）加密存储
+- 密码复杂度要求：大写字母、小写字母、数字、特殊字符中至少 3 种
+
+### 权限控制
+- **管理员 (admin)**: 可访问全部功能，包括用户管理、系统配置、提示词管理、知识库管理等
+- **普通用户 (client)**: 仅可访问自己的项目/报告/对话/通知，无法访问管理端（403）
+
+### CORS 配置
+在 `.env` 中配置允许的源：
+```env
+ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://localhost:8000
+```
+
+---
+
+## 数据保留策略
+
+- 上传文件自上传之日起保留 **90 天**，到期自动清理
+- 系统每日凌晨 3 点自动执行过期数据清理
+- 管理员可在管理端预览待清理数据并手动执行清理（90 天 / 30 天）
+- 工作流状态实时写入磁盘备份（`state_backups/`），服务器重启后可恢复历史报告
+
+---
+
+## 测试与验证
+
+> 测试前请确保后端已启动（`http://127.0.0.1:8000`）。
+
+### 1. API 全功能测试（无需 LLM 密钥）
+```bash
+python test_all_apis.py
+```
+覆盖认证、客户端、管理端、文件上传、页面加载等核心端点。
+
