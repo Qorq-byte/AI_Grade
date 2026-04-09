@@ -511,3 +511,81 @@ SSE 事件（`data: {...}` 格式）：
 
 #### 工作流相关
 
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/agent/workflow/start` | 同步启动（兼容旧调用，耗时较长） |
+| GET | `/api/agent/workflow/{session_id}/status` | 工作流实时状态（步骤摘要/审批/错误） |
+| GET | `/api/agent/workflow/{session_id}/report` | 获取完整报告内容（重启后可恢复） |
+| POST | `/api/agent/workflow/save-report` | 保存编辑后的报告 |
+| POST | `/api/agent/workflow/approve` | 人工确认节点（接口保留） |
+| POST | `/api/agent/workflow/refine` | AI 对话优化指定步骤 |
+| POST | `/api/agent/workflow/export` | 导出完整报告 / 单步骤（word/pdf） |
+| GET | `/api/agent/download/{file_name}` | 下载导出的 Word/PDF 文件 |
+| POST | `/api/agent/upload` / `/api/agent/upload/batch` | 单文件 / 批量上传 |
+
+#### 问卷接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/agent/workflow/questionnaire` | 生成问卷（基于指标体系） |
+| GET | `/api/agent/workflow/questionnaire/list` | 问卷列表 |
+| POST | `/api/agent/workflow/questionnaire/submit` | 提交答卷 |
+| GET | `/api/agent/workflow/{session_id}/questionnaire/answers` | 查看答卷 |
+| DELETE | `/api/agent/workflow/questionnaire/{session_id}` | 删除问卷 |
+| POST | `/api/agent/workflow/questionnaire/batch-delete` | 批量删除问卷 |
+
+#### 评分与分析接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/agent/workflow/{session_id}/indicators-for-scoring` | 获取待评分指标 |
+| POST | `/api/agent/workflow/generate-indicator-analysis` | AI 辅助生成指标分析 |
+| POST | `/api/agent/workflow/save-indicator-scores` | 保存逐指标评分并生成评分表 |
+| GET | `/api/agent/workflow/{session_id}/score-summary` | 评分汇总与等级判定 |
+| GET | `/api/agent/workflow/{session_id}/extract-deductions` | 提取扣分点 |
+| POST | `/api/agent/workflow/confirm-deductions` | 确认扣分点 |
+| POST | `/api/agent/workflow/{session_id}/verify-logic` | 逻辑一致性校对 |
+| POST | `/api/agent/workflow/set-language-style` | 设置语言风格（中立/尖锐/委婉） |
+| POST | `/api/agent/workflow/{session_id}/perspective` | 多视角分析 |
+
+#### 报告组装与定制
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET/POST | `/api/agent/workflow/{session_id}/report-order` | 获取/保存章节顺序 |
+| POST | `/api/agent/workflow/assemble-report` | 按自定义顺序组装最终报告 |
+| POST | `/api/agent/workflow/{session_id}/format-check` | 报告格式校对 |
+| GET/POST | `/api/agent/workflow/{session_id}/export-style` | 导出样式定制 |
+| GET | `/api/agent/workflow/templates` | 指标体系模板库 |
+| POST | `/api/agent/workflow/templates/import` / `save` | 导入/保存模板 |
+| POST | `/api/agent/workflow/reorder-indicators` | 指标拖拽排序 |
+| GET | `/api/agent/workflow/{session_id}/modules` | 步骤12模块列表 |
+| POST | `/api/agent/workflow/generate-module` / `add-custom-module` / `update-module-content` / `delete-module` | 模块生成与增删改 |
+
+### 客户端接口 `/api/client`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/client/me` | 当前用户信息（含统计） |
+| PUT | `/api/client/profile` | 修改用户名 |
+| PUT | `/api/client/password` | 修改密码 |
+| POST | `/api/client/avatar` | 上传头像 |
+| DELETE | `/api/client/account` | 注销账号（级联删除全部数据） |
+| GET | `/api/client/dashboard` | 客户端仪表盘数据 |
+| GET | `/api/client/activity` | 最近活动 |
+| GET | `/api/client/reports` | 报告列表（含内存/备份恢复） |
+| DELETE | `/api/client/reports/{session_id}` | 删除报告 |
+| POST | `/api/client/reports/batch-delete` | 批量删除报告 |
+| GET | `/api/client/token-stats` | Token 消耗统计 |
+| GET | `/api/client/notifications` | 通知列表 |
+| PUT | `/api/client/notifications/{id}/read` | 标记单条已读 |
+| PUT | `/api/client/notifications/read-all` | 全部已读 |
+| DELETE | `/api/client/notifications/{id}` | 删除单条通知 |
+| DELETE | `/api/client/notifications` | 清空通知 |
+| POST | `/api/client/ai/chat` | AI 聊天 |
+| POST | `/api/client/ai/voice-chat` | 语音聊天（form 提交识别文本） |
+| GET | `/api/client/ai/chat-status` | AI 聊天功能开关状态 |
+| GET | `/api/client/ai/models` | 可用模型列表（按密钥配置过滤） |
+| GET/POST | `/api/client/ai/conversations` | 对话列表/新建对话 |
+| GET/PUT/DELETE | `/api/client/ai/conversations/{id}` | 对话详情/改名/删除 |
+
