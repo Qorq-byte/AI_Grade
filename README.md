@@ -663,3 +663,78 @@ python test_all_apis.py
 ```
 覆盖认证、客户端、管理端、文件上传、页面加载等核心端点。
 
+### 2. 前端联通性检查（65 项，无需 LLM 密钥）
+```bash
+python frontend_e2e_check.py
+```
+逐一验证前端各页面实际调用的 API 端点：可访问性、认证、响应结构。
+
+### 3. 工作流端到端测试（需要有效的 LLM 密钥，耗时约 5-8 分钟）
+```bash
+python wf_e2e.py
+```
+真实执行 14 步工作流（SSE 流式），并验证报告获取/保存、Word/PDF 导出、问卷生成与提交、评分汇总、逻辑校对、章节排序、报告组装、格式校对、自定义模块、工作流落库与监控等 35 项。
+
+### 4. SSE 实时流探测
+```bash
+python sse_stream_probe.py
+```
+验证工作流步骤事件是否实时推送（约 1-2 分钟，观察前 3 步完成事件）。
+
+### 数据库迁移
+```bash
+python migrate_db.py
+```
+
+---
+
+## 常见问题排查
+
+### 1. 工作流提示「AI服务配额已用完 / 403 AllocationQuota.FreeTierOnly」
+通义千问（DashScope）免费额度已耗尽。解决：
+- 在 `.env` 中将 `DEFAULT_MODEL` 改为密钥有效的模型（如 `deepseek-chat`）
+- 或为 DashScope 账户充值后恢复使用
+
+### 2. 模型列表中看不到某个模型
+`/api/client/ai/models` 仅展示已配置有效密钥（非 `your_*` 占位）的模型。检查 `.env` 中对应 `*_API_KEY` 是否填写正确。
+
+### 3. 启动失败：MySQL 连接错误
+- 确认 MySQL 服务已启动
+- 确认 `.env` 中 `MYSQL_HOST/PORT/USER/PASSWORD/DATABASE` 正确
+- 确认已创建数据库 `ai_grade_db`（utf8mb4）
+
+### 4. 端口被占用
+```bash
+netstat -ano | findstr :8000
+```
+找到占用进程后结束它，或修改 `.env` 中 `PORT` 并重启。
+
+### 5. PDF 导出报错
+PDF 导出依赖 `reportlab`。如未安装：
+```bash
+pip install reportlab
+```
+
+### 6. 部署在 Nginx 后 SSE 进度不实时
+已在响应头设置 `X-Accel-Buffering: no`，若仍缓冲请确认 Nginx 配置：
+```nginx
+proxy_buffering off;
+proxy_cache off;
+```
+
+### 7. 服务器重启后报告还能看到吗？
+可以。工作流会话、最终报告保存到 MySQL，同时写入 `state_backups/` 磁盘备份；重启后「我的报告」仍可查看、导出、编辑历史报告。
+
+### 8. 修改模型/提示词后不生效
+- 提示词：管理端编辑后保存即可生效（DB 优先，未修改步骤使用系统默认模板）
+- 模型：`.env` 修改后需重启后端
+
+---
+
+## 许可证
+
+本项目采用 MIT 许可证。
+
+---
+
+**最后更新**: 2026年8月14日
