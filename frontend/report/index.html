@@ -173,6 +173,12 @@
     let originalReport = '';
     let isModified = false;
     const API = '/api/agent';
+    function authFetch(url, options = {}) {
+        const headers = new Headers(options.headers);
+        const token = sessionStorage.getItem('token') || localStorage.getItem('token');
+        if (token) headers.set('Authorization', 'Bearer ' + token);
+        return fetch(url, { ...options, headers });
+    }
 
     document.addEventListener('DOMContentLoaded', () => {
         lucide.createIcons();
@@ -206,7 +212,7 @@
         document.getElementById('editor').placeholder = '加载中...';
 
         try {
-            const resp = await fetch(`${API}/workflow/${sessionId}/status`);
+            const resp = await authFetch(`${API}/workflow/${sessionId}/status`);
             const data = await resp.json();
 
             if (!data.success || !data.data) {
@@ -246,8 +252,11 @@
 
     async function fetchFullReport() {
         try {
-            const resp = await fetch(`${API}/workflow/${sessionId}/report`);
+            const resp = await authFetch(`${API}/workflow/${sessionId}/report`);
             const data = await resp.json();
+            if (data.data?.review_steps?.length) {
+                showToast('上游已修改，待复核步骤：' + data.data.review_steps.join('、'), 'error');
+            }
             if (data.success && data.data.content) {
                 return data.data.content;
             }
@@ -350,7 +359,7 @@
         const content = document.getElementById('editor').value;
         // Note: We need a save endpoint. For now, show a message.
         try {
-            const resp = await fetch(`${API}/workflow/save-report`, {
+            const resp = await authFetch(`${API}/workflow/save-report`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ session_id: sessionId, content }),
@@ -398,7 +407,7 @@
         }
         showToast('导出中...');
         try {
-            const resp = await fetch(`${API}/workflow/export`, {
+            const resp = await authFetch(`${API}/workflow/export`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ session_id: sessionId, format }),
