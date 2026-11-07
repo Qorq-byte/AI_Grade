@@ -252,7 +252,7 @@
                 </div>
                 <div>
                     <label style="font-size:0.8rem; color:var(--muted);">
-                        <input type="checkbox" id="use-rag" style="width:auto; margin-right:6px;"> 启用RAG知识库
+                        <input type="checkbox" id="use-rag" style="width:auto; margin-right:6px;"> 启用知识库检索
                     </label>
                 </div>
 
@@ -275,6 +275,8 @@
                     <div id="file-list" style="margin-top:8px; max-height:120px; overflow-y:auto;"></div>
                 </div>
 
+                <label><input type="checkbox" id="require-approval"> 在步骤 3、6、11 人工确认</label>
+                <button class="btn" id="retry-workflow" hidden onclick="retryWorkflow()">重试失败步骤</button>
                 <button class="btn btn-accent" id="start-btn" style="margin-top:8px;">
                     🚀 开始生成报告
                 </button>
@@ -306,6 +308,10 @@
             </div>
 
             <!-- Step List -->
+            <details class="card" id="workflow-step-detail" hidden>
+                <summary id="workflow-step-name">步骤结果</summary>
+                <pre id="workflow-step-content" style="white-space:pre-wrap"></pre>
+            </details>
             <div id="step-list" class="card" style="margin-bottom:16px;">
                 <p style="color:var(--muted); text-align:center; padding:20px;">等待启动...</p>
             </div>
@@ -411,7 +417,7 @@
                 <div style="display:flex; gap:8px; flex-wrap:wrap;">
                     <button class="btn btn-accent" onclick="assembleReport()">📝 组装报告</button>
                     <button class="btn" onclick="checkReportFormat()">🔍 格式校对</button>
-                    <button class="btn" onclick="fetch('/api/agent/workflow/' + sessionId + '/report-order').then(r=>r.json()).then(d=>{if(d.success)renderSectionOrder(d.data,d.is_custom)})">🔄 刷新</button>
+                    <button class="btn" onclick="authFetch('/api/agent/workflow/' + sessionId + '/report-order').then(r=>r.json()).then(d=>{if(d.success)renderSectionOrder(d.data,d.is_custom)})">🔄 刷新</button>
                 </div>
             </div>
 
@@ -451,11 +457,18 @@
 
     <div id="toast-container"></div>
 
+    <script src="/static/workflow/sse.js"></script>
     <script>
     // ══════════════════════════════════════
     //  State
     // ══════════════════════════════════════
     const API = '/api/agent';
+    function authFetch(url, options = {}) {
+        const headers = new Headers(options.headers);
+        const token = sessionStorage.getItem('token') || localStorage.getItem('token');
+        if (token) headers.set('Authorization', 'Bearer ' + token);
+        return fetch(url, { ...options, headers });
+    }
     const STEPS = {
         1:'整理资料清单',2:'核心有效信息提取',3:'构建指标体系',4:'生成指标分值',
         5:'生成评分标准',6:'评价指标体系表',7:'指标得分分析',8:'总结经验做法',
@@ -463,10 +476,12 @@
         13:'评价工作简介',14:'组装最终报告'
     };
     let sessionId = null;
+    let workflowStreamController = null;
     let eventSource = null;
     let isRunning = false;
     let completedSteps = new Set();
     let currentApprovalStep = null;
+    let workflowStepResults = {};
     let uploadedFiles = [];
 
     // ── 登录校验 + 自动携带认证Token ──
@@ -489,10 +504,12 @@
 
     document.addEventListener('DOMContentLoaded', () => {
         if (!AUTH_TOKEN) return;
-        lucide.createIcons();
+        if (window.lucide) lucide.createIcons();
         setupUpload();
         document.getElementById('start-btn').addEventListener('click', startWorkflow);
         document.getElementById('stop-btn').addEventListener('click', stopWorkflow);
+        sessionId = new URLSearchParams(location.search).get('session') || sessionStorage.getItem(workflowSessionKey);
+        if (sessionId) pollStatus();
     });
 
     // ══════════════════════════════════════
@@ -545,7 +562,7 @@
         for (const f of files) formData.append('files', f);
 
         try {
-            const resp = await fetch('/api/agent/upload/batch', { method: 'POST', body: formData });
+            const resp = await authFetch('/api/agent/upload/batch', { method: 'POST', body: formData });
             const data = await resp.json();
             if (data.success) {
                 data.data.uploaded.forEach(f => {
@@ -586,6 +603,8 @@
 
         // Reset state
         completedSteps = new Set();
+        workflowStepResults = {};
+        document.getElementById("workflow-step-detail").hidden = true;
         currentApprovalStep = null;
         isRunning = true;
 
@@ -605,7 +624,11 @@
         // Show feature toolbar
         document.getElementById('feature-toolbar').classList.remove('hidden');
 
+        sessionId = newWorkflowSession();
+        sessionStorage.setItem(workflowSessionKey, sessionId);
         const body = {
+            session_id: sessionId,
+            require_approval: document.getElementById('require-approval').checked,
             project_name: projectName,
             file_paths: uploadedFiles.map(f => f.file_path),
             model_name: modelName,
@@ -615,43 +638,17 @@
             language_style: document.getElementById('language-style').value,
         };
 
-        fetch('/api/agent/workflow/start-stream', {
+        workflowStreamController = new AbortController();
+        authFetch('/api/agent/workflow/start-stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
-        }).then(response => {
-            if (!response.ok) throw new Error('HTTP ' + response.status);
-            return readSSEStream(response);
-        }).catch(err => {
-            showToast('连接失败: ' + err.message, 'error');
-            resetUI();
+            signal: workflowStreamController.signal,
+        }).then(response => readWorkflowEvents(response, handleSSEEvent)).catch(err => {
+            if (err.name === 'AbortError') return;
+            showToast(err.message, 'error');
+            pollStatus();
         });
-    }
-
-    async function readSSEStream(response) {
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                    try {
-                        const event = JSON.parse(line.slice(6));
-                        handleSSEEvent(event);
-                    } catch(e) {
-                        console.warn('SSE parse error:', e);
-                    }
-                }
-            }
-        }
     }
 
     function handleSSEEvent(event) {
@@ -659,20 +656,29 @@
 
         if (type === 'step_start') {
             updateStepStatus(event.step_number, 'running', event.step_name);
+            document.getElementById('status-title').textContent = '执行中 · ' + event.step_name;
             updateProgressBar();
         } else if (type === 'step_complete') {
             updateStepStatus(event.step_number, 'completed', event.step_name);
             completedSteps.add(event.step_number);
+            workflowStepResults[event.step_number] = event;
             updateProgressBar();
             if (event.warnings?.length) showAlert('warning', event.warnings);
         } else if (type === 'approval_required') {
             updateStepStatus(event.step_number, 'awaiting', event.step_name);
             showApprovalPanel(event);
+        } else if (type === 'waiting_approval') {
+            const step = event.approval_step;
+            updateStepStatus(step, 'awaiting', STEPS[step]);
+            showApprovalPanel({ ...event, step_number: step, step_name: STEPS[step] });
+            document.getElementById('status-title').textContent = '等待人工确认 · ' + STEPS[step];
         } else if (type === 'warning') {
             showAlert('warning', [event.message]);
         } else if (type === 'error') {
             updateStepStatus(event.step_number, 'error', event.step_name);
             showAlert('error', [event.message]);
+            pollStatus();
+            return;
         } else if (type === 'complete') {
             handleComplete(event);
         } else if (type === 'questionnaire_ready') {
@@ -709,7 +715,7 @@
     async function generateQuestionnaire() {
         if (!sessionId) { showToast('请先启动工作流', 'error'); return; }
         try {
-            const resp = await fetch('/api/agent/workflow/questionnaire', {
+            const resp = await authFetch('/api/agent/workflow/questionnaire', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ session_id: sessionId, max_questions: 30 }),
@@ -745,55 +751,68 @@
     }
 
     async function doApprove(approved) {
-        const feedback = document.getElementById('approval-feedback')?.value || '';
-        document.getElementById('approval-panel').classList.add('hidden');
-        document.getElementById('approval-feedback').value = '';
-
-        try {
-            const resp = await fetch('/api/agent/workflow/approve', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ session_id: sessionId, approved, feedback }),
-            });
-            const data = await resp.json();
-            if (data.success) {
-                updateStepStatus(currentApprovalStep, 'completed', '');
-                completedSteps.add(currentApprovalStep);
-                updateProgressBar();
-                // Restart SSE polling for remaining steps
-                pollStatus();
-            }
-            currentApprovalStep = null;
-        } catch(e) {
-            showToast('审批失败: ' + e.message, 'error');
-        }
+        const feedback = document.getElementById('approval-feedback').value;
+        await workflowAction('approve', { approved, feedback, background: true, approval_step: currentApprovalStep });
     }
 
-    async function pollStatus() {
-        if (!sessionId) return;
+    async function workflowAction(action, fields = {}) {
         try {
-            const resp = await fetch(`/api/agent/workflow/${sessionId}/status`);
-            const data = await resp.json();
-            if (data.success && data.data) {
-                const d = data.data;
-                d.step_summaries?.forEach(s => {
-                    updateStepStatus(s.step_number, s.status === 'completed' ? 'completed' : 'running', s.step_name);
-                    if (s.status === 'completed') completedSteps.add(s.step_number);
-                });
-                updateProgressBar();
+            const response = await authFetch('/api/agent/workflow/' + action, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId, ...fields }),
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail);
+        } catch (error) {
+            showToast(error.message, 'error');
+        }
+        pollStatus();
+    }
 
-                if (d.requires_approval) {
-                    showApprovalPanel({
-                        step_number: d.approval_step,
-                        step_name: d.approval_step_name,
-                        content_preview: '',
-                    });
-                }
-                if (d.status === 'completed') {
-                    handleComplete({ session_id: sessionId, completed_steps: d.completed_steps });
-                }
+    function retryWorkflow() {
+        return workflowAction('retry');
+    }
+
+    let statusController;
+    function pollStatus() {
+        if (!sessionId) return;
+        statusController?.abort();
+        statusController = new AbortController();
+        watchWorkflowStatus(sessionId, authFetch, data => {
+            const status = data.status;
+            isRunning = ['running', 'retrying', 'awaiting_approval', 'paused'].includes(status);
+            document.getElementById('start-btn').disabled = isRunning;
+            document.getElementById('retry-workflow').hidden = !data.retryable;
+            document.getElementById('status-title').textContent = (workflowStatusLabels[status] || '会话不可用')
+                + (data.current_step_name ? ' · ' + data.current_step_name : '');
+            if (status === 'not_found') {
+                sessionStorage.removeItem(workflowSessionKey);
+                return;
             }
-        } catch(e) { /* ignore */ }
+            completedSteps = new Set(data.completed_steps);
+            data.step_summaries.forEach(step => {
+                if ('content' in step) workflowStepResults[step.step_number] = step;
+            });
+            renderStepList();
+            updateProgressBar();
+            if (data.current_step && status !== 'completed') {
+                const style = status === 'failed' ? 'error' : data.requires_approval ? 'awaiting' : 'running';
+                updateStepStatus(data.current_step, style, data.current_step_name);
+            }
+            document.getElementById('approval-panel').classList.toggle('hidden', !data.requires_approval);
+            if (data.requires_approval) {
+                showApprovalPanel({
+                    step_number: data.approval_step, step_name: data.approval_step_name,
+                    content_preview: data.step_summaries.find(step => step.step_number === data.approval_step)?.content_preview,
+                });
+            } else if (status === 'completed') {
+                handleComplete({ session_id: sessionId,
+                    final_report_preview: data.step_summaries.find(step => step.step_number === 14)?.content_preview });
+            }
+            if (data.review_steps.length) showAlert('warning', ['待复核步骤：' + data.review_steps.join('、')]);
+        }, () => {
+            document.getElementById('status-title').textContent = '浏览器连接中断，正在恢复进度…';
+        }, statusController.signal);
     }
 
     function handleComplete(event) {
@@ -817,10 +836,8 @@
     }
 
     function stopWorkflow() {
-        if (sessionId) {
-            fetch(`/api/agent/session/${sessionId}`, { method: 'DELETE' }).catch(() => {});
-        }
-        resetUI();
+        workflowStreamController?.abort();
+        pollStatus();
     }
 
     function resetUI() {
@@ -840,13 +857,24 @@
     // ══════════════════════════════════════
     //  Step List Rendering
     // ══════════════════════════════════════
+    function showWorkflowStep(step) {
+        const result = workflowStepResults[step];
+        if (!result) return;
+        const details = document.getElementById('workflow-step-detail');
+        details.hidden = false;
+        details.open = true;
+        document.getElementById('workflow-step-name').textContent = result.step_name;
+        const sources = (result.evidence || []).map(hit => '[' + hit.id + '] ' + hit.source + ' · ' + hit.locator);
+        document.getElementById('workflow-step-content').textContent = [result.content, ...sources].join('\n');
+    }
+
     function renderStepList() {
         const container = document.getElementById('step-list');
         container.innerHTML = Object.entries(STEPS).map(([num, name]) => {
             const n = parseInt(num);
             const status = completedSteps.has(n) ? 'completed' : 'pending';
             const icon = status === 'completed' ? '✅' : '⏳';
-            return `<div class="step-row ${status}" id="step-${n}">
+            return `<div class="step-row ${status}" id="step-${n}" onclick="showWorkflowStep(${n})">
                 <div class="step-dot ${status}"></div>
                 <span style="font-weight:600;">Step ${num}.</span>
                 <span>${name}</span>
@@ -898,7 +926,7 @@
         if (!sessionId) return;
         showToast('正在导出...');
         try {
-            const resp = await fetch('/api/agent/workflow/export', {
+            const resp = await authFetch('/api/agent/workflow/export', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ session_id: sessionId, format }),
@@ -937,7 +965,7 @@
         if (!sessionId) return;
         const style = document.getElementById('language-style').value;
         try {
-            await fetch('/api/agent/workflow/set-language-style', {
+            await authFetch('/api/agent/workflow/set-language-style', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ session_id: sessionId, language_style: style }),
@@ -950,7 +978,7 @@
         if (!sessionId) return;
         showToast('正在提取扣分点...');
         try {
-            const resp = await fetch(`/api/agent/workflow/${sessionId}/extract-deductions`);
+            const resp = await authFetch(`/api/agent/workflow/${sessionId}/extract-deductions`);
             const data = await resp.json();
             if (data.success) {
                 deductionPoints = data.data.deduction_points || [];
@@ -1003,7 +1031,7 @@
         if (!sessionId) return;
         const selected = deductionPoints.filter(p => p.selected !== false);
         try {
-            const resp = await fetch('/api/agent/workflow/confirm-deductions', {
+            const resp = await authFetch('/api/agent/workflow/confirm-deductions', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1027,7 +1055,7 @@
         if (!sessionId) return;
         showToast('正在进行逻辑校对...');
         try {
-            const resp = await fetch(`/api/agent/workflow/${sessionId}/verify-logic`, { method: 'POST' });
+            const resp = await authFetch(`/api/agent/workflow/${sessionId}/verify-logic`, { method: 'POST' });
             const data = await resp.json();
             if (data.success) {
                 document.getElementById('logic-verification-content').textContent = data.data.verification_result;
@@ -1045,13 +1073,13 @@
         if (!sessionId) return;
         showToast('正在计算评分汇总...');
         try {
-            const resp = await fetch(`/api/agent/workflow/${sessionId}/score-summary`);
+            const resp = await authFetch(`/api/agent/workflow/${sessionId}/score-summary`);
             const data = await resp.json();
             if (data.success) {
                 const d = data.data;
                 document.getElementById('score-summary-content').innerHTML = `
                     <div style="font-size:1.2rem; margin-bottom:8px;">
-                        综合得分: <strong style="color:var(--accent);">${d.score_100}分</strong>
+                        综合得分: <strong style="color:var(--accent);">${d.score_100 == null ? '待核实' : d.score_100 + '分'}</strong>
                         &nbsp; 等级: <strong style="font-size:1.3rem; color:${d.grade === '优秀' ? '#22c55e' : d.grade === '良好' ? '#3b82f6' : d.grade === '合格' ? '#f59e0b' : '#ef4444'}">${d.grade}</strong>
                     </div>
                     <table style="width:100%; border-collapse:collapse; font-size:0.85rem;">
@@ -1073,7 +1101,7 @@
                             <td style="padding:6px;">合计</td>
                             <td style="text-align:right;">${d.total_full}</td>
                             <td style="text-align:right; color:var(--accent);">${d.total_score}</td>
-                            <td style="text-align:right;">${d.score_100}%</td>
+                            <td style="text-align:right;">${d.score_100 == null ? "—" : d.score_100 + "%"}</td>
                         </tr>
                     </table>`;
                 document.getElementById('score-summary-panel').classList.remove('hidden');
@@ -1151,7 +1179,7 @@
         if (!sessionId) return;
         showToast('正在加载指标体系...');
         try {
-            const resp = await fetch(`/api/agent/workflow/${sessionId}/indicators-for-scoring`);
+            const resp = await authFetch(`/api/agent/workflow/${sessionId}/indicators-for-scoring`);
             const data = await resp.json();
             if (data.success) {
                 const indicators = data.data.indicators;
@@ -1200,7 +1228,7 @@
         }
         if (!target) { showToast('请先至少为一个指标填写评分或原因', 'error'); return; }
         try {
-            const resp = await fetch('/api/agent/workflow/generate-indicator-analysis', {
+            const resp = await authFetch('/api/agent/workflow/generate-indicator-analysis', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1243,7 +1271,7 @@
         });
 
         try {
-            const resp = await fetch('/api/agent/workflow/save-indicator-scores', {
+            const resp = await authFetch('/api/agent/workflow/save-indicator-scores', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ session_id: sessionId, scores }),
@@ -1271,7 +1299,7 @@
         if (!sessionId) return;
         showToast('正在加载模板库...');
         try {
-            const resp = await fetch('/api/agent/workflow/templates');
+            const resp = await authFetch('/api/agent/workflow/templates');
             const data = await resp.json();
             if (data.success) {
                 document.getElementById('template-list').innerHTML = data.data.map(t => `
@@ -1293,7 +1321,7 @@
     async function importTemplate(tid) {
         if (!sessionId) return;
         try {
-            const resp = await fetch('/api/agent/workflow/templates/import', {
+            const resp = await authFetch('/api/agent/workflow/templates/import', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ session_id: sessionId, template_id: tid }),
@@ -1312,7 +1340,7 @@
         if (!name) return;
         const type = prompt('请输入模板类型（如：项目支出/部门整体/自定义）：', '自定义') || '自定义';
         try {
-            const resp = await fetch('/api/agent/workflow/templates/save', {
+            const resp = await authFetch('/api/agent/workflow/templates/save', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ session_id: sessionId, template_name: name, template_type: type }),
@@ -1329,7 +1357,7 @@
             const body = { session_id: sessionId, level, from_index: fromIdx, to_index: toIdx };
             if (parentL1 !== undefined) body.parent_l1_idx = parentL1;
             if (parentL2 !== undefined) body.parent_l2_idx = parentL2;
-            await fetch('/api/agent/workflow/reorder-indicators', {
+            await authFetch('/api/agent/workflow/reorder-indicators', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body),
@@ -1371,7 +1399,7 @@
         _dragFrom = -1;
         renderSectionOrder(window._sections, true);
         // Save order
-        fetch('/api/agent/workflow/report-order', {
+        authFetch('/api/agent/workflow/report-order', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ session_id: sessionId, sections: window._sections }),
@@ -1383,7 +1411,7 @@
         showToast('正在组装报告...');
         const includeSections = (window._sections || []).filter(s => s.enabled !== false).map(s => s.key);
         try {
-            const resp = await fetch('/api/agent/workflow/assemble-report', {
+            const resp = await authFetch('/api/agent/workflow/assemble-report', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ session_id: sessionId, show_title: true, include_sections: includeSections }),
@@ -1400,7 +1428,7 @@
 
     async function openReportAssembly() {
         if (!sessionId) return;
-        const resp = await fetch('/api/agent/workflow/' + sessionId + '/report-order');
+        const resp = await authFetch('/api/agent/workflow/' + sessionId + '/report-order');
         const data = await resp.json();
         if (data.success) renderSectionOrder(data.data, data.is_custom);
     }
@@ -1409,7 +1437,7 @@
         if (!sessionId) return;
         showToast('正在格式校对...');
         try {
-            const resp = await fetch('/api/agent/workflow/' + sessionId + '/format-check', { method: 'POST' });
+            const resp = await authFetch('/api/agent/workflow/' + sessionId + '/format-check', { method: 'POST' });
             const data = await resp.json();
             if (data.success) {
                 document.getElementById('logic-verification-content').textContent = data.data.check_result;
@@ -1424,7 +1452,7 @@
     async function openExportStyle() {
         if (!sessionId) return;
         try {
-            const resp = await fetch('/api/agent/workflow/' + sessionId + '/export-style');
+            const resp = await authFetch('/api/agent/workflow/' + sessionId + '/export-style');
             const data = await resp.json();
             if (data.success) {
                 document.getElementById('export-font').value = data.data.font_family || 'SimSun';
@@ -1440,7 +1468,7 @@
     async function saveExportStyle() {
         if (!sessionId) return;
         try {
-            await fetch('/api/agent/workflow/export-style', {
+            await authFetch('/api/agent/workflow/export-style', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1462,7 +1490,7 @@
         if (!moduleName) return;
         const key = 'custom_' + Date.now();
         try {
-            const resp = await fetch('/api/agent/workflow/add-custom-module', {
+            const resp = await authFetch('/api/agent/workflow/add-custom-module', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ session_id: sessionId, module_key: key, module_name: moduleName, content: '' }),
@@ -1477,7 +1505,7 @@
         if (!sessionId) return;
         showToast('正在加载指标体系...');
         try {
-            const resp = await fetch('/api/agent/workflow/' + sessionId + '/indicators-for-scoring');
+            const resp = await authFetch('/api/agent/workflow/' + sessionId + '/indicators-for-scoring');
             const data = await resp.json();
             if (!data.success) return;
 
