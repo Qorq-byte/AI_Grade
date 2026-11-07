@@ -518,6 +518,8 @@ def admin_list_workflows(
     db: Session = Depends(get_db),
 ):
     """管理员查看所有工作流"""
+    from backend.routes.agent_routes import _WORKFLOW_PROGRESS
+
     q = db.query(WorkflowSession)
     if status:
         q = q.filter(WorkflowSession.status == status)
@@ -540,7 +542,7 @@ def admin_list_workflows(
                     "user_id": w.user_id,
                     "project_name": w.project_name,
                     "status": w.status,
-                    "current_step": w.current_step,
+                    "current_step": _WORKFLOW_PROGRESS.get(w.session_id, {}).get("last_step", w.current_step),
                     "model_name": w.model_name,
                     "token_used": w.token_used,
                     "created_at": w.created_at.isoformat(),
