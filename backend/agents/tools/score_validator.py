@@ -2,6 +2,7 @@
 四维度分值校验工具
 严格按客户端需求实现分值分配的自动化校验
 """
+import math
 from typing import Dict, List, Optional, Any
 from loguru import logger
 from backend.agents.states.performance_state import (
@@ -123,7 +124,7 @@ class ScoreValidator:
 
         for l1 in level1:
             name = l1.get("name", "未命名")
-            l1_score = l1.get("score", 0) or 0
+            l1_score = score_number(l1.get("score")) or 0
             children = l1.get("children", []) or []
             l2_sum = self._sum_scores(children)
             l3_sum = self._sum_scores(self._collect_all_level([l1], 3))
@@ -157,7 +158,7 @@ class ScoreValidator:
         all_l2 = self._collect_all_level(level1, 2)
         for l2 in all_l2:
             name = l2.get("name", "未命名")
-            l2_score = l2.get("score", 0) or 0
+            l2_score = score_number(l2.get("score")) or 0
             children = l2.get("children", []) or []
             l3_sum = self._sum_scores(children)
 
@@ -232,7 +233,7 @@ class ScoreValidator:
     def _sum_scores(self, indicators: List[IndicatorInfo]) -> float:
         """计算指标列表的分值总和"""
         return round(
-            sum(ind.get("score", 0) or 0 for ind in indicators), 2
+            sum(score_number(ind.get("score")) or 0 for ind in indicators), 2
         )
 
     def _collect_all_level(
@@ -282,3 +283,52 @@ def validate_indicator_scores(indicator_system: IndicatorSystem) -> ScoreValidat
     """便捷校验函数"""
     validator = ScoreValidator()
     return validator.validate(indicator_system)
+
+def score_number(value):
+    """Use None for missing, malformed or non-finite scores. Zero is a score."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and 0 <= number <= 100 else None
+
+
+def actual_indicator_score(indicator, scores, indicator_id=None):
+    full = score_number(indicator.get("score", indicator.get("max_score")))
+    entry = scores.get(indicator_id or indicator.get("id"), {})
+    actual = score_number(entry.get("actual_score", indicator.get("actual_score")))
+    return actual if full is not None and actual is not None and actual <= full else None
+
+
+def indicator_tree_error(system):
+    """Validate required fields without inventing names, IDs or scores."""
+    ids = set()
+
+    def check(nodes):
+        if not isinstance(nodes, list) or not nodes:
+            return "指标列表为空或格式错误"
+        for node in nodes:
+            if not isinstance(node, dict):
+                return "指标必须是对象"
+            identifier, name = node.get("id"), node.get("name")
+            if not isinstance(identifier, str) or not identifier.strip() or identifier in ids:
+                return "指标 ID 缺失或重复"
+            if not isinstance(name, str) or not name.strip():
+                return "指标名称缺失"
+            ids.add(identifier)
+            if node.get("score") is not None and score_number(node["score"]) is None:
+                return "指标分值超出 0–100 或格式错误"
+            if node.get("children"):
+                error = check(node["children"])
+                if error:
+                    return error
+        return ""
+
+    return check(system.get("level1_indicators")) if isinstance(system, dict) else "指标体系必须是对象"
+
+
+def allocation_valid(validation):
+    """Treat total and hierarchy as hard checks, with allocation policy warnings separate."""
+    return all(result["passed"] for result in validation["validations"] if result["dimension"] != 4)
