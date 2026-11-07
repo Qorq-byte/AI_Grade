@@ -255,4 +255,3 @@ def compare_models(
         top_p=top_p,
     )
     return service.compare(prompt, system_prompt, chat_function)
-"
