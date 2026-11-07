@@ -637,7 +637,6 @@ def get_user_reports(current_user: User = Depends(get_current_user), db: Session
         WorkflowSession.user_id == current_user.id
     ).order_by(WorkflowSession.updated_at.desc()).all()
 
-    seen_sids = {r.session_id for r in records}
     status_map = {"completed": "已完成", "running": "运行中", "awaiting_approval": "待审批", "cancelled": "已取消"}
     result = [
         {
@@ -650,194 +649,73 @@ def get_user_reports(current_user: User = Depends(get_current_user), db: Session
         for r in records
     ]
 
-    # 补充内存中的活跃工作流（未持久化到DB的session）
-    try:
-        from backend.routes.agent_routes import active_workflows, _WORKFLOW_PROGRESS, _QUESTIONNAIRE_CACHE
-        for sid, wf in active_workflows.items():
-            if sid in seen_sids:
-                continue
-            try:
-                config = {"configurable": {"thread_id": sid}}
-                state_obj = wf.get_state(config)
-                pn = ""
-                status = "运行中"
-                if state_obj and getattr(state_obj, 'values', None):
-                    pn = state_obj.values.get("project_name", "")
-                    status_key = state_obj.values.get("workflow_status", "")
-                    if status_key == "completed":
-                        status = "已完成"
-                    elif status_key == "error":
-                        status = "已取消"
-                prog = _WORKFLOW_PROGRESS.get(sid)
-                if prog and prog.get("status") == "done":
-                    status = "已完成"
-                if not pn:
-                    pn = "未命名项目"
-                result.append({
-                    "session_id": sid,
-                    "project_name": pn,
-                    "status": status,
-                    "created_at": "",
-                    "updated_at": "",
-                })
-                seen_sids.add(sid)
-            except Exception:
-                pass
-
-        for sid, qdata in _QUESTIONNAIRE_CACHE.items():
-            if sid in seen_sids:
-                continue
-            result.append({
-                "session_id": sid,
-                "project_name": qdata.get("project_name", "未命名项目"),
-                "status": "已完成",
-                "created_at": "",
-                "updated_at": qdata.get("updated_at", ""),
-            })
-            seen_sids.add(sid)
-    except Exception as e:
-        logger.warning(f"get_user_reports: 内存数据加载失败: {e}")
-
-    # 独立从 state_backups 磁盘备份恢复记录（不依赖 agent_routes 导入）
-    try:
-        backup_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "state_backups"
-        )
-        logger.info(f"get_user_reports: 检查备份目录 {backup_dir}, exists={os.path.exists(backup_dir)}")
-        if os.path.exists(backup_dir):
-            for fname in os.listdir(backup_dir):
-                if not fname.endswith(".json"):
-                    continue
-                sid = fname[:-5]
-                if sid in seen_sids:
-                    continue
-                try:
-                    fpath = os.path.join(backup_dir, fname)
-                    with open(fpath, "r", encoding="utf-8") as f:
-                        backup = json.load(f)
-                    step_results = backup.get("step_results", {})
-                    qdata = backup.get("questionnaire", {})
-                    project_name = backup.get("project_name", "") or qdata.get("project_name", "") or "未命名项目"
-                    status = "已完成" if step_results else "待生成"
-                    result.append({
-                        "session_id": sid,
-                        "project_name": project_name,
-                        "status": status,
-                        "created_at": "",
-                        "updated_at": backup.get("updated_at", ""),
-                    })
-                    seen_sids.add(sid)
-                except Exception as e:
-                    logger.warning(f"get_user_reports: 读取备份文件 {fname} 失败: {e}")
-            logger.info(f"get_user_reports: 从备份恢复了 {len(result) - len(records)} 条记录, 总计 {len(result)} 条")
-    except Exception as e:
-        logger.warning(f"get_user_reports: 备份读取失败: {e}")
-
     return {"success": True, "data": result}
+
+
+def _delete_report_records(session_id: str, user_id: int, db: Session) -> None:
+    from backend.models.memory_models import ShortTermMemory, LongTermMemory, ConversationSummary
+    from backend.routes.agent_routes import _validate_session_id, _WORKFLOW_PROGRESS
+
+    _validate_session_id(session_id)
+    record = db.query(WorkflowSession).filter(
+        WorkflowSession.session_id == session_id, WorkflowSession.user_id == user_id,
+    ).first()
+    if record is None or record.session_id != session_id:
+        raise HTTPException(status_code=404, detail="报告不存在")
+    if session_id in _WORKFLOW_PROGRESS:
+        raise HTTPException(status_code=409, detail="工作流正在执行")
+    for model in (ShortTermMemory, LongTermMemory, ConversationSummary, QuestionnaireAnswer):
+        db.query(model).filter(model.session_id == session_id).delete(synchronize_session=False)
+    db.delete(record)
+
+
+def _remove_report_snapshot(session_id: str) -> None:
+    from backend.agents import performance_agent
+    from backend.routes.agent_routes import active_workflows, active_workflow_configs, _QUESTIONNAIRE_CACHE
+
+    workflow = active_workflows.pop(session_id, None)
+    active_workflow_configs.pop(session_id, None)
+    _QUESTIONNAIRE_CACHE.pop(session_id, None)
+    if workflow:
+        try:
+            workflow.close()
+        except Exception:
+            logger.exception("关闭已删除的工作流失败: {}", session_id)
+    try:
+        (performance_agent.STATE_BACKUP_DIR / f"{session_id}.json").unlink(missing_ok=True)
+    except OSError:
+        logger.exception("删除报告备份失败: {}", session_id)
 
 
 @router.delete("/reports/{session_id}")
 def delete_report(session_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """删除指定 session 的报告及相关数据"""
-    try:
-        # 删除数据库中的 WorkflowSession
-        ws = db.query(WorkflowSession).filter(
-            WorkflowSession.session_id == session_id,
-            WorkflowSession.user_id == current_user.id
-        ).first()
-        if ws:
-            # 删除关联的短/长期记忆、对话摘要
-            from backend.models.memory_models import ShortTermMemory, LongTermMemory, ConversationSummary
-            db.query(ShortTermMemory).filter(ShortTermMemory.session_id == session_id).delete(synchronize_session=False)
-            db.query(LongTermMemory).filter(LongTermMemory.session_id == session_id).delete(synchronize_session=False)
-            db.query(ConversationSummary).filter(ConversationSummary.session_id == session_id).delete(synchronize_session=False)
-            # 删除问卷答案
-            db.query(QuestionnaireAnswer).filter(QuestionnaireAnswer.session_id == session_id).delete(synchronize_session=False)
-            db.delete(ws)
-
-        # 清理内存中的活跃工作流和问卷缓存
-        try:
-            from backend.routes.agent_routes import active_agents, active_workflows, active_workflow_configs, _QUESTIONNAIRE_CACHE, _WORKFLOW_PROGRESS
-            if session_id in active_agents: del active_agents[session_id]
-            if session_id in active_workflows: del active_workflows[session_id]
-            if session_id in active_workflow_configs: del active_workflow_configs[session_id]
-            if session_id in _QUESTIONNAIRE_CACHE: del _QUESTIONNAIRE_CACHE[session_id]
-            if session_id in _WORKFLOW_PROGRESS: del _WORKFLOW_PROGRESS[session_id]
-        except Exception:
-            pass
-
-        db.commit()
-        # 同时删除磁盘备份文件，防止重新登录时从备份恢复已删除的记录
-        try:
-            backup_dir = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                "state_backups"
-            )
-            backup_file = os.path.join(backup_dir, f"{session_id}.json")
-            if os.path.exists(backup_file):
-                os.remove(backup_file)
-                logger.info(f"已删除备份文件: {backup_file}")
-        except Exception as e:
-            logger.warning(f"删除备份文件失败: {e}")
-        logger.info(f"报告已删除: {session_id}")
-        return {"success": True, "message": "报告已删除"}
-    except Exception as e:
-        db.rollback()
-        logger.error(f"删除报告失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+    _delete_report_records(session_id, current_user.id, db)
+    db.commit()
+    _remove_report_snapshot(session_id)
+    return {"success": True, "message": "报告已删除"}
 
 
 class BatchDeleteRequest(BaseModel):
     session_ids: list[str]
 
+
 @router.post("/reports/batch-delete")
 def batch_delete_reports(req: BatchDeleteRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """批量删除报告"""
-    deleted_count = 0
+    deleted = []
     errors = []
-    for session_id in req.session_ids:
+    for session_id in dict.fromkeys(req.session_ids):
         try:
-            ws = db.query(WorkflowSession).filter(
-                WorkflowSession.session_id == session_id,
-                WorkflowSession.user_id == current_user.id
-            ).first()
-            if ws:
-                from backend.models.memory_models import ShortTermMemory, LongTermMemory, ConversationSummary
-                db.query(ShortTermMemory).filter(ShortTermMemory.session_id == session_id).delete(synchronize_session=False)
-                db.query(LongTermMemory).filter(LongTermMemory.session_id == session_id).delete(synchronize_session=False)
-                db.query(ConversationSummary).filter(ConversationSummary.session_id == session_id).delete(synchronize_session=False)
-                db.query(QuestionnaireAnswer).filter(QuestionnaireAnswer.session_id == session_id).delete(synchronize_session=False)
-                db.delete(ws)
-                deleted_count += 1
-                try:
-                    from backend.routes.agent_routes import active_agents, active_workflows, active_workflow_configs, _QUESTIONNAIRE_CACHE, _WORKFLOW_PROGRESS
-                    for cache in [active_agents, active_workflows, active_workflow_configs, _QUESTIONNAIRE_CACHE, _WORKFLOW_PROGRESS]:
-                        if session_id in cache: del cache[session_id]
-                except Exception:
-                    pass
-            else:
-                errors.append(f"{session_id}: 未找到或无权限")
-            # 无论DB中是否存在，都尝试删除磁盘备份文件
-            try:
-                backup_dir = os.path.join(
-                    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                    "state_backups"
-                )
-                backup_file = os.path.join(backup_dir, f"{session_id}.json")
-                if os.path.exists(backup_file):
-                    os.remove(backup_file)
-                    logger.info(f"已删除备份文件: {backup_file}")
-            except Exception:
-                pass
-        except Exception as e:
-            errors.append(f"{session_id}: {str(e)}")
-    try:
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"批量删除失败: {str(e)}")
-    return {"success": True, "data": {"deleted": deleted_count, "errors": errors}, "message": f"成功删除 {deleted_count} 条记录"}
+            _delete_report_records(session_id, current_user.id, db)
+        except HTTPException as exc:
+            errors.append(f"{session_id}: {exc.detail}")
+        else:
+            deleted.append(session_id)
+
+    db.commit()
+    for session_id in deleted:
+        _remove_report_snapshot(session_id)
+    return {"success": True, "data": {"deleted": len(deleted), "errors": errors},
+            "message": f"成功删除 {len(deleted)} 条记录"}
 
 
 from backend.utils.log_utils import log_operation as _log_operation
