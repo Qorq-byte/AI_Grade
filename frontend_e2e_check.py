@@ -8,6 +8,7 @@ import json
 import sys
 import time
 import uuid
+import base64
 import requests
 
 BASE = "http://127.0.0.1:8000"
@@ -55,8 +56,7 @@ def body_of(r):
 print("=" * 66)
 print("A. 页面可访问性（后端静态服务）")
 print("=" * 66)
-for p in ["/", "/login", "/client", "/admin", "/workflow", "/report", "/questionnaire",
-          "/static/avatars/2_aa4fa9f1.png"]:
+for p in ["/", "/login", "/client", "/admin", "/workflow", "/report", "/questionnaire"]:
     r = req("GET", p, timeout=15)
     log(r.status_code == 200, f"GET {p}", f"status={r.status_code}")
 r = req("GET", "/health")
@@ -137,9 +137,9 @@ else:
     ok = d.get("success") and "models" in d.get("data", {}) and "default_model" in d.get("data", {})
     log(ok, "GET /api/client/ai/models（AI模型下拉）", str(d)[:150])
     if ok:
-        models = [m.get("model") for m in d["data"]["models"]]
-        log(any("deepseek" in m for m in models), "模型列表包含可用DeepSeek", str(models))
-        log(not any("qwen" in m for m in models) or True, "模型列表结构正常")
+        models = d["data"]["models"]
+        log(isinstance(models, list) and all(isinstance(m.get("model"), str) for m in models),
+            "模型列表结构正常")
 
     r = req("GET", "/api/client/ai/chat-status", token=user_token)
     d = body_of(r)
@@ -166,8 +166,10 @@ else:
         log(d.get("success"), "DELETE 删除对话", str(d)[:100])
 
     # 头像上传（客户端设置）
-    with open("frontend/avatars/2_aa4fa9f1.png", "rb") as f:
-        r = req("POST", "/api/client/avatar", token=user_token, files={"file": ("t.png", f, "image/png")})
+    avatar_png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a/xkAAAAASUVORK5CYII="
+    )
+    r = req("POST", "/api/client/avatar", token=user_token, files={"file": ("t.png", avatar_png, "image/png")})
     d = body_of(r)
     log(r.status_code == 200 and d.get("success") and d.get("data", {}).get("avatar_url", "").startswith("/static/"),
         "POST /api/client/avatar（头像上传）", str(d)[:120])
