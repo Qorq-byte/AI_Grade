@@ -95,6 +95,7 @@ def main():
         "temperature_profile": "normal",
         "top_p": 0.9,
     }
+    start = time.perf_counter()
     r = req("POST", "/api/agent/workflow/start-stream", token=token, json_body=body, timeout=None, stream=True)
     if r.status_code != 200:
         log(f"FAIL start-stream 状态码 {r.status_code}: {r.text[:300]}")
@@ -104,7 +105,7 @@ def main():
     completed = False
     errored = False
     buf = ""
-    start = time.time()
+    estimated_tokens = 0
     log("开始读取SSE流...")
     for chunk in r.iter_content(chunk_size=1024, decode_unicode=True):
         if not chunk:
@@ -134,6 +135,7 @@ def main():
                 elif etype == "complete":
                     session_id = ev.get("session_id", session_id)
                     completed = True
+                    estimated_tokens = ev.get("tokens_used", 0)
                     log(f"  工作流完成! 步骤数={ev.get('completed_steps')} tokens={ev.get('tokens_used')}")
                 elif etype == "error":
                     errored = True
@@ -144,14 +146,14 @@ def main():
                 break
         if completed or errored:
             break
-        if time.time() - start > 2400:
+        if time.perf_counter() - start > 2400:
             log("超时(40分钟)，中止")
             break
-    elapsed = time.time() - start
-    log(f"SSE流结束: {elapsed:.0f}s completed={completed} errored={errored} session={session_id}")
+    elapsed = time.perf_counter() - start
+    log(f"SSE流结束: {elapsed:.3f}s completed={completed} errored={errored} session={session_id}")
 
     results = {"session_id": session_id, "project_name": project_name, "completed": completed,
-               "elapsed_s": round(elapsed), "checks": []}
+               "elapsed_s": round(elapsed, 3), "estimated_output_tokens": estimated_tokens, "checks": []}
 
     def check(name, ok, extra=""):
         results["checks"].append({"name": name, "ok": bool(ok), "extra": extra[:200]})
@@ -232,8 +234,10 @@ def main():
     # 10. 问卷提交（问卷页submit）
     answers = []
     for i, q in enumerate(qlist[:5]):
-        qid = q.get("id") if isinstance(q, dict) else f"q{i}"
-        answers.append({"question_id": str(qid), "answer": 4})
+        answers.append({
+            "question_id": q.get("question_id") or q["id"],
+            "selected_level_index": 4,
+        })
     r = req("POST", "/api/agent/workflow/questionnaire/submit", token=token,
             json_body={"session_id": session_id, "answers": answers})
     d = bof(r)

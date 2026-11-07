@@ -16,7 +16,7 @@ def test(name, fn):
     global passed, failed
     try:
         result = fn()
-        if result:
+        if result is True:
             print(f"  PASS: {name}")
             passed += 1
         else:
@@ -63,16 +63,16 @@ print("=" * 60)
 test("首页加载", lambda: expect_code(api("GET", "/"), 200))
 
 test_username = f"testuser_{uuid.uuid4().hex[:8]}"
-test_password = "test123456"
+test_password = "Test#123456"
 reg_data = {"username": test_username, "password": test_password, "phone": f"138{uuid.uuid4().hex[:8]}"}
 reg_resp = api("POST", "/api/auth/register", reg_data)
-test("注册新用户", lambda: expect_success(reg_resp, 201))
+test("注册新用户", lambda: expect_success(reg_resp))
 
 reg_resp2 = api("POST", "/api/auth/register", reg_data)
 test("重复注册应失败", lambda: expect_code(reg_resp2, 400))
 
 login_resp = api("POST", "/api/auth/login", {"username": test_username, "password": test_password})
-test("登录", lambda: expect_success(login_resp))
+test("登录", lambda: expect_success(login_resp) == True and bool(login_resp.json().get("data", {}).get("access_token")))
 user_token = login_resp.json().get("data", {}).get("access_token", "")
 
 test("错误密码登录应失败", lambda: expect_code(

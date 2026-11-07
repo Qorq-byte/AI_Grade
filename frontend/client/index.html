@@ -262,7 +262,10 @@
     <select class="wf-select" id="wfTemperature" style="width:140px"><option value="normal">温度：正常</option><option value="tight">温度：严谨</option><option value="creative">温度：发散</option></select>
     <select class="wf-select" id="wfTopP" style="width:120px"><option value="0.9">Top-P：0.9</option><option value="0.8">Top-P：0.8</option><option value="0.95">Top-P：0.95</option></select>
     <button class="btn-primary" id="wfStartBtn" onclick="startWorkflow()">开始工作流</button>
-    <button class="btn-stop" id="wfStopBtn" style="display:none" onclick="stopWorkflow()">终止</button>
+    <label><input type="checkbox" id="wfUseRag"> 知识库</label>
+    <label><input type="checkbox" id="wfRequireApproval"> 步骤 3、6、11 人工确认</label>
+    <button class="btn-stop" id="wfStopBtn" style="display:none" onclick="stopWorkflow()">刷新状态</button>
+    <button class="btn-stop" id="wfRetryBtn" hidden onclick="runWorkflowAction('retry')">重试失败步骤</button>
     <div class="wf-progress" id="wfProgress" style="display:none;flex:1"><div class="wf-progress-bar"><div class="wf-progress-fill" id="wfProgressFill" style="width:0%"></div></div><span class="wf-progress-text" id="wfProgressText">0/14</span></div>
 </div>
 
@@ -381,6 +384,7 @@
     <input type="file" id="avatarUpload" accept="image/*" style="display:none" onchange="handleAvatarUpload(event)">
     <input type="file" id="fileUpload" accept="image/*" style="display:none" onchange="handleFileUpload(event)">
 
+    <script src="/static/workflow/sse.js"></script>
     <script>
         // 全局JS错误捕获 - 在页面上显示错误帮助调试
         var _jsErrors=[];window.addEventListener('error',function(e){var m=(e.message||'') + ' at ' + (e.filename||'') + ':' + (e.lineno||''); _jsErrors.push(m); console.error('[JS Error]',m); var er=document.getElementById('jsErrorBanner'); if(er){ er.textContent='JS错误: '+m+' (共'+_jsErrors.length+'个)'; er.style.display='block'; } });
@@ -398,6 +402,18 @@
             if(e instanceof TypeError)throw new Error('网络连接失败，请检查网络');
             throw e
         })}
+        async function downloadExport(fileName) {
+            const response = await fetch('/api/agent/download/' + encodeURIComponent(fileName), {
+                headers: { Authorization: 'Bearer ' + getToken() },
+            });
+            if (!response.ok) throw new Error('下载失败（HTTP ' + response.status + '）');
+            const url = URL.createObjectURL(await response.blob());
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = fileName;
+            link.click();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }
         function uploadApi(u,f){var h={},t=getToken();if(t)h['Authorization']='Bearer '+t;return fetch(u,{method:'POST',headers:h,body:f}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'上传失败');return d})})}
         function showToast(msg,tp){var el=document.createElement('div');el.className='toast '+(tp||'success');el.textContent=msg;document.body.appendChild(el);setTimeout(function(){el.remove()},3000)}
         function esc(t){var d=document.createElement('div');d.textContent=t;return d.innerHTML}
@@ -405,7 +421,7 @@
         var currentUserData=null,isChatEnabled=true,isCollapsed=false,isMobileOpen=false,currentConversationId=null,conversations=[],isRecording=false,recordingTimer=null,recordingSeconds=0,currentMode='',speechRecognition=null,chatStatusPollTimer=null,notificationPollTimer=null;
 
         // ====== WF State ======
-        var wfSessionId=null,wfRunning=false,wfCompletedSteps=[],wfStepContents={},wfApprovalStep=null,wfUploadedFiles=[],wfAbortController=null
+        var wfSessionId=null,wfRunning=false,wfCurrentStep=0,wfStatus="",wfStatusController=null,wfVersions={},wfEvidence={},wfReviewSteps=[],wfCompletedSteps=[],wfStepContents={},wfApprovalStep=null,wfUploadedFiles=[],wfAbortController=null
 
         function initWfStepper(){var l=document.getElementById('wfStepperList');if(!l)return;l.innerHTML='';for(var i=1;i<=14;i++){(function(sn){var div=document.createElement('div');div.className='wf-step';div.id='wfStep'+sn;div.innerHTML='<div class="wf-step-dot">'+sn+'</div><span class="wf-step-name">'+C.STEP_NAMES[sn]+'</span>';div.onclick=function(){selectWfStep(sn)};l.appendChild(div)})(i)}}
 
@@ -422,7 +438,19 @@
         var showLayout=(sn>=1);
         if(showLayout)inner+='<div class="layout-selector" style="display:flex" id="wfLayoutSel"><button class="active" onclick="setLayoutMode(\'classic\',this)">经典排版</button><button onclick="setLayoutMode(\'auto\',this)">自动排版</button></div>';
         inner+=buildStepSpecificPanel(sn,txt);
-        inner+='<div class="wf-content-inner">'+renderMd(txt)+'</div>';
+        if(wfEditMode==='manual' && sn<14 && sn!==4){
+            inner+='<textarea id="wfManualContent" class="input-field" rows="12" style="width:100%">'+esc(txt)+'</textarea>';
+            inner+='<button class="btn-primary" onclick="saveManualStep('+sn+')">保存人工修改</button>';
+        }else{
+            inner+='<div class="wf-content-inner">'+renderMd(txt)+'</div>';
+        }
+        if(wfEvidence[sn]?.length){
+            inner+='<details><summary>证据出处</summary><ul>'+wfEvidence[sn].map(hit =>
+                '<li>['+esc(hit.id)+'] '+esc(hit.source)+' · '+esc(hit.locator)+'</li>').join('')+'</ul></details>';
+        }
+        if(wfReviewSteps.includes(sn)){
+            inner+='<p>上游内容已修改，本步骤待复核。</p><button class="btn-primary" onclick="confirmStepReview('+sn+')">确认已复核</button>';
+        }
     }
     inner+='</div>';
     inner+=buildStepChat(sn);
@@ -715,7 +743,7 @@ function renderQuestionnaireDirect(qs, sid, pn){
     var h='<div class="content-header"><h1>问卷填写</h1><p>项目：'+esc(pn||'未命名')+' | 共 '+qs.length+' 题 <button class="btn-sm" onclick="backToQuestionnaireList()" style="margin-left:12px">返回列表</button></p></div><div style="max-height:calc(100vh - 200px);overflow-y:auto">';
     var levels=['非常不满意','不满意','一般','满意','非常满意'];
     for(var i=0;i<qs.length;i++){
-        var q=qs[i], qid=esc(q.question_id||''+i), qt=q.question_text||q.question||q.text||'题目'+(i+1);
+        var q=qs[i], qid=esc(q.question_id||q.id||''+i), qt=q.question_text||q.question||q.text||'题目'+(i+1);
         h+='<div class="content-panel" style="background:#fafbff"><div class="panel-title" style="font-size:14px">第'+(i+1)+'题：'+esc(qt)+'</div><div class="panel-content">';
         h+='<div style="display:flex;gap:8px;flex-wrap:wrap">';
         for(var li=0;li<5;li++)h+='<label style="cursor:pointer;padding:6px 14px;border:1px solid #e2e8f0;border-radius:20px;font-size:13px;display:flex;align-items:center;gap:6px;transition:all .2s" onmouseover="this.style.borderColor=\'#667eea\';this.style.background=\'#ebf5ff\'" onmouseout="var r=document.querySelector(\'input[name=q_'+i+']:checked\');if(!r||r.value!==\''+li+'\'){this.style.borderColor=\'#e2e8f0\';this.style.background=\'white\'}"><input type="radio" name="q_'+i+'" value="'+li+'" onchange="markAnswered(this)" style="accent-color:#667eea">'+levels[li]+'</label>';
@@ -729,7 +757,28 @@ function setEditMode(mode,el){
     el.parentElement.querySelectorAll('button').forEach(function(b){b.classList.remove('active')});
     el.classList.add('active');
     wfEditMode=mode;
-    showToast('编辑模式：'+(mode==='ai'?'AI辅助优化':'人工直接修改'));
+    const step = document.querySelector('.wf-step.active');
+    if(step) selectWfStep(Number(step.id.replace('wfStep','')));
+}
+
+async function saveManualStep(step) {
+    try {
+        const result = await api('PUT', '/api/agent/workflow/'+encodeURIComponent(wfSessionId)+'/steps/'+step,
+            {content:document.getElementById('wfManualContent').value, version:wfVersions[step] || 1});
+        wfStepContents[step] = result.data.refined_content;
+        wfVersions[step] = result.data.version;
+        wfReviewSteps = result.data.review_steps;
+        selectWfStep(step);
+        showToast(wfReviewSteps.length ? '修改已保存，下游待复核' : '修改已保存');
+    } catch(error) { showToast(error.message, 'error'); }
+}
+
+async function confirmStepReview(step) {
+    try {
+        const result = await api('POST', '/api/agent/workflow/'+encodeURIComponent(wfSessionId)+'/steps/'+step+'/review');
+        wfReviewSteps = result.data.review_steps;
+        selectWfStep(step);
+    } catch(error) { showToast(error.message, 'error'); }
 }
 
 var wfIndicatorType='项目支出指标体系',wfPerspective='management',wfTemplate='standard',wfEditMode='ai',wfLanguageStyle='neutral',wfAssemblyOrder=[1,2,3,4,5,6,7,8];
@@ -898,7 +947,7 @@ function exportStep(sn,fmt){
     if(btn){btn.disabled=true;btn.dataset.origText=btn.textContent;btn.textContent='导出中...'}
     var body={session_id:wfSessionId,format:fmt,project_name:(document.getElementById('wfProjectName').value||'绩效评价报告'),step_number:parseInt(sn),step_content:wfStepContents[sn]};
     api('POST','/api/agent/workflow/export',body).then(function(r){
-        if(r.data&&r.data.file_path){showToast('步骤'+sn+' '+(fmt==='word'?'Word':'PDF')+'导出成功','success');window.location.href='/api/agent/download/'+encodeURIComponent(r.data.file_name)}
+        if(r.data&&r.data.file_path){showToast('步骤'+sn+' '+(fmt==='word'?'Word':'PDF')+'导出成功','success');return downloadExport(r.data.file_name)}
         else{showToast('导出失败：未获取到文件','error')}
     }).catch(function(e){showToast('导出失败: '+e.message,'error')})
     .finally(function(){if(btn){btn.disabled=false;if(btn.dataset.origText)btn.textContent=btn.dataset.origText}})
@@ -935,7 +984,7 @@ function refineStepContent(stepNum, msgText, isApprovalReject){
     })
 }
 
-        function wfStepStatus(sn){if(wfCompletedSteps.indexOf(sn)>=0)return 'done';if(wfRunning&&sn===Math.max.apply(null,wfCompletedSteps.length?wfCompletedSteps:[0])+1)return 'doing';return 'pending'}
+        function wfStepStatus(sn){if(wfCompletedSteps.indexOf(sn)>=0)return 'done';if(wfRunning&&sn===wfCurrentStep)return 'doing';return 'pending'}
         function renderMd(t){if(!t)return'';var h=t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');h=h.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');h=h.replace(/### (.+)/g,'<h3>$1</h3>');h=h.replace(/## (.+)/g,'<h2>$1</h2>');h=h.replace(/# (.+?)\n/g,'<h1>$1</h1>');h=h.replace(/- (.+)/g,'&bull; $1');h=h.replace(/\n/g,'<br>');return h}
 
         function updateWfStepper(){
@@ -943,7 +992,7 @@ function refineStepContent(stepNum, msgText, isApprovalReject){
                 if(st==='done')s.classList.add('done');else if(st==='doing')s.classList.add('doing');if(i===wfApprovalStep&&st==='done')s.classList.add('approval');
                 if(wfCompletedSteps.indexOf(i)<0&&i===wfApprovalStep)s.classList.add('approval');
             }
-            var done=wfCompletedSteps.length;document.getElementById('wfProgressText')&&(document.getElementById('wfProgressText').textContent=done+'/14');
+            var done=wfCompletedSteps.length;document.getElementById('wfProgressText')&&(document.getElementById('wfProgressText').textContent='已完成 '+done+' / 14 步 · '+(workflowStatusLabels[wfStatus]||wfStatus)+(wfCurrentStep?' · '+C.STEP_NAMES[wfCurrentStep]:''));
             document.getElementById('wfProgressFill')&&(document.getElementById('wfProgressFill').style.width=Math.round(done/14*100)+'%');
         }
 
@@ -968,7 +1017,10 @@ function refineStepContent(stepNum, msgText, isApprovalReject){
             var sbtn=document.getElementById('wfStartBtn');if(sbtn){sbtn.disabled=true;sbtn.textContent='启动中...'}
             var pn=document.getElementById('wfProjectName').value.trim()||'未命名项目';
             // 重置状态，准备新评价
-            wfSessionId=null;wfCompletedSteps=[];wfStepContents={};wfApprovalStep=null;
+            wfStatusController?.abort();
+            wfSessionId=newWorkflowSession();sessionStorage.setItem(workflowSessionKey,wfSessionId);
+            wfCompletedSteps=[];wfStepContents={};wfVersions={};wfEvidence={};wfReviewSteps=[];wfApprovalStep=null;wfCurrentStep=0;wfStatus='running';
+            document.getElementById('wfRetryBtn').hidden=true;
             window._currentQuestionData=null;  // 清空问卷缓存，确保下次切换Tab重新加载
             initWfStepper();document.getElementById('wfLayout').style.display='flex';
             document.getElementById('wfFileZone').style.display='none';
@@ -980,29 +1032,22 @@ function refineStepContent(stepNum, msgText, isApprovalReject){
             var paths=[];for(var i=0;i<wfUploadedFiles.length;i++)paths.push(wfUploadedFiles[i].path);
 var md=document.getElementById('wfModel').value,mo=document.getElementById('wfMode').value;
 var tp=document.getElementById('wfTemperature').value,topP=parseFloat(document.getElementById('wfTopP').value);
-var body={project_name:pn,file_paths:paths,model_name:md,comparison_mode:mo,temperature_profile:tp,top_p:topP,indicator_type:wfIndicatorType,perspective:wfPerspective,template:wfTemplate,edit_mode:wfEditMode};
+var body={session_id:wfSessionId,use_rag:document.getElementById("wfUseRag").checked,require_approval:document.getElementById("wfRequireApproval").checked,project_name:pn,file_paths:paths,model_name:md,comparison_mode:mo,temperature_profile:tp,top_p:topP,indicator_type:wfIndicatorType,perspective:wfPerspective,template:wfTemplate,edit_mode:wfEditMode};
             wfAbortController=new AbortController();
 
             fetch('/api/agent/workflow/start-stream',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+t},body:JSON.stringify(body),signal:wfAbortController.signal})
-            .then(function(r){
-                var reader=r.body.getReader(),decoder=new TextDecoder(),buf='';
-                function pump(){return reader.read().then(function(_ref){var done=_ref.done,value=_ref.value;if(done){handleWfComplete();return}
-                    buf+=decoder.decode(value,{stream:true});var lines=buf.split('\n');buf=lines.pop()||'';
-                    for(var i=0;i<lines.length;i++){var ln=lines[i].trim();if(!ln||ln.indexOf('data:')!==0)continue;
-                        try{var d=JSON.parse(ln.substring(5));handleSSEEvent(d)}catch(e){}}
-                    if(!done)return pump()})}
-                return pump()
-            }).catch(function(e){if(e.name!=='AbortError'){showToast('工作流错误: '+e.message,'error');resetWfUI()}})
+            .then(function(r){return readWorkflowEvents(r, handleSSEEvent)
+            }).catch(function(e){if(e.name!=='AbortError'){showToast(e.message,'error');restoreWorkflow()}})
         }
 
         function handleSSEEvent(d){
             if(!wfRunning)return;
             if(d.event==='step_start'){
                 wfSessionId=d.session_id;
-                var sn=d.step_number;if(wfCompletedSteps.indexOf(sn)<0)wfCompletedSteps.push(sn);updateWfStepper();
+                var sn=d.step_number;wfCurrentStep=sn;wfStatus="running";updateWfStepper();
                 var c=document.getElementById('wfContent');c&&(c.innerHTML='<div class="wf-empty"><h3>'+C.STEP_NAMES[sn]+'</h3><p>AI正在生成中...</p></div>')
             }if(d.event==='token_update'){if(currentUserData){currentUserData.tokens_used=d.tokens_used||0}var stEl=document.getElementById('settingsTokens');if(stEl)stEl.textContent=currentUserData?currentUserData.tokens_used:0;var sbEl=document.getElementById('sidebarTokenCount');if(sbEl)sbEl.textContent=currentUserData?currentUserData.tokens_used:0;return}else if(d.event==='step_complete'){
-                var sn=d.step_number;wfStepContents[sn]=d.content||d.content_preview||'';updateWfStepper();selectWfStep(sn)
+                var sn=d.step_number;if(wfCompletedSteps.indexOf(sn)<0)wfCompletedSteps.push(sn);wfStepContents[sn]=d.content||d.content_preview||'';wfEvidence[sn]=d.evidence||[];updateWfStepper();selectWfStep(sn)
             }else if(d.event==='approval_required'){
                 var sn=d.step_number;wfApprovalStep=sn;updateWfStepper();
                 document.getElementById('wfApprovalTitle').textContent='确认：'+C.STEP_NAMES[sn];
@@ -1013,12 +1058,11 @@ var body={project_name:pn,file_paths:paths,model_name:md,comparison_mode:mo,temp
                 showToast('步骤'+d.step_number+': '+d.message,'error')
             }else if(d.event==='error'){
                 var stepLabel=d.step_number>0?('步骤'+d.step_number+' '+(d.step_name||'')+' - '):'';
-if(d.message.indexOf('超时')>=0||d.message.indexOf('timeout')>=0){showToast(stepLabel+'AI服务响应超时，正在重试...','warn')}
-else if(d.message.indexOf('繁忙')>=0){showToast(stepLabel+'AI服务繁忙，将自动重试...','warn')}
-else{showToast(stepLabel+d.message,'error');wfRunning=false;resetWfUI()}
+                showToast(stepLabel + d.message, 'error');
+                restoreWorkflow();
             }else if(d.event==='waiting_approval'){
                 wfSessionId=d.session_id;
-                var asn=d.approval_step;
+                var asn=d.approval_step;wfCurrentStep=asn;wfStatus='awaiting_approval';updateWfStepper();
                 if(!wfApprovalStep){wfApprovalStep=asn;updateWfStepper();
                     document.getElementById('wfApprovalTitle').textContent='确认：'+C.STEP_NAMES[asn];
                     document.getElementById('wfApprovalSubtitle').textContent='请审核步骤'+asn+'的生成内容，确认后继续执行后续步骤';
@@ -1028,10 +1072,9 @@ else{showToast(stepLabel+d.message,'error');wfRunning=false;resetWfUI()}
                 document.getElementById('wfStartBtn').style.display='none';document.getElementById('wfStopBtn').style.display='';document.getElementById('wfProgress').style.display='';
                 showToast('工作流暂停于步骤'+asn+'，请审核并确认','warn')
             }else if(d.event==='complete'){
-                wfSessionId=d.session_id;wfRunning=false;updateWfStepper();
+                wfSessionId=d.session_id;wfRunning=false;wfStatus='completed';updateWfStepper();
                 var ex=document.getElementById('wfExports');if(ex)ex.style.display='flex';
                 document.getElementById('wfStartBtn').style.display='';document.getElementById('wfStopBtn').style.display='none';
-                document.getElementById('wfProgress').style.display='none';
                 showToast('工作流执行完成！','success');
                 handleWfComplete()
             }
@@ -1047,40 +1090,67 @@ else{showToast(stepLabel+d.message,'error');wfRunning=false;resetWfUI()}
             setTimeout(function(){loadUserData()},1000)
         }
 
-        function approveWorkflow(approved){
-            document.getElementById('wfApprovalModal').style.display='none';
-            if(!approved){
-                var fb=document.getElementById('wfApprovalFeedback'),notes=fb?fb.value.trim():'';
-                if(!notes){showToast('请填写修改意见后再提交','warn');document.getElementById('wfApprovalModal').style.display='flex';return}
-                showToast('正在提交修改意见并重新生成该步骤...','success');
-                refineStepContent(wfApprovalStep, notes, true);
-                wfApprovalStep=null;
-                return;
-            }
-            var fb=document.getElementById('wfApprovalFeedback').value.trim();
-            showToast('正在继续执行工作流，请稍候...','success');
-            api('POST','/api/agent/workflow/approve',{session_id:wfSessionId,approved:approved,feedback:fb||''}).then(function(r){
-                if(r.success){
-                    wfApprovalStep=null;
-                    // 更新各步骤内容
-                    if(r.data&&r.data.step_results){
-                        var stp=r.data.step_results;
-                        for(var k in stp){wfStepContents[parseInt(k)]=stp[k].content||''}
-                    }
-                    // 更新已完成步骤列表
-                    if(r.data&&r.data.completed_steps){wfCompletedSteps=r.data.completed_steps}
-                    updateWfStepper();
-                    showToast('已确认，工作流继续执行','success');
-                    if(r.data.final_report){
-                        wfRunning=false;
-                        handleWfComplete();
-                    }
-                }
-            }).catch(function(e){showToast('审批失败: '+e.message,'error')})
+        function approveWorkflow(approved) {
+            const feedback = document.getElementById('wfApprovalFeedback').value.trim();
+            runWorkflowAction('approve', {approved, feedback, background:true, approval_step:wfApprovalStep});
         }
 
-        function stopWorkflow(){if(!confirm('确定要终止工作流吗？'))return;
-            if(wfAbortController){wfAbortController.abort();wfAbortController=null}wfUploadedFiles=[];['img','pdf','doc'].forEach(function(t){renderWfFilesByType(t)});resetWfUI();showToast('工作流已终止','success')}
+        async function runWorkflowAction(action, fields = {}) {
+            try {
+                await api('POST', '/api/agent/workflow/' + action, {session_id:wfSessionId, ...fields});
+            } catch (error) {
+                showToast(error.message, 'error');
+            }
+            restoreWorkflow();
+        }
+
+        function restoreWorkflow() {
+            if (!wfSessionId) return;
+            wfStatusController?.abort();
+            wfStatusController = new AbortController();
+            const request = (url, options) => fetch(url, {...options, headers:{Authorization:'Bearer '+getToken()}});
+            watchWorkflowStatus(wfSessionId, request, data => {
+                wfStatus = data.status;
+                wfRunning = ['running','retrying','awaiting_approval','paused'].includes(wfStatus);
+                document.getElementById('wfStartBtn').disabled = wfRunning;
+                document.getElementById('wfRetryBtn').hidden = !data.retryable;
+                if (wfStatus === 'not_found') {
+                    sessionStorage.removeItem(workflowSessionKey);
+                    return;
+                }
+                document.getElementById('wfProgress').style.display = 'flex';
+                document.getElementById('wfLayout').style.display = 'flex';
+                if (data.project_name) document.getElementById('wfProjectName').value = data.project_name;
+                wfCompletedSteps = data.completed_steps;
+                wfCurrentStep = data.current_step;
+                for (const step of data.step_summaries) {
+                    if ('content' in step) wfStepContents[step.step_number] = step.content;
+                    wfVersions[step.step_number] = step.version;
+                    if (step.evidence) wfEvidence[step.step_number] = step.evidence;
+                }
+                wfReviewSteps = data.review_steps;
+                wfApprovalStep = null;
+                if (data.requires_approval) {
+                    handleSSEEvent({event:'waiting_approval', session_id:wfSessionId, approval_step:data.approval_step});
+                } else {
+                    document.getElementById('wfApprovalModal').style.display = 'none';
+                }
+                updateWfStepper();
+                if (wfStatus === 'completed') {
+                    document.getElementById('wfExports').style.display = 'flex';
+                    if (wfCompletedSteps.length) selectWfStep(wfCompletedSteps.at(-1));
+                }
+                if (data.review_steps.length) showToast('待复核步骤：' + data.review_steps.join('、'), 'warn');
+            }, () => {
+                wfStatus = '浏览器连接中断，正在恢复进度…';
+                updateWfStepper();
+            }, wfStatusController.signal);
+        }
+
+        function stopWorkflow() {
+            wfAbortController?.abort();
+            restoreWorkflow();
+        }
 
         function resetWfUI(){wfRunning=false;var sbtn=document.getElementById('wfStartBtn');if(sbtn){sbtn.disabled=false;sbtn.textContent='开始评价'}document.getElementById('wfStartBtn').style.display='';document.getElementById('wfStopBtn').style.display='none';document.getElementById('wfProgress').style.display='none';document.getElementById('wfFileZone').style.display='';document.getElementById('wfLayout').style.display='none';updateWfStepper()}
 
@@ -1090,7 +1160,7 @@ else{showToast(stepLabel+d.message,'error');wfRunning=false;resetWfUI()}
             btns.forEach(function(b){b.disabled=true;b.dataset.origText=b.textContent;b.textContent='导出中...'});
             var body={session_id:wfSessionId,format:fmt,project_name:(document.getElementById('wfProjectName').value||'绩效评价报告')};
             api('POST','/api/agent/workflow/export',body).then(function(r){
-                if(r.data&&r.data.file_path){showToast('报告导出成功','success');window.location.href='/api/agent/download/'+encodeURIComponent(r.data.file_name)}
+                if(r.data&&r.data.file_path){showToast('报告导出成功','success');return downloadExport(r.data.file_name)}
                 else{showToast('导出失败：未获取到文件','error')}
             }).catch(function(e){showToast('导出失败: '+e.message,'error')})
             .finally(function(){btns.forEach(function(b){b.disabled=false;if(b.dataset.origText)b.textContent=b.dataset.origText})})
@@ -1228,7 +1298,7 @@ function exportExistingReport(sid,fmt,pn){
     var btn=event&&event.target;
     if(btn){btn.disabled=true;btn.dataset.origText=btn.textContent;btn.textContent='导出中...'}
     api('POST','/api/agent/workflow/export',{session_id:sid,format:fmt,project_name:pn}).then(function(r){
-        if(r.success&&r.data&&r.data.file_name){showToast('报告导出成功','success');window.location.href='/api/agent/download/'+encodeURIComponent(r.data.file_name)}
+        if(r.success&&r.data&&r.data.file_name){showToast('报告导出成功','success');return downloadExport(r.data.file_name)}
         else{showToast('导出失败：未获取到文件','error')}
     }).catch(function(e){showToast('导出失败: '+e.message,'error')})
     .finally(function(){if(btn){btn.disabled=false;if(btn.dataset.origText)btn.textContent=btn.dataset.origText}})
@@ -1374,7 +1444,7 @@ function submitQuestionnaire(sid,total){
     for(var i=0;i<total;i++){
         var rb=document.querySelector('input[name=q_'+i+']:checked');
         if(!rb){showToast('请回答第'+(i+1)+'题','error');return}
-        var actualQid=window._currentQuestionData?(window._currentQuestionData[i]?.question_id||''+i):(''+i);
+        var actualQid=window._currentQuestionData?(window._currentQuestionData[i]?.question_id||window._currentQuestionData[i]?.id||''+i):(''+i);
         var actualQtext=window._currentQuestionData?(window._currentQuestionData[i]?.question_text||''):'';
         var actualQtype=window._currentQuestionData?(window._currentQuestionData[i]?.question_type||'likert'):'likert';
         answers.push({question_id:actualQid,question_text:actualQtext,question_type:actualQtype,selected_level_index:parseInt(rb.value)})
@@ -1402,7 +1472,10 @@ document.addEventListener('DOMContentLoaded',function(){
         document.body.appendChild(vtag);
 
         var u=getUser();if(!u){window.location.href='/login?redirect=/client';return}
-        initSpeechRecognition();initWfStepper();loadUserData();checkAiChatStatus();loadConversations();loadDashboardData();loadRecentActivity();startNotificationPoll();loadAiModels();chatStatusPollTimer=setInterval(checkAiChatStatus,30000);
+        initSpeechRecognition();initWfStepper();
+        wfSessionId=new URLSearchParams(location.search).get('session') || sessionStorage.getItem(workflowSessionKey);
+        if(wfSessionId) restoreWorkflow();
+        loadUserData();checkAiChatStatus();loadConversations();loadDashboardData();loadRecentActivity();startNotificationPoll();loadAiModels();chatStatusPollTimer=setInterval(checkAiChatStatus,30000);
 
         setTimeout(function(){
             var tag=document.getElementById('jsStatusTag');

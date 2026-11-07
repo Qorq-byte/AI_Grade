@@ -24,6 +24,28 @@ class CleanupService:
     RETENTION_DAYS = 90  # 默认保留90天
 
     @staticmethod
+    def _cleanup_upload_dirs(cutoff_date: datetime, stats: Dict) -> None:
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        for name in ("uploads", "backend/uploads", "frontend/uploads"):
+            upload_dir = os.path.join(base_dir, name)
+            for root, _, files in os.walk(upload_dir, topdown=False):
+                for filename in files:
+                    path = os.path.join(root, filename)
+                    try:
+                        info = os.stat(path)
+                        if datetime.fromtimestamp(info.st_mtime, tz=timezone.utc) < cutoff_date:
+                            os.remove(path)
+                            stats["freed_disk_bytes"] += info.st_size
+                            stats["deleted_files"] += 1
+                    except OSError as exc:
+                        stats["errors"].append(f"删除上传文件失败 {path}: {exc}")
+                if root != upload_dir:
+                    try:
+                        os.rmdir(root)
+                    except OSError:
+                        pass
+
+    @staticmethod
     def cleanup_expired_files(db: Session, retention_days: int = None) -> Dict:
         """
         清理过期的工作流文件和数据记录
@@ -66,7 +88,7 @@ class CleanupService:
             deleted_user_count = len(expired_user_ids)
 
             if not expired_session_ids:
-                logger.info("没有找到过期的文件需要清理")
+                CleanupService._cleanup_upload_dirs(cutoff_date, stats)
                 return stats
 
             logger.info(
@@ -96,35 +118,7 @@ class CleanupService:
                 ProjectFile.created_at < cutoff_date
             ).delete(synchronize_session=False)
 
-            # 删除上传目录中的过期文件
-            upload_dirs = ["uploads", "backend/uploads", "frontend/uploads"]
-            for upload_dir_name in upload_dirs:
-                base_dir = os.path.dirname(os.path.dirname(os.path.dirname(
-                    os.path.abspath(__file__)
-                )))
-                upload_dir = os.path.join(base_dir, upload_dir_name)
-                if not os.path.exists(upload_dir):
-                    continue
-                for root, dirs, files in os.walk(upload_dir, topdown=False):
-                    for fname in files:
-                        fpath = os.path.join(root, fname)
-                        try:
-                            mtime = datetime.fromtimestamp(
-                                os.path.getmtime(fpath), tz=timezone.utc
-                            )
-                            if mtime < cutoff_date:
-                                file_size = os.path.getsize(fpath)
-                                os.remove(fpath)
-                                stats["freed_disk_bytes"] += file_size
-                                stats["deleted_files"] += 1
-                        except OSError as e:
-                            stats["errors"].append(f"删除上传文件失败 {fpath}: {e}")
-                    # 删除空目录
-                    if not os.listdir(root):
-                        try:
-                            os.rmdir(root)
-                        except OSError:
-                            pass
+            CleanupService._cleanup_upload_dirs(cutoff_date, stats)
 
             # 3. 清理数据库记录
 

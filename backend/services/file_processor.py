@@ -73,10 +73,12 @@ class FileProcessor:
         try:
             from PyPDF2 import PdfReader
             reader = PdfReader(file_path)
-            text = ""
-            for page in reader.pages:
-                text += page.extract_text() or ""
-            return text
+            pages = []
+            for number, page in enumerate(reader.pages, 1):
+                content = page.extract_text()
+                if content:
+                    pages.append(f"【PDF 第{number}页】\n{content}")
+            return "\n\n".join(pages)
         except Exception as e:
             raise Exception(f"PDF提取失败: {str(e)}")
     

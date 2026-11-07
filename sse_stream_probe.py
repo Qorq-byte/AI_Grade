@@ -5,6 +5,7 @@ SSE实时流探测：用原始 http.client 连接，记录每个事件到达的�
 """
 import http.client
 import json
+import os
 import sys
 import time
 
@@ -14,10 +15,14 @@ except Exception:
     pass
 
 HOST = "127.0.0.1"
-PORT = 8000
+PORT = int(os.environ.get("AI_GRADE_PROBE_PORT", "8000"))
 
 
 def main():
+    token = os.environ.get("AI_GRADE_PROBE_TOKEN")
+    if not token:
+        print("请设置 AI_GRADE_PROBE_TOKEN（隔离环境的访问令牌）")
+        return 1
     body = json.dumps({
         "project_name": "SSE流式探测项目",
         "file_paths": [],
@@ -30,7 +35,7 @@ def main():
     t0 = time.time()
     conn.request("POST", "/api/agent/workflow/start-stream",
                  body=body,
-                 headers={"Content-Type": "application/json"})
+                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
     resp = conn.getresponse()
     print(f"[{time.time()-t0:6.1f}s] 响应状态: {resp.status}", flush=True)
     if resp.status != 200:

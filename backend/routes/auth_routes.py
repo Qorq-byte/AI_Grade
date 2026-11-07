@@ -83,7 +83,7 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/admin/create-user")
+@router.post("/admin/create-user", dependencies=[Depends(get_admin_user)])
 def admin_create_user(req: RegisterRequest, db: Session = Depends(get_db)):
     try:
         user = create_user(db, req.username, req.password, req.phone)
@@ -96,7 +96,7 @@ def admin_create_user(req: RegisterRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.get("/users")
+@router.get("/users", dependencies=[Depends(get_admin_user)])
 def list_users(db: Session = Depends(get_db)):
     users = get_all_users(db)
     return {
@@ -117,7 +117,7 @@ def list_users(db: Session = Depends(get_db)):
     }
 
 
-@router.post("/users/{user_id}/toggle-status")
+@router.post("/users/{user_id}/toggle-status", dependencies=[Depends(get_admin_user)])
 def toggle_user_status(user_id: int, db: Session = Depends(get_db)):
     try:
         user = get_user_by_id(db, user_id)
@@ -132,7 +132,7 @@ def toggle_user_status(user_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.get("/init-admin")
+@router.get("/init-admin", dependencies=[Depends(get_admin_user)])
 def init_admin(db: Session = Depends(get_db)):
     admin = create_admin_if_not_exists(db)
     return {

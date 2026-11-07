@@ -112,18 +112,27 @@ def main():
             json_body={"session_id": sid, "module_key": "project_background"})
     check("delete-module", bof(r).get("success"), str(bof(r))[:100])
 
-    # 7. 保存评分（持久化 indicator_score_map）
-    r = req("POST", "/api/agent/workflow/save-indicator-scores", token=t,
-            json_body={"session_id": sid, "scores": [
-                {"indicator_id": "T_01", "indicator_name": "测试指标", "level1_name": "决策",
-                 "level2_name": "项目立项", "full_score": 5.0, "actual_score": 4.0,
-                 "score_reason": "测试扣1分"}]})
-    check("save-indicator-scores", bof(r).get("success"), str(bof(r))[:140])
-    r = req("GET", f"/api/agent/workflow/{sid}/extract-deductions", token=t)
-    d = bof(r)
-    check("extract-deductions 读到新评分", any(
-        p.get("indicator_id") == "T_01" for p in (d.get("data") or {}).get("deduction_points", [])),
-        str(d)[:140])
+    # 7. 按当前生效的指标和满分保存评分。
+    r = req("GET", f"/api/agent/workflow/{sid}/indicators-for-scoring", token=t)
+    rows = (bof(r).get("data") or {}).get("indicators", [])
+    indicator = next((item for item in rows if float(item.get("full_score") or 0) > 0), None)
+    check("有效评分指标", indicator is not None)
+    if indicator:
+        indicator_id = indicator["indicator_id"]
+        full = float(indicator["full_score"])
+        r = req("POST", "/api/agent/workflow/save-indicator-scores", token=t, json_body={
+            "session_id": sid, "scores": [{
+                "indicator_id": indicator_id, "indicator_name": indicator["level3_name"],
+                "level1_name": indicator["level1_name"], "level2_name": indicator["level2_name"],
+                "full_score": full, "actual_score": max(full - 1, 0), "score_reason": "隔离回归扣分",
+            }],
+        })
+        check("save-indicator-scores", bof(r).get("success"), str(bof(r))[:140])
+        r = req("GET", f"/api/agent/workflow/{sid}/extract-deductions", token=t)
+        d = bof(r)
+        check("extract-deductions 读到新评分", any(
+            item.get("indicator_id") == indicator_id for item in (d.get("data") or {}).get("deduction_points", [])
+        ), str(d)[:140])
 
     print(f"\n写操作检查完成: 失败 {fails}")
     return 1 if fails else 0

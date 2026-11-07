@@ -23,6 +23,11 @@ REFRESH_TOKEN_EXPIRE_DAYS = settings.REFRESH_TOKEN_EXPIRE_DAYS
 # ── Bearer安全方案 ──
 security = HTTPBearer()
 
+def _sign_token(payload: dict) -> str:
+    if not SECRET_KEY:
+        raise HTTPException(status_code=503, detail="认证服务未配置")
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
 # ═══════════════════════════════════════════════════════
 #  JWT 工具函数
 # ═══════════════════════════════════════════════════════
@@ -36,7 +41,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
         "iat": datetime.now(timezone.utc),
         "type": "access"
     })
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return _sign_token(to_encode)
 
 
 def create_refresh_token(data: dict) -> str:
@@ -48,11 +53,13 @@ def create_refresh_token(data: dict) -> str:
         "iat": datetime.now(timezone.utc),
         "type": "refresh"
     })
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return _sign_token(to_encode)
 
 
 def decode_token(token: str) -> Optional[dict]:
     """解码并验证token"""
+    if not SECRET_KEY:
+        return None
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         return payload
