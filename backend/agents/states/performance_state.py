@@ -187,6 +187,12 @@ class PerformanceState(TypedDict, total=False):
     uploaded_files: List[FileInfo]      # 所有上传文件
     image_pdf_files: List[FileInfo]     # 图片/PDF类文件（上传窗口1）
     word_files: List[FileInfo]          # Word文档类文件（上传窗口2）
+    file_paths: List[str]
+    indicator_type: str
+    use_rag: bool
+    questionnaire_ready: bool
+    deduction_points: List[Dict[str, Any]]
+    _step9_deduction_context: str
     raw_text: str                       # 所有文件提取后的原始文本
     all_raw_texts: Dict[str, str]       # 按文件名的原始文本映射 {filename: text}
 
@@ -195,6 +201,10 @@ class PerformanceState(TypedDict, total=False):
 
     # ── 14步产出物 ──
     step_results: Dict[int, StepResult]    # step_number -> StepResult
+    require_approval: bool
+    approvals: Dict[str, Any]
+    review_steps: List[int]
+    step_evidence: Dict[str, Any]
     completed_steps: List[int]
 
     # ── 各步骤中间数据（结构化存储） ──
@@ -242,6 +252,7 @@ class PerformanceState(TypedDict, total=False):
     report_section_order: List[Dict[str, Any]]  # Step14: 自定义章节顺序
 
     # ── 前端交互写入的扩展状态（通过update_state持久化） ──
+    indicator_score_history: List[Dict[str, Any]]
     indicator_score_map: Dict[str, Dict[str, Any]]  # Step7: 逐指标评分
     score_summary: Dict[str, Any]                   # Step11: 评分汇总
     confirmed_deduction_points: List[Dict[str, Any]]  # Step9: 已确认扣分点
