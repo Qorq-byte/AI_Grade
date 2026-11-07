@@ -12,12 +12,15 @@ PerformanceAgent — 绩效评价报告生成Agent（企业级LangGraph编排 v2
 """
 from typing import TypedDict, List, Dict, Any, Optional, AsyncIterator
 from datetime import datetime
-import time, json, uuid, re, os
+import time, json, uuid, re
+import tempfile
+from pathlib import Path
+from threading import RLock
 
 from langgraph.graph import StateGraph, END
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.types import Command
+from langgraph.types import Command, interrupt
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from loguru import logger
@@ -35,18 +38,15 @@ from backend.agents.states.performance_state import (
 )
 from backend.agents.base_agent import BaseAgent
 from backend.agents.tools.content_indexer import ContentIndexer, categorize_content
-from backend.agents.tools.score_validator import ScoreValidator, validate_indicator_scores
+from backend.agents.tools.score_validator import (
+    ScoreValidator, actual_indicator_score, allocation_valid, indicator_tree_error, score_number, validate_indicator_scores,
+)
 from backend.agents.tools.indicator_manager import IndicatorManager
 from backend.agents.prompts.prompt_manager import get_prompt_manager, TemperatureProfile
 from backend.agents.prompts.default_prompts import STEP_META, PromptTemplateFactory
 from backend.database import SessionLocal
 
-# 可选依赖
-try:
-    from backend.services.rag_service import get_rag_service
-    _HAS_RAG = True
-except ImportError:
-    _HAS_RAG = False
+from backend.services.workflow_evidence import retrieve_step_evidence, render_evidence, report_evidence_index
 
 
 # ==================== 节点名称常量 ====================
@@ -69,6 +69,10 @@ _NODE_STEP_14    = "step14_final_report"
 
 
 # ==================== 状态工具函数 ====================
+
+STATE_BACKUP_DIR = Path(__file__).resolve().parents[2] / "state_backups"
+_STATE_BACKUP_LOCK = RLock()
+
 
 def _ensure_step_control(state: PerformanceState) -> dict:
     if "step_control" not in state or not state.get("step_control"):
@@ -120,7 +124,7 @@ class PerformanceAgent:
         self.model_name = model_name
         self.temperature = temperature
         self.top_p = top_p
-        self.use_rag = use_rag and _HAS_RAG
+        self.use_rag = use_rag
         
         # 将字符串参数规范化到对应枚举（兼容前端传字符串的场景）
         if isinstance(comparison_mode, str):
@@ -153,14 +157,6 @@ class PerformanceAgent:
             logger.warning(f"BaseAgent初始化失败: {e}，将使用裸LLM调用")
             self.base_agent = None
 
-        # RAG
-        self.rag_service = None
-        if self.use_rag:
-            try:
-                self.rag_service = get_rag_service(f"performance_{self.session_id}")
-            except Exception as e:
-                logger.warning(f"RAG初始化失败: {e}")
-
         # 工具
         self.content_indexer = ContentIndexer(use_semantic=False)
         self.score_validator = ScoreValidator()
@@ -187,41 +183,60 @@ class PerformanceAgent:
     def _build_workflow(self) -> StateGraph:
         workflow = StateGraph(PerformanceState)
 
-        workflow.add_node(_NODE_INIT,    self._node_init)
-        workflow.add_node(_NODE_STEP_1,  self._node_step1)
-        workflow.add_node(_NODE_STEP_2,  self._node_step2)
-        workflow.add_node(_NODE_STEP_3,  self._node_step3)
-        workflow.add_node(_NODE_STEP_4,  self._node_step4)
-        workflow.add_node(_NODE_STEP_5,  self._node_step5)
-        workflow.add_node(_NODE_STEP_6,  self._node_step6)
-        workflow.add_node(_NODE_STEP_7,  self._node_step7)
-        workflow.add_node(_NODE_STEP_8,  self._node_step8)
-        workflow.add_node(_NODE_STEP_9,  self._node_step9)
-        workflow.add_node(_NODE_STEP_10, self._node_step10)
-        workflow.add_node(_NODE_STEP_11, self._node_step11)
-        workflow.add_node(_NODE_STEP_12, self._node_step12)
-        workflow.add_node(_NODE_STEP_13, self._node_step13)
-        workflow.add_node(_NODE_STEP_14, self._node_step14)
-
+        workflow.add_node(_NODE_INIT, self._node_init)
         workflow.set_entry_point(_NODE_INIT)
-
-        workflow.add_edge(_NODE_INIT,   _NODE_STEP_1)
-        workflow.add_edge(_NODE_STEP_1, _NODE_STEP_2)
-        workflow.add_edge(_NODE_STEP_2, _NODE_STEP_3)
-        workflow.add_edge(_NODE_STEP_3, _NODE_STEP_4)
-        workflow.add_edge(_NODE_STEP_4, _NODE_STEP_5)
-        workflow.add_edge(_NODE_STEP_5, _NODE_STEP_6)
-        workflow.add_edge(_NODE_STEP_6, _NODE_STEP_7)
-        workflow.add_edge(_NODE_STEP_7, _NODE_STEP_8)
-        workflow.add_edge(_NODE_STEP_8, _NODE_STEP_9)
-        workflow.add_edge(_NODE_STEP_9, _NODE_STEP_10)
-        workflow.add_edge(_NODE_STEP_10, _NODE_STEP_11)
-        workflow.add_edge(_NODE_STEP_11, _NODE_STEP_12)
-        workflow.add_edge(_NODE_STEP_12, _NODE_STEP_13)
-        workflow.add_edge(_NODE_STEP_13, _NODE_STEP_14)
-        workflow.add_edge(_NODE_STEP_14, END)
+        previous = _NODE_INIT
+        node_names = (
+            _NODE_STEP_1, _NODE_STEP_2, _NODE_STEP_3, _NODE_STEP_4, _NODE_STEP_5, _NODE_STEP_6,
+            _NODE_STEP_7, _NODE_STEP_8, _NODE_STEP_9, _NODE_STEP_10, _NODE_STEP_11, _NODE_STEP_12,
+            _NODE_STEP_13, _NODE_STEP_14,
+        )
+        for step, name in enumerate(node_names, 1):
+            workflow.add_node(name, self._tracked_node(step))
+            workflow.add_edge(previous, name)
+            previous = name
+            if step in (3, 6, 11):
+                gate = f"approval_{step}"
+                workflow.add_node(gate, self._approval_node(step))
+                workflow.add_edge(name, gate)
+                previous = gate
+        workflow.add_edge(previous, END)
 
         return workflow
+
+    def _tracked_node(self, step):
+        execute = getattr(self, f"_node_step{step}")
+
+        def run(state: PerformanceState):
+            from backend.routes.agent_routes import _WORKFLOW_PROGRESS
+
+            progress = _WORKFLOW_PROGRESS.get(self.session_id)
+            if progress is not None:
+                if progress["status"] == "retrying" and progress["current_step"] != step:
+                    progress["status"] = "running"
+                progress["current_step"] = step
+                progress.setdefault("started_steps", []).append(step)
+            result = execute(state)
+            self._persist_state_backup(result)
+            return result
+
+        return run
+
+    def _approval_node(self, step):
+        def review(state: PerformanceState):
+            if not state.get("require_approval"):
+                return {}
+            decision = interrupt({"step_number": step})
+            while not decision.get("approved"):
+                decision = interrupt({"step_number": step, "feedback": decision.get("feedback", "")})
+            decisions = dict(state.get("approvals", {}))
+            decisions[str(step)] = {"approved": True, "feedback": decision.get("feedback", ""),
+                                    "version": state["step_results"][step].get("version", 1),
+                                    "user_id": decision.get("user_id")}
+            self.update_state_backup(self.session_id, {"approvals": decisions})
+            return {"approvals": decisions}
+
+        return review
 
     # ─── 统一执行引擎 ────────────────────────────────────
 
@@ -259,22 +274,30 @@ class PerformanceAgent:
             human_prompt = self.prompt_manager.get_human_prompt(
                 step_number, db_session=db, **vars_for_human
             )
+            try:
+                evidence = retrieve_step_evidence(db, state, step_number, self.use_rag)
+            except Exception:
+                logger.warning("步骤 {} 的证据检索失败", step_number)
+                evidence = []
+            state.setdefault("step_evidence", {})[str(step_number)] = evidence
         finally:
             db.close()
 
-        # RAG
-        rag_context = ""
-        if self.use_rag and self.rag_service:
-            try:
-                rag_docs = self.rag_service.search(human_prompt[:500], k=3)
-                if rag_docs:
-                    rag_context = "\n\n【知识库参考】\n" + "\n---\n".join(
-                        d["content"][:500] for d in rag_docs
-                    )
-            except Exception as e:
-                logger.warning(f"RAG检索失败: {e}")
-
-        full_human_prompt = human_prompt + rag_context
+        full_human_prompt = human_prompt + "\n\n## 可追溯证据\n" + render_evidence(evidence)
+        if step_number == 7:
+            full_human_prompt += (
+                "\n正文后可附 JSON 对象，字段 scores 按指标 ID 映射到"
+                "{actual_score, evidence_id, reason}。仅为有项目资料及评分依据的指标赋分。"
+                "evidence_id 必须引用本步骤的项目资料编号。没有依据的指标写待核实，不输出分值。"
+            )
+        if step_number == 11:
+            full_human_prompt += "\n程序评分结果：" + json.dumps(state.get("score_summary", {}), ensure_ascii=False)
+        full_human_prompt += (
+            "\n引用关键项目事实、金额、时间和扣分依据时保留对应证据编号。"
+            "知识库条目只用于评价规则，不能证明项目实际发生的事实。"
+            "不能核实的内容写「待核实」或「资料不足」。建议须对应已核实问题、责任主体和验收方式。"
+            "保持项目名称与输入一致；对相互冲突的金额、时间列出两处来源并标注待核实。"
+        )
 
         # 步骤3：注入用户选择的指标体系类型（6种类型之一，真正影响生成结果）
         if step_number == 3:
@@ -328,8 +351,10 @@ class PerformanceAgent:
                     except Exception as e2:
                         logger.warning(f"LLM合并调用也失败: {e2}，回退到chat方法")
                         res = self.base_agent.chat(full_human_prompt, use_memory=False)
-                        return res.get("message", "") if res.get("success") else f"[调用失败: {res.get('message', str(e2))}]"
-            return "[模型未初始化]"
+                        if res.get("success") and res.get("message"):
+                            return res["message"]
+                        raise RuntimeError("模型调用失败") from e2
+            raise RuntimeError("模型未初始化")
 
         # ── 多模型对比 ──
         if mode in (
@@ -356,7 +381,9 @@ class PerformanceAgent:
                 "selected_best": None,
             }
             outputs = result.get("individual_outputs", {})
-            return next(iter(outputs.values()), "") if outputs else ""
+            if outputs:
+                return next(iter(outputs.values()))
+            raise RuntimeError("对比模型未返回结果")
 
         # 回退
         if self.base_agent:
@@ -369,10 +396,10 @@ class PerformanceAgent:
                 response = self.base_agent.llm.invoke(messages, config={"timeout": 300})
                 self._record_token(response, step_number, state)
                 return response.content if hasattr(response, 'content') else str(response)
-            except Exception:
-                return "[模型调用失败]"
+            except Exception as exc:
+                raise RuntimeError("模型调用失败") from exc
 
-        return "[模型调用失败]"
+        raise RuntimeError("模型未初始化")
 
     def _record_token(self, response, step_number: int, state: PerformanceState):
         """从LLM响应中提取并记录token消耗"""
@@ -423,7 +450,7 @@ class PerformanceAgent:
             "project_name": state.get("project_name", "未命名项目"),
             "project_type": state.get("project_type", "部门评价"),
             "raw_text_preview": (state.get("raw_text") or "")[:8000],
-            "raw_text_full": state.get("raw_text") or "",
+            "raw_text_full": (state.get("raw_text") or "")[:12000],
         }
 
         # 数据充足性检测：如果文档为空或极少，在prompt中添加醒目警告
@@ -480,9 +507,8 @@ class PerformanceAgent:
         # 步骤11评分汇总
         score_summary = state.get("score_summary", {})
         v["score_summary_json"] = json.dumps(score_summary, ensure_ascii=False, indent=2) if score_summary else ""
+        v["effective_data_summary"] = (state.get("effective_data") or state.get("raw_text") or "")[:3000]
 
-        ed = state.get("effective_data") or state.get("raw_text") or ""
-        v["effective_data_summary"] = ed[:3000]
 
         v["work_introduction"] = state.get("work_introduction") or ""
         v["basic_info"] = state.get("basic_info") or ""
@@ -497,6 +523,8 @@ class PerformanceAgent:
     # ─── 结果记录 ────────────────────────────────────────
 
     def _record_step_result(self, state: PerformanceState, step_number: int, content: str):
+        if not content or not content.strip():
+            raise ValueError("步骤未返回有效内容")
         _ensure_step_results(state)
         _ensure_step_control(state)
 
@@ -538,6 +566,7 @@ class PerformanceAgent:
                     "step_name": step_name,
                     "content": content,
                     "status": StepStatusEnum.COMPLETED.value,
+                    "evidence": state.get("step_evidence", {}).get(str(step_number), []),
                 }
         except Exception as e:
             logger.debug(f"无法写入工作流进度(非关键): {e}")
@@ -548,40 +577,54 @@ class PerformanceAgent:
             sid = state.get("session_id", "") or self.session_id
             if not sid:
                 return
-            backup_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "state_backups")
-            os.makedirs(backup_dir, exist_ok=True)
-            backup = {
-                "session_id": sid,
-                "indicator_system": state.get("indicator_system", {}),
-                "effective_data": state.get("effective_data", "") or "",
-                "project_name": state.get("project_name", ""),
-                "indicator_scores": state.get("indicator_scores", {}),
-                "indicator_standards": state.get("indicator_standards", {}),
-                "step_results": {k: {"step_name": v.get("step_name", ""), "content": v.get("content", "")}
-                                 for k, v in state.get("step_results", {}).items()},
+            fields = (
+                "session_id", "project_name", "indicator_type", "indicator_system", "indicator_scores",
+                "indicator_standards", "cost_list", "effective_data", "scoring_standards",
+                "evaluation_table", "indicator_analysis", "experience_summary", "problems_analysis",
+                "suggestions", "comprehensive_evaluation", "basic_info", "work_introduction",
+                "final_report", "score_summary", "score_validation", "step_evidence",
+                "completed_steps", "warnings", "approvals", "review_steps", "indicator_score_map",
+            )
+            backup = {key: state[key] for key in fields if key in state}
+            backup["step_results"] = {
+                key: {**item, "created_at": str(item.get("created_at", "")),
+                      "updated_at": str(item.get("updated_at", ""))}
+                for key, item in state.get("step_results", {}).items()
             }
-            with open(os.path.join(backup_dir, f"{sid}.json"), "w", encoding="utf-8") as f:
-                json.dump(backup, f, ensure_ascii=False, indent=2)
+            self.update_state_backup(sid, backup)
             logger.info(f"状态备份已保存: {sid}")
         except Exception as e:
             logger.warning(f"状态备份失败(非关键): {e}")
 
     @staticmethod
+    def update_state_backup(session_id: str, updates: Dict[str, Any]) -> None:
+        """Merge a backup update and publish it with an atomic replacement."""
+        with _STATE_BACKUP_LOCK:
+            backup = PerformanceAgent.load_state_backup(session_id)
+            backup.update(updates)
+            STATE_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+            path = STATE_BACKUP_DIR / f"{session_id}.json"
+            with tempfile.NamedTemporaryFile(mode="w", dir=STATE_BACKUP_DIR, encoding="utf-8",
+                                             delete=False) as target:
+                temp_path = Path(target.name)
+                try:
+                    json.dump(backup, target, ensure_ascii=False, indent=2)
+                    target.close()
+                    temp_path.replace(path)
+                finally:
+                    target.close()
+                    temp_path.unlink(missing_ok=True)
+
+    @staticmethod
     def load_state_backup(session_id: str) -> Dict[str, Any]:
         """从文件恢复关键状态"""
         try:
-            backup_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "state_backups")
-            backup_path = os.path.join(backup_dir, f"{session_id}.json")
-            if not os.path.exists(backup_path):
-                return {}
-            with open(backup_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
+            with _STATE_BACKUP_LOCK:
+                with (STATE_BACKUP_DIR / f"{session_id}.json").open(encoding="utf-8") as f:
+                    backup = json.load(f)
+                    return backup if isinstance(backup, dict) else {}
+        except (OSError, ValueError):
             return {}
-
-    def _maybe_interrupt(self, state: PerformanceState, step_number: int) -> Optional[Any]:
-        """(已禁用) 原步骤审批中断点 — 全部自动执行"""
-        return None
 
     # ==================== 节点实现 ========================
 
@@ -596,10 +639,12 @@ class PerformanceAgent:
                 extracted = {}
                 for r in results:
                     if r.get("success"):
-                        name = r.get("original_name", r.get("file_path", ""))
+                        name = r.get("filename") or r.get("file_path", "")
                         extracted[name] = r.get("content", "")
                 state["raw_text"] = "\n\n".join(extracted.values())
                 state["all_raw_texts"] = extracted
+                state["uploaded_files"] = [{"original_name": re.sub(r"^u\d+_[a-f0-9]{32}_", "", name)}
+                                           for name in extracted]
                 logger.info(f"[Init] 处理了 {len(results)} 个文件")
             except Exception as e:
                 logger.error(f"[Init] 文件处理失败: {e}")
@@ -667,46 +712,54 @@ class PerformanceAgent:
         itype = state.get("indicator_type") or "项目支出指标体系"
         content = self._execute_step(state, 3)
         try:
-            j = self._extract_json(content)
-            isys = json.loads(j) if j else {"raw_text": content}
-        except Exception:
-            isys = {"raw_text": content, "indicator_type": itype, "level1_indicators": []}
-        if isinstance(isys, dict):
-            isys.setdefault("indicator_type", itype)
-        state["indicator_system"] = isys
-        try:
-            self.indicator_manager.import_custom_system(isys)
-            state["indicator_system"] = self.indicator_manager.to_dict()
-        except Exception:
-            pass
+            isys = json.loads(self._extract_json(content) or "null")
+        except ValueError:
+            isys = None
+        issue = indicator_tree_error(isys)
+        if issue:
+            state.setdefault("warnings", []).append("步骤 3 待人工复核：" + issue)
+            content = "资料不足或指标格式异常，待人工复核：" + issue + "\n\n" + content
+        else:
+            isys["indicator_type"] = itype
+            state["indicator_system"] = isys
         self._record_step_result(state, 3, content)
-        self._persist_state_backup(state)  # 持久化关键状态，防止服务器重启丢失
         return state
 
     # Step 4
     def _node_step4(self, state: PerformanceState) -> PerformanceState:
         logger.info("[Step 4] 生成指标分值")
         content = self._execute_step(state, 4)
+        import copy
+        system = state.get("indicator_system") or {}
         try:
-            j = self._extract_json(content)
-            sd = json.loads(j) if j else {}
-            state["indicator_scores"] = sd.get("scores", sd)
-        except Exception:
-            state["indicator_scores"] = {}
+            parsed = json.loads(self._extract_json(content) or "{}")
+            scores = parsed.get("scores", parsed) if isinstance(parsed, dict) else {}
+        except ValueError:
+            scores = {}
+        candidate = copy.deepcopy(system)
+        applied = {}
 
-        try:
-            isys2 = state.get("indicator_system", {})
-            if isys2.get("level1_indicators"):
-                val = validate_indicator_scores(isys2)
-                state["score_validation"] = val
-                if not val.get("overall_passed"):
-                    wl = state.setdefault("warnings", [])
-                    for vv in val.get("validations", []):
-                        if not vv.get("passed"):
-                            wl.append(vv.get("message", ""))
-        except Exception as e:
-            logger.warning(f"[Step 4] 分值校验失败: {e}")
+        def apply(nodes):
+            for node in nodes:
+                identifier = node.get("id")
+                value = score_number(scores.get(identifier))
+                if value is not None:
+                    node["score"] = value
+                    applied[identifier] = value
+                apply(node.get("children", []))
 
+        if isinstance(scores, dict):
+            apply(candidate.get("level1_indicators", []))
+        if applied and allocation_valid(validate_indicator_scores(candidate)):
+            state["indicator_system"] = candidate
+            state["indicator_scores"] = applied
+        elif scores or not system:
+            state.setdefault("warnings", []).append("步骤 4 分值待复核，保留最近一次有效指标分值")
+        if system:
+            validation = validate_indicator_scores(state["indicator_system"])
+            state["score_validation"] = validation
+            if not allocation_valid(validation):
+                state.setdefault("warnings", []).append("指标分值合计或层级分配未通过程序校验")
         self._record_step_result(state, 4, content)
         return state
 
@@ -721,7 +774,8 @@ class PerformanceAgent:
     # Step 6
     def _node_step6(self, state: PerformanceState) -> PerformanceState:
         logger.info("[Step 6] 生成评价指标体系表")
-        content = self._execute_step(state, 6)
+        content = (self._execute_step(state, 6) if state.get("indicator_system")
+                   else "资料不足，指标体系待复核后方可生成评价表。")
         state["evaluation_table"] = content
         # 标记问卷可生成：指标体系表完成后可触发问卷生成
         state["questionnaire_ready"] = True
@@ -731,7 +785,33 @@ class PerformanceAgent:
     # Step 7
     def _node_step7(self, state: PerformanceState) -> PerformanceState:
         logger.info("[Step 7] 生成指标得分分析")
-        content = self._execute_step(state, 7)
+        content = (self._execute_step(state, 7) if state.get("indicator_system")
+                   else "资料不足，指标体系待复核后方可进行评分。")
+        from backend.agents.tools.questionnaire_gen import indicator_leaves
+
+        ids = {item["id"]: item for item in indicator_leaves(
+            state.get("indicator_system", {}).get("level1_indicators", [])
+        )}
+        evidence_ids = {hit["id"] for hit in state.get("step_evidence", {}).get("7", [])
+                        if hit["kind"] == "project"}
+        scores = dict(state.get("indicator_score_map", {}))
+        try:
+            parsed = json.loads(self._extract_json(content) or "{}")
+            candidates = parsed.get("scores", {}) if isinstance(parsed, dict) else {}
+        except ValueError:
+            candidates = {}
+        for key, item in candidates.items() if isinstance(candidates, dict) else ():
+            if key not in ids or key in scores or not isinstance(item, dict):
+                continue
+            evidence = item.get("evidence_id")
+            reason = item.get("reason")
+            value = actual_indicator_score(ids[key], {key: item})
+            if isinstance(evidence, str) and evidence in evidence_ids and isinstance(reason, str) and reason.strip() and value is not None:
+                scores[key] = {"actual_score": value, "evidence_id": evidence, "score_reason": reason,
+                               "full_score": score_number(ids[key].get("score")), "source": "project_evidence"}
+        state["indicator_score_map"] = scores
+        if ids and len(scores) < len(ids):
+            content = "部分指标缺少可核实的评分依据，未确认分值列为待核实。\n\n" + content
         state["indicator_analysis"] = content
         self._record_step_result(state, 7, content)
         return state
@@ -766,7 +846,7 @@ class PerformanceAgent:
     def _extract_deduction_points(self, state: PerformanceState) -> list:
         """从步骤7的指标得分分析中提取扣分点列表"""
         deduction_points = []
-        indicator_scores = state.get("indicator_scores", {})
+        indicator_scores = state.get("indicator_score_map", {})
         indicator_system = state.get("indicator_system", {})
 
         # 从indicator_system中提取各级指标
@@ -774,18 +854,19 @@ class PerformanceAgent:
             for ind in (indicators or []):
                 name = ind.get("name", "未命名")
                 full_name = f"{parent_name}>{name}" if parent_name else name
-                score_val = ind.get("score", ind.get("max_score", 0)) or 0
-                actual_score = ind.get("actual_score")
-                if actual_score is not None and actual_score < score_val:
+                score_val = score_number(ind.get("score", ind.get("max_score"))) or 0
+                actual_score = actual_indicator_score(ind, indicator_scores)
+                children = ind.get("children") or []
+                if not children and actual_score is not None and actual_score < score_val:
                     deduction_points.append({
                         "name": full_name,
                         "level": level,
                         "full_score": score_val,
                         "score": actual_score,
                         "deduction": round(score_val - actual_score, 2),
-                        "reason": ind.get("deduction_reason", f"指标「{name}」得分低于满分"),
+                        "reason": indicator_scores.get(ind.get("id"), {}).get("score_reason")
+                                  or ind.get("deduction_reason") or "资料不足，原因待核实",
                     })
-                children = ind.get("children", []) or []
                 _extract_from_tree(children, full_name, level + 1)
 
         level1 = indicator_system.get("level1_indicators", [])
@@ -803,99 +884,39 @@ class PerformanceAgent:
     # Step 11
     def _node_step11(self, state: PerformanceState) -> PerformanceState:
         logger.info("[Step 11] 综合评价分析及结论")
+        summary = self._compute_score_summary(state)
+        state["score_summary"] = summary
         content = self._execute_step(state, 11)
+        score_line = (f"综合得分：{summary['total_score']:.2f} 分，评价等级：{summary['grade']}"
+                      if summary["complete"] else "综合得分与评价等级：资料不足，待核实")
+        content = re.sub(
+            r"(?m)^.*(?:综合得分|评价等级)\s*[：:].*$", "", content
+        ).strip()
+        content = score_line + ("\n\n" + content if content else "")
         state["comprehensive_evaluation"] = content
-
-        # ── 自动提取评价等级和综合得分 ──
-        try:
-            m = re.search(r'评价等级[：:]\s*(优秀|良好|中等|合格|差|\w)', content)
-            if m:
-                state["evaluation_grade"] = m.group(1)
-            m2 = re.search(r'综合得分[：:]\s*([\d.]+)\s*分', content)
-            if m2:
-                state["evaluation_total_score"] = float(m2.group(1))
-        except Exception:
-            pass
-
-        # ── 自动计算指标得分汇总 ──
-        try:
-            score_summary = self._compute_score_summary(state)
-            state["score_summary"] = score_summary
-        except Exception as e:
-            logger.warning(f"[Step 11] 评分汇总计算失败（非致命）: {e}")
-
+        if summary["complete"]:
+            state["evaluation_total_score"] = summary["total_score"]
+        state["evaluation_grade"] = summary["grade"]
         self._record_step_result(state, 11, content)
         return state
 
     def _compute_score_summary(self, state: PerformanceState) -> dict:
-        """根据指标体系中的实际得分，汇总计算各级指标得分"""
-        indicator_system = state.get("indicator_system", {})
-        summary = {
-            "total_score": 0,
-            "level1_scores": [],
-            "level2_scores": [],
-            "level3_scores": [],
-            "deduction_details": [],
-        }
+        from backend.agents.tools.questionnaire_gen import indicator_leaves
 
-        def _traverse(indicators, parent_name="", level=1, is_leaf=True):
-            for ind in (indicators or []):
-                name = ind.get("name", "未命名")
-                full_name = f"{parent_name}>{name}" if parent_name else name
-                max_score = ind.get("score", ind.get("max_score", 0)) or 0
-                actual = ind.get("actual_score", max_score)  # 默认满分
-                try:
-                    actual = float(actual) if actual is not None else float(max_score)
-                except (ValueError, TypeError):
-                    actual = float(max_score) if max_score else 0
-
-                children = ind.get("children", []) or []
-                has_children = len(children) > 0
-
-                # 有子指标：递归处理子指标（一级指标总分 = 子指标总分之和，不重复计）
-                if has_children:
-                    _traverse(children, full_name, level + 1, False)
-                else:
-                    # 叶子节点：只记录叶子节点的实际分值
-                    entry = {
-                        "name": full_name,
-                        "level": level,
-                        "max_score": max_score,
-                        "actual_score": actual,
-                        "deduction": round(max_score - actual, 2) if actual < max_score else 0,
-                    }
-                    if level == 1:
-                        summary["level1_scores"].append(entry)
-                    elif level == 2:
-                        summary["level2_scores"].append(entry)
-                    else:
-                        summary["level3_scores"].append(entry)
-
-                    if actual < max_score:
-                        summary["deduction_details"].append(entry)
-
-                    summary["total_score"] += actual
-
-        level1 = indicator_system.get("level1_indicators", [])
-        _traverse(level1)
-
-        # 四舍五入保留两位小数
-        summary["total_score"] = round(summary["total_score"], 2)
-
-        # 根据得分判定等级（使用三等九级制）
-        ts = summary["total_score"]
-        if ts >= 90:
-            summary["grade"] = "优秀"
-        elif ts >= 80:
-            summary["grade"] = "良好"
-        elif ts >= 70:
-            summary["grade"] = "中等"
-        elif ts >= 60:
-            summary["grade"] = "合格"
-        else:
-            summary["grade"] = "不合格"
-
-        return summary
+        system = state.get("indicator_system") or {}
+        items = list(indicator_leaves(system.get("level1_indicators", [])))
+        scores = state.get("indicator_score_map") or {}
+        actuals = [actual_indicator_score(item, scores) for item in items]
+        total = round(sum(value for value in actuals if value is not None), 2)
+        valid = bool(items) and allocation_valid(validate_indicator_scores(system))
+        complete = valid and all(value is not None for value in actuals)
+        grade = "待核实"
+        if complete:
+            grade = next((label for threshold, label in (
+                (90, "优秀"), (80, "良好"), (60, "合格"),
+            ) if total >= threshold), "不合格")
+        return {"total_score": total, "complete": complete, "grade": grade,
+                "scored_count": sum(value is not None for value in actuals), "total_count": len(items)}
 
     # Step 12
     def _node_step12(self, state: PerformanceState) -> PerformanceState:
@@ -921,7 +942,6 @@ class PerformanceAgent:
         content = self._assemble_final_report(state)
         state["final_report"] = content
         self._record_step_result(state, 14, content)
-        self._persist_state_backup(state)  # 关键节点保存最终备份
         logger.info("[Step 14] 报告生成完成")
         return state
 
@@ -986,6 +1006,9 @@ class PerformanceAgent:
             else:
                 sections.append(f"{clean_content}\n")
 
+        evidence_index = report_evidence_index(state.get("step_evidence", {}))
+        if evidence_index:
+            sections.append(evidence_index)
         sections.append("\n---\n")
         sections.append(f"*报告由云海睿评AI生成系统自动生成*")
 
