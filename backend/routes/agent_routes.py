@@ -2,6 +2,7 @@
 Agent相关API路由
 提供与前端交互的接口 — SSE流式 / 状态查询 / 人工确认 / 导出 / 问卷
 """
+import hashlib
 import re
 import json
 import asyncio
@@ -12,20 +13,31 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any, List, AsyncGenerator
 
-from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Request
 from fastapi.responses import StreamingResponse, FileResponse
-from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
+from pydantic import BaseModel, Field
 from loguru import logger
+from langgraph.types import Command
 
 from langchain_openai import ChatOpenAI
 
 from backend.agents.base_agent import BaseAgent
+from backend.agents import performance_agent
 from backend.agents.performance_agent import PerformanceAgent
 from backend.agents.tools.export_service import ExportService, ExportStyle, export_report
-from backend.agents.tools.questionnaire_gen import QuestionnaireGenerator, generate_default_questionnaire
+from backend.agents.tools.score_validator import actual_indicator_score, indicator_tree_error, score_number
+from backend.services.workflow_evidence import report_evidence_index
+from backend.agents.tools.questionnaire_gen import QuestionnaireGenerator, generate_default_questionnaire, indicator_leaves
 from backend.agents.prompts.default_prompts import STEP_META
 from backend.utils.llm_helper import get_supported_models
-from backend.middleware.auth_middleware import decode_token
+from backend.database import get_db
+from backend.middleware.auth_middleware import get_current_user
+from backend.models.memory_models import UserSession
+from backend.models.user_models import User, UserRole, WorkflowSession
+from sqlalchemy import case
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 from backend.config import settings
 
 DASHSCOPE_API_KEY = os.environ.get("DASHSCOPE_API_KEY", "")
@@ -43,6 +55,56 @@ active_workflows: Dict[str, PerformanceAgent] = {}
 
 # 存储每个session的初始化参数，用于approve后重建
 active_workflow_configs: Dict[str, dict] = {}
+
+def _validate_session_id(session_id: str) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", session_id):
+        raise HTTPException(status_code=400, detail="无效的会话 ID")
+
+
+def _owned_workflows(db: Session, user: User):
+    query = db.query(WorkflowSession)
+    if user.role != UserRole.ADMIN:
+        query = query.filter(WorkflowSession.user_id == user.id)
+    return query
+
+
+def _require_workflow(session_id: str, user: User, db: Session) -> None:
+    _validate_session_id(session_id)
+    row = _owned_workflows(db, user).with_entities(WorkflowSession.session_id).filter(
+        WorkflowSession.session_id == session_id
+    ).first()
+    if row is not None and row.session_id == session_id:
+        return
+    if user.role == UserRole.ADMIN and row is None and PerformanceAgent.load_state_backup(session_id):
+        return
+    raise HTTPException(status_code=404, detail="工作流不存在")
+
+
+def _require_path_workflow(session_id: str, user: User = Depends(get_current_user),
+                           db: Session = Depends(get_db)):
+    _require_workflow(session_id, user, db)
+
+
+async def _require_body_workflow(request: Request, user: User = Depends(get_current_user),
+                                 db: Session = Depends(get_db)):
+    # FastAPI validates malformed request bodies against the endpoint's model.
+    try:
+        body = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        return
+    session_id = body.get("session_id") if isinstance(body, dict) else None
+    if isinstance(session_id, str):
+        _require_workflow(session_id, user, db)
+
+
+def _require_chat_session(session_id: str, user: User, db: Session) -> None:
+    _validate_session_id(session_id)
+    row = db.query(UserSession).filter(UserSession.session_id == session_id).first()
+    if row is None or row.session_id != session_id or (
+        user.role != UserRole.ADMIN and row.user_id != str(user.id)
+    ):
+        raise HTTPException(status_code=404, detail="会话不存在")
+
 
 # ─── 请求模型 ───
 
@@ -70,6 +132,7 @@ class WorkflowRequest(BaseModel):
     file_paths: List[str] = []
     model_name: Optional[str] = None  # None 时使用 config.DEFAULT_MODEL
     use_rag: bool = False
+    require_approval: bool = False
     temperature: Optional[float] = 0.7
     top_p: Optional[float] = 0.9
     comparison_mode: Optional[str] = "single"
@@ -83,6 +146,8 @@ class ApproveRequest(BaseModel):
     session_id: str
     approved: bool = True
     feedback: Optional[str] = None
+    background: bool = False
+    approval_step: int | None = None
 
 
 class ExportRequest(BaseModel):
@@ -98,12 +163,13 @@ class ExportRequest(BaseModel):
 class QuestionnaireRequest(BaseModel):
     """问卷生成请求"""
     session_id: str
-    max_questions: int = 30
+    max_questions: int = Field(default=30, ge=1, le=100)
     custom_indicator_ids: Optional[List[str]] = None
 
 
 @router.post("/chat", response_model=AgentResponse)
-async def chat_with_agent(request: AgentRequest):
+async def chat_with_agent(request: AgentRequest, user: User = Depends(get_current_user),
+                          db: Session = Depends(get_db)):
     """
     与Agent对话接口
     支持长短期记忆、多模型切换
@@ -113,6 +179,8 @@ async def chat_with_agent(request: AgentRequest):
         
         # 获取或创建Agent实例
         session_id = request.session_id
+        if session_id:
+            _require_chat_session(session_id, user, db)
         if session_id and session_id in active_agents:
             agent = active_agents[session_id]
             # 如果需要切换模型
@@ -128,7 +196,8 @@ async def chat_with_agent(request: AgentRequest):
                 session_id=session_id,
                 model_name=request.model,
                 temperature=request.temperature,
-                top_p=request.top_p
+                top_p=request.top_p,
+                user_id=str(user.id),
             )
             session_id = agent.session_id
             active_agents[session_id] = agent
@@ -145,6 +214,8 @@ async def chat_with_agent(request: AgentRequest):
             message="对话成功" if result.get("success") else "对话失败"
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"对话失败: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -159,79 +230,135 @@ class RefineStepRequest(BaseModel):
     indicator_type: str = "项目支出指标体系"
 
 
-@router.post("/workflow/refine")
+STEP_CONTENT_FIELDS = {
+    1: "cost_list", 2: "effective_data", 5: "scoring_standards", 6: "evaluation_table",
+    7: "indicator_analysis", 8: "experience_summary", 9: "problems_analysis", 10: "suggestions",
+    11: "comprehensive_evaluation", 12: "basic_info", 13: "work_introduction",
+}
+STEP_DEPENDENTS = {
+    1: range(2, 15), 2: range(3, 15), 3: range(4, 15), 4: range(5, 15),
+    5: range(6, 15), 6: (7, 8, 9, 10, 11, 14), 7: (8, 9, 10, 11, 14),
+    8: (14,), 9: (10, 11, 14), 10: (11, 14), 11: (14,), 12: (14,), 13: (14,),
+}
+
+
+def _review_after(values, step):
+    completed = {int(key) for key in values.get("step_results", {})}
+    return sorted((set(values.get("review_steps", [])) - {step})
+                  | (completed & set(STEP_DEPENDENTS.get(step, ()))))
+
+
+def _indicator_change(values, replacement):
+    changes = {"indicator_system": replacement}
+    previous = values.get("indicator_system") or {}
+    scores = values.get("indicator_score_map") or {}
+    if previous != replacement and scores:
+        changes["indicator_score_history"] = [
+            *values.get("indicator_score_history", []),
+            {"indicator_system": previous, "scores": scores},
+        ]
+        changes["indicator_score_map"] = {}
+        changes["score_table"] = ""
+    return changes
+
+
+def _apply_step_edit(session_id, step, content, source, expected_version=None):
+    if session_id in _WORKFLOW_PROGRESS:
+        raise HTTPException(status_code=409, detail="工作流执行中，暂不能修改步骤")
+    values = _get_workflow_values(session_id)
+    results = dict(values.get("step_results", {}))
+    previous = results.get(step)
+    if not previous or step not in {*STEP_CONTENT_FIELDS, 3, 4}:
+        raise HTTPException(status_code=404, detail="找不到可修改的已完成步骤")
+    version = previous.get("version", 1)
+    if expected_version is not None and version != expected_version:
+        raise HTTPException(status_code=409, detail="步骤已被修改，请刷新后重试")
+    if not content.strip():
+        raise HTTPException(status_code=422, detail="步骤内容不能为空")
+
+    if step in (3, 4):
+        try:
+            parsed = json.loads(content)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="结构化步骤需要有效的 JSON 对象")
+        if step == 3:
+            issue = indicator_tree_error(parsed)
+            if issue:
+                raise HTTPException(status_code=422, detail=issue)
+            parsed["indicator_type"] = values.get("indicator_type") or parsed.get("indicator_type")
+            updates = _indicator_change(values, parsed)
+        else:
+            raise HTTPException(status_code=422, detail="请修改步骤 3 的指标体系来调整指标分配，或使用逐指标评分")
+    else:
+        updates = {STEP_CONTENT_FIELDS[step]: {"raw": content} if step == 5 else content}
+
+    prior_revision = {"version": version, "content": previous.get("content", ""),
+                      "edited_by": previous.get("edited_by", "workflow")}
+    results[step] = {**previous, "content": content, "version": version + 1, "edited_by": source,
+                     "updated_at": datetime.now(timezone.utc).isoformat(),
+                     "revisions": [*previous.get("revisions", []), prior_revision]}
+    review = _review_after(values, step)
+    _persist_state(session_id, {**updates, "step_results": results, "review_steps": review})
+    return {"session_id": session_id, "step_number": step, "refined_content": content,
+            "version": version + 1, "review_steps": review}
+
+
+class StepEditRequest(BaseModel):
+    content: str
+    version: int | None = None
+
+
+@router.put("/workflow/{session_id}/steps/{step}", dependencies=[Depends(_require_path_workflow)])
+async def edit_workflow_step(session_id: str, step: int, request: StepEditRequest):
+    return {"success": True, "data": _apply_step_edit(session_id, step, request.content, "manual", request.version)}
+
+
+@router.post("/workflow/{session_id}/steps/{step}/review", dependencies=[Depends(_require_path_workflow)])
+async def review_workflow_step(session_id: str, step: int, user: User = Depends(get_current_user)):
+    if session_id in _WORKFLOW_PROGRESS:
+        raise HTTPException(status_code=409, detail="工作流执行中")
+    values = _get_workflow_values(session_id)
+    review = list(values.get("review_steps", []))
+    if step not in review:
+        raise HTTPException(status_code=409, detail="该步骤当前无需复核")
+    review.remove(step)
+    approvals = dict(values.get("approvals", {}))
+    approvals[f"review_{step}"] = {"user_id": user.id, "version": values["step_results"][step].get("version", 1),
+                                   "reviewed_at": datetime.now(timezone.utc).isoformat()}
+    _persist_state(session_id, {"review_steps": review, "approvals": approvals})
+    return {"success": True, "data": {"review_steps": review}}
+
+
+@router.post("/workflow/refine", dependencies=[Depends(_require_body_workflow)])
 async def refine_step_content(req: RefineStepRequest):
-    try:
-        session_id = req.session_id
-        # 获取或重建 config
-        cfg = {}
-        if session_id not in active_workflows:
-            if session_id not in active_workflow_configs:
-                raise HTTPException(status_code=404, detail="工作流不存在")
-            cfg = active_workflow_configs[session_id]
-            workflow = PerformanceAgent(
-                session_id=session_id, model_name=cfg.get("model_name") or settings.DEFAULT_MODEL,
-                temperature=cfg.get("temperature", 0.7),
-                top_p=cfg.get("top_p", 0.9),
-                use_rag=cfg.get("use_rag", False),
-                comparison_mode=cfg.get("comparison_mode", "single"),
-                temperature_profile=cfg.get("temperature_profile", "normal"),
-            )
-            active_workflows[session_id] = workflow
-        else:
-            cfg = active_workflow_configs.get(session_id, {})
-
-        workflow = active_workflows[session_id]
-        config = {"configurable": {"thread_id": session_id}}
-        state_obj = workflow.get_state(config)
-
-        step_key = int(req.step_number)
-        if state_obj and getattr(state_obj, 'values', None):
-            step_results = state_obj.values.get("step_results", {})
-            current = step_results.get(step_key, {})
-            current_content = current.get("content", "") if isinstance(current, dict) else str(current)
-        else:
-            current_content = ""
-
-        model_name = cfg.get("model_name") or settings.DEFAULT_MODEL
-        from backend.utils.llm_helper import get_model_credentials
-        _creds = get_model_credentials(model_name)
-        model = ChatOpenAI(model=model_name, api_key=_creds["api_key"], base_url=_creds["base_url"], temperature=0.7)
-        prompt = (
-            f"你是绩效评价报告编辑助手。用户对步骤 {step_key} ({STEP_META.get(step_key, {}).get('name', '')})"
-            f"的内容提出了优化要求。请根据用户指令对以下内容进行调整。\n"
-            f"排版模式: {'经典排版（正式公文风格）' if req.layout_mode == 'classic' else '自动排版（现代商务风格）'}\n\n"
-            f"=== 原始内容 ===\n{current_content[:3000]}\n\n"
-            f"=== 用户指令 ===\n{req.message}\n\n"
-            f"请直接输出优化后的完整内容，格式与原文保持一致。"
-        )
-        resp = model.invoke(prompt)
-        refined = resp.content if hasattr(resp, 'content') else str(resp)
-
-        if state_obj and getattr(state_obj, 'values', None):
-            step_results = state_obj.values.get("step_results", {})
-            if step_key in step_results and isinstance(step_results[step_key], dict):
-                step_results[step_key]["content"] = refined
-            # 写回checkpoint（直接修改values快照不会持久化）
-            _persist_state(session_id, {"step_results": step_results})
-
-        return {
-            "success": True,
-            "data": {
-                "session_id": session_id,
-                "step_number": step_key,
-                "refined_content": refined,
-            },
-            "message": "内容已优化"
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"优化步骤内容失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    session_id, step = req.session_id, req.step_number
+    if session_id in _WORKFLOW_PROGRESS:
+        raise HTTPException(status_code=409, detail="工作流执行中，暂不能修改步骤")
+    if step == 4:
+        raise HTTPException(status_code=422, detail="请修改步骤 3 的指标体系来调整指标分配，或使用逐指标评分")
+    values = _get_workflow_values(session_id)
+    current = values.get("step_results", {}).get(step)
+    if not current or step == 14:
+        raise HTTPException(status_code=404, detail="找不到可优化的已完成步骤")
+    cfg = active_workflow_configs.get(session_id, {})
+    model_name = cfg.get("model_name") or settings.DEFAULT_MODEL
+    from backend.utils.llm_helper import get_model_credentials
+    creds = get_model_credentials(model_name)
+    model = ChatOpenAI(model=model_name, api_key=creds["api_key"], base_url=creds["base_url"], temperature=0.3)
+    prompt = (
+        f"依据证据及人工要求修订步骤 {step}，保留来源编号。无法证实的事实标注待核实。\n"
+        f"{current.get('content', '')[:8000]}\n修订要求：{req.message}\n"
+        + ("只输出结构化指标 JSON 对象。" if step == 3 else "输出修订后的完整内容。")
+    )
+    response = await run_in_threadpool(model.invoke, prompt)
+    content = response.content if hasattr(response, "content") else str(response)
+    if step == 3 and content.startswith("```"):
+        content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    data = _apply_step_edit(session_id, step, content, "model_refine", current.get("version", 1))
+    return {"success": True, "data": data, "message": "内容已优化"}
 
 
-@router.get("/status", response_model=AgentResponse)
+@router.get("/status", response_model=AgentResponse, dependencies=[Depends(get_current_user)])
 async def get_agent_status():
     """
     获取Agent状态
@@ -256,10 +383,12 @@ async def get_agent_status():
 
 
 @router.get("/session/{session_id}/stats", response_model=AgentResponse)
-async def get_session_stats(session_id: str):
+async def get_session_stats(session_id: str, user: User = Depends(get_current_user),
+                            db: Session = Depends(get_db)):
     """
     获取会话记忆统计
     """
+    _require_chat_session(session_id, user, db)
     try:
         if session_id not in active_agents:
             raise HTTPException(status_code=404, detail="会话不存在")
@@ -280,10 +409,17 @@ async def get_session_stats(session_id: str):
 
 
 @router.delete("/session/{session_id}", response_model=AgentResponse)
-async def close_session(session_id: str):
+async def close_session(session_id: str, user: User = Depends(get_current_user),
+                        db: Session = Depends(get_db)):
     """
     关闭会话
     """
+    if session_id in active_workflows or session_id in active_workflow_configs:
+        _require_workflow(session_id, user, db)
+        if session_id in _WORKFLOW_PROGRESS:
+            raise HTTPException(status_code=409, detail="工作流正在执行")
+    else:
+        _require_chat_session(session_id, user, db)
     try:
         if session_id in active_agents:
             active_agents[session_id].close()
@@ -333,10 +469,31 @@ ALLOWED_EXTENSIONS = {
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 
 
+def _store_upload(file: UploadFile, path: Path) -> int:
+    limit_message = f"文件过大，最大支持 {MAX_FILE_SIZE // 1024 // 1024}MB"
+    if file.size is not None and file.size > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail=limit_message)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
+    with path.open("xb") as target:
+        try:
+            while chunk := file.file.read(1024 * 1024):
+                written += len(chunk)
+                if written > MAX_FILE_SIZE:
+                    raise HTTPException(status_code=400, detail=limit_message)
+                target.write(chunk)
+        except Exception:
+            target.close()
+            path.unlink(missing_ok=True)
+            raise
+    return written
+
+
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
     session_id: Optional[str] = Query(None),
+    user: User = Depends(get_current_user),
 ):
     """
     上传单个文件
@@ -351,23 +508,16 @@ async def upload_file(
         )
 
     # 保存文件
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe_name = f"{timestamp}_{file.filename}"
+    safe_name = f"u{user.id}_{uuid.uuid4().hex}_{Path(file.filename).name}"
     file_path = UPLOAD_DIR / safe_name
 
     try:
-        with open(file_path, "wb") as f:
-            content = await file.read()
-            if len(content) > MAX_FILE_SIZE:
-                raise HTTPException(status_code=400, detail=f"文件过大，最大支持 {MAX_FILE_SIZE // 1024 // 1024}MB")
-            f.write(content)
-
-        file_size = len(content)
+        file_size = await run_in_threadpool(_store_upload, file, file_path)
 
         # 异步处理文件内容
         try:
             from backend.services.file_processor import FileProcessor
-            result = FileProcessor.process_file(str(file_path))
+            result = await run_in_threadpool(FileProcessor.process_file, str(file_path))
             extracted_preview = (result.get("content", "") or "")[:500]
         except Exception:
             extracted_preview = ""
@@ -396,6 +546,7 @@ async def upload_file(
 async def upload_files_batch(
     files: List[UploadFile] = File(...),
     session_id: Optional[str] = Query(None),
+    user: User = Depends(get_current_user),
 ):
     """
     批量上传多个文件
@@ -413,29 +564,21 @@ async def upload_files_batch(
                 errors.append({"filename": file.filename, "error": f"不支持格式: {ext}"})
                 continue
 
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            safe_name = f"{timestamp}_{file.filename}"
+            safe_name = f"u{user.id}_{uuid.uuid4().hex}_{Path(file.filename).name}"
             file_path = UPLOAD_DIR / safe_name
 
-            content = await file.read()
-            if len(content) > MAX_FILE_SIZE:
-                errors.append({
-                    "filename": file.filename,
-                    "error": f"文件过大，最大 {MAX_FILE_SIZE // 1024 // 1024}MB"
-                })
-                continue
-
-            with open(file_path, "wb") as f:
-                f.write(content)
+            file_size = await run_in_threadpool(_store_upload, file, file_path)
 
             results.append({
                 "original_name": file.filename,
                 "saved_name": safe_name,
                 "file_path": str(file_path),
-                "file_size": len(content),
+                "file_size": file_size,
                 "file_type": ext,
             })
 
+        except HTTPException as e:
+            errors.append({"filename": file.filename, "error": e.detail})
         except Exception as e:
             errors.append({"filename": file.filename, "error": str(e)})
 
@@ -458,6 +601,7 @@ async def upload_files_batch(
 
 # 全局进度跟踪（用于SSE轮询模式）
 _WORKFLOW_PROGRESS: Dict[str, Dict] = {}
+SSE_HEARTBEAT_SECONDS = 10
 
 # 问卷缓存（用于 list 端点和跨请求访问）
 _QUESTIONNAIRE_CACHE: Dict[str, Dict] = {}
@@ -498,8 +642,114 @@ def _get_or_create_workflow(session_id: str, params: dict) -> tuple:
     return workflow, sid
 
 
+def _register_workflow(request: WorkflowRequest, user: User, db: Session) -> str:
+    upload_root = UPLOAD_DIR.resolve()
+    for supplied_path in request.file_paths:
+        path = Path(supplied_path).resolve()
+        if path.parent != upload_root or not path.name.startswith(f"u{user.id}_") or not path.is_file():
+            raise HTTPException(status_code=400, detail="工作流资料必须是本人上传的文件")
+
+    session_id = request.session_id or str(uuid.uuid4())
+    _validate_session_id(session_id)
+    if db.query(WorkflowSession.id).filter(WorkflowSession.session_id == session_id).first():
+        raise HTTPException(status_code=409, detail="会话已启动")
+    if (session_id in active_workflows or session_id in active_agents
+            or PerformanceAgent.load_state_backup(session_id)
+            or db.query(UserSession.id).filter(UserSession.session_id == session_id).first()):
+        raise HTTPException(status_code=409, detail="会话已存在")
+    db.add(WorkflowSession(
+        session_id=session_id, user_id=user.id, project_name=request.project_name,
+        status="running", current_step=0, model_name=request.model_name or settings.DEFAULT_MODEL,
+        use_rag=request.use_rag, comparison_mode=request.comparison_mode or "single",
+        temperature_profile=request.temperature_profile or "normal",
+    ))
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="会话已启动") from exc
+    return session_id
+
+
+def _record_workflow_outcome(session_id: str, status: str, current_step: int,
+                             final_report: str = "", token_used: int = 0) -> None:
+    from backend.database import SessionLocal
+
+    with SessionLocal.begin() as db:
+        updates = {
+            WorkflowSession.status: status,
+            WorkflowSession.current_step: current_step,
+            WorkflowSession.updated_at: datetime.now(timezone.utc),
+        }
+        if token_used:
+            updates[WorkflowSession.token_used] = case(
+                (WorkflowSession.token_used > 0, WorkflowSession.token_used), else_=token_used,
+            )
+        if status in {"completed", "failed"}:
+            updates[WorkflowSession.completed_at] = datetime.now(timezone.utc)
+        if final_report:
+            updates[WorkflowSession.final_report] = final_report
+        db.query(WorkflowSession).filter(WorkflowSession.session_id == session_id).update(updates)
+
+
+def _build_registered_workflow(session_id: str, params: dict):
+    try:
+        workflow, _ = _get_or_create_workflow(session_id, params)
+        return workflow
+    except Exception:
+        _record_workflow_outcome(session_id, "failed", 0)
+        raise
+
+
+def _launch_workflow(session_id, workflow, initial_state, retry_step=None):
+    progress = {"status": "retrying" if retry_step else "running", "last_step": retry_step or 0,
+                "current_step": retry_step or 0, "step_results": {}, "started_steps": []}
+    config = {"configurable": {"thread_id": session_id}}
+    _WORKFLOW_PROGRESS[session_id] = progress
+
+    def _run_workflow():
+        status = "failed"
+        final_report = ""
+        try:
+            result = workflow.app.invoke(initial_state, config)
+            final_report = result.get("final_report", "") or ""
+            progress["has_error"] = bool(result.get("errors"))
+            state = result.get("step_control", {})
+            if state.get("requires_approval") or result.get("__interrupt__"):
+                status = "paused"
+                interrupts = result.get("__interrupt__", ())
+                value = interrupts[0].value if interrupts else None
+                gate = value if isinstance(value, dict) else {}
+                progress["approval_step"] = gate.get("step_number") or state.get("approval_step") or progress["last_step"]
+            elif 14 in result.get("completed_steps", []):
+                status = "completed"
+            else:
+                progress["error_message"] = "工作流未完成"
+        except Exception:
+            logger.exception("后台工作流执行失败: {}", session_id)
+            progress["error_message"] = "工作流执行失败"
+        finally:
+            try:
+                token_used = sum(max(len(step["content"] or "") // 3, 1)
+                                 for step in progress["step_results"].values())
+                step = progress.get("approval_step") or progress["current_step"] or progress["last_step"]
+                _record_workflow_outcome(session_id, status, step, final_report, token_used)
+            except Exception:
+                logger.exception("工作流结果持久化失败: {}", session_id)
+                status = "failed"
+                progress["error_message"] = "工作流结果保存失败"
+            progress["final_report"] = final_report
+            progress["status"] = status
+            _WORKFLOW_PROGRESS.pop(session_id, None)
+
+    asyncio.get_running_loop().run_in_executor(None, _run_workflow)
+
+    return progress
+
+
 @router.post("/workflow/start-stream")
-async def start_workflow_stream(request: WorkflowRequest, http_request: Request):
+async def start_workflow_stream(request: WorkflowRequest, user: User = Depends(get_current_user),
+                                db: Session = Depends(get_db)):
     """
     SSE 流式启动绩效评价工作流
     前端通过 EventSource / fetch + ReadableStream 实时接收14步进度
@@ -518,168 +768,58 @@ async def start_workflow_stream(request: WorkflowRequest, http_request: Request)
         "comparison_mode": request.comparison_mode or "single",
         "temperature_profile": request.temperature_profile or "normal",
     }
-    workflow, session_id = _get_or_create_workflow(request.session_id, params)
-    config = {"configurable": {"thread_id": session_id}}
-
-    # ── 从Bearer token解析用户（可选），用于工作流归属 ──
-    user_id = None
-    auth_header = http_request.headers.get("authorization", "") or ""
-    if auth_header.lower().startswith("bearer "):
-        token = auth_header[7:].strip()
-        payload = decode_token(token)
-        if payload and payload.get("type") == "access":
-            user_id = payload.get("user_id")
-
-    # ── 持久化工作流会话（供管理端监控、报告列表、重启后恢复使用）──
-    try:
-        from backend.database import SessionLocal
-        from backend.models.user_models import WorkflowSession as WSModel
-        dbs = SessionLocal()
-        try:
-            wf_record = dbs.query(WSModel).filter(WSModel.session_id == session_id).first()
-            if wf_record is None:
-                wf_record = WSModel(
-                    session_id=session_id,
-                    user_id=user_id,
-                    project_name=request.project_name,
-                    status="running",
-                    current_step=0,
-                    model_name=request.model_name or settings.DEFAULT_MODEL,
-                    use_rag=request.use_rag,
-                    comparison_mode=request.comparison_mode or "single",
-                    temperature_profile=request.temperature_profile or "normal",
-                )
-                dbs.add(wf_record)
-            else:
-                wf_record.status = "running"
-                wf_record.project_name = request.project_name
-            dbs.commit()
-            logger.info(f"工作流会话已持久化: {session_id} user={user_id}")
-        except Exception as e:
-            logger.warning(f"工作流会话持久化失败（非致命）: {e}")
-            dbs.rollback()
-        finally:
-            dbs.close()
-    except Exception as e:
-        logger.warning(f"工作流会话持久化异常（非致命）: {e}")
-
+    session_id = _register_workflow(request, user, db)
+    workflow = _build_registered_workflow(session_id, params)
     initial_state = {
         "session_id": session_id,
         "project_name": request.project_name,
         "file_paths": request.file_paths,
         "model_name": request.model_name,
         "use_rag": request.use_rag,
+        "require_approval": request.require_approval,
         "uploaded_files": [],
         "indicator_type": request.indicator_type or "项目支出指标体系",
         "step_control": {"language_style": request.language_style or "中立"},
     }
 
+    progress = _launch_workflow(session_id, workflow, initial_state)
+
     async def _event_generator():
-        has_error = False
         total_estimated_tokens = 0
-
-        # 初始化进度跟踪
-        _WORKFLOW_PROGRESS[session_id] = {
-            "status": "running",
-            "last_step": 0,
-            "step_results": {},
-            "warnings": [],
-            "errors": [],
-        }
-
-        # 在后台线程运行 invoke，工作流不受SSE连接状态影响
-        def _run_workflow():
-            try:
-                result = workflow.app.invoke(initial_state, config)
-                final_report = result.get("final_report", "") or ""
-                p = _WORKFLOW_PROGRESS.get(session_id)
-                if p:
-                    p["status"] = "done"
-                    p["final_report"] = final_report
-                    p["last_step"] = 14
-
-                # ── 持久化完成状态（在后台线程执行，不依赖SSE客户端行为）──
-                try:
-                    from backend.database import SessionLocal
-                    from backend.models.user_models import WorkflowSession as WSModel
-                    dbsave = SessionLocal()
-                    try:
-                        wf_record = dbsave.query(WSModel).filter(
-                            WSModel.session_id == session_id
-                        ).first()
-                        if wf_record:
-                            wf_record.status = "completed"
-                            wf_record.current_step = 14
-                            wf_record.completed_at = datetime.now(timezone.utc)
-                            if final_report:
-                                wf_record.final_report = final_report
-                            dbsave.commit()
-                            logger.info(
-                                f"工作流{session_id}已完成并保存到数据库 "
-                                f"report_len={len(final_report)}"
-                            )
-                    finally:
-                        dbsave.close()
-                except Exception as e:
-                    logger.warning(f"工作流完成状态持久化失败（非致命）: {e}")
-            except Exception as e:
-                logger.error(f"后台工作流执行失败: {e}")
-                p = _WORKFLOW_PROGRESS.get(session_id)
-                if p:
-                    p["status"] = "error"
-                    p["error_message"] = str(e)[:500]
-
-        loop = asyncio.get_running_loop()
-        loop.run_in_executor(None, _run_workflow)
-
         # 轮询进度并发射SSE事件
         emitted_steps = set()
+        emitted_starts = set()
+        loop = asyncio.get_running_loop()
+        heartbeat_at = loop.time()
         questionnaire_emitted = False
         try:
+            yield ": connected\n\n"
             while True:
-                await asyncio.sleep(0.5)
-                p = _WORKFLOW_PROGRESS.get(session_id)
-                if not p:
-                    break
-                status = p.get("status", "")
+                await asyncio.sleep(0.25)
+                p = progress
+                status = p["status"]
 
                 # 发射新完成的步骤
                 for sn in range(1, 15):
                     if sn in emitted_steps:
                         continue
-                    sr = p.get("step_results", {}).get(str(sn))
-                    if sr:
-                        step_name = STEP_META.get(sn, {}).get("name", f"步骤{sn}")
-                        step_content = sr.get("content", "") or ""
+                    sr = p["step_results"].get(str(sn))
+                    step_name = STEP_META.get(sn, {}).get("name", f"步骤{sn}")
+                    if sn not in emitted_starts and (sn in p["started_steps"] or sr):
+                        emitted_starts.add(sn)
                         yield _make_sse_event("step_start", {
                             "step_number": sn, "step_name": step_name,
-                            "session_id": session_id,
+                            "session_id": session_id, "status": "running",
                         })
+                    if sr:
+                        step_content = sr.get("content", "") or ""
                         preview = step_content[:300]
                         yield _make_sse_event("step_complete", {
                             "step_number": sn, "step_name": step_name,
                             "session_id": session_id, "content_preview": preview,
-                            "content": step_content,
+                            "content": step_content, "evidence": sr.get("evidence", []),
                         })
                         emitted_steps.add(sn)
-
-                        # 同步当前步骤到数据库（管理端监控实时进度）
-                        try:
-                            from backend.database import SessionLocal
-                            from backend.models.user_models import WorkflowSession as WSModel
-                            dbsync = SessionLocal()
-                            try:
-                                ws_row = dbsync.query(WSModel).filter(
-                                    WSModel.session_id == session_id
-                                ).first()
-                                if ws_row and (ws_row.current_step or 0) < sn:
-                                    ws_row.current_step = sn
-                                    ws_row.updated_at = datetime.now(timezone.utc)
-                                    dbsync.commit()
-                            finally:
-                                dbsync.close()
-                        except Exception:
-                            pass
 
                         total_estimated_tokens += max(len(step_content) // 3, 1)
                         yield _make_sse_event("token_update", {
@@ -697,57 +837,36 @@ async def start_workflow_stream(request: WorkflowRequest, http_request: Request)
                             questionnaire_emitted = True
 
                 # 完成或错误
-                if status == "done":
+                if status == "completed":
                     final = p.get("final_report", "")
                     yield _make_sse_event("complete", {
                         "session_id": session_id,
                         "completed_steps": sorted(emitted_steps),
-                        "has_error": has_error,
+                        "has_error": p.get("has_error", False),
                         "final_report_preview": final[:2000],
                         "tokens_used": total_estimated_tokens,
                     })
                     break
-                elif status == "error":
+                elif status == "paused":
+                    step = p["approval_step"]
+                    yield _make_sse_event("waiting_approval", {
+                        "session_id": session_id, "approval_step": step,
+                        "step_name": STEP_META.get(step, {}).get("name", ""),
+                        "content_preview": p["step_results"].get(str(step), {}).get("content", "")[:500],
+                    })
+                    break
+                elif status == "failed":
                     yield _make_sse_event("error", {
-                        "step_number": -1, "step_name": "系统错误",
+                        "step_number": p["current_step"] or -1,
+                        "step_name": STEP_META.get(p["current_step"], {}).get("name", "系统错误"),
                         "message": p.get("error_message", "工作流执行失败"),
                         "session_id": session_id,
                     })
                     break
 
-            # ── 保存最终报告到数据库（兜底：补齐状态与token统计）──
-            try:
-                final_report = p.get("final_report", "") if p else ""
-                if not final_report and session_id in active_workflows:
-                    st = active_workflows[session_id].get_state(config)
-                    if st and getattr(st, 'values', None):
-                        final_report = st.values.get("final_report", "") or ""
-                if final_report or total_estimated_tokens:
-                    from backend.database import SessionLocal
-                    from backend.models.user_models import WorkflowSession
-                    dbsave = SessionLocal()
-                    try:
-                        wf_record = dbsave.query(WorkflowSession).filter(
-                            WorkflowSession.session_id == session_id
-                        ).first()
-                        if wf_record:
-                            wf_record.status = "completed"
-                            wf_record.current_step = 14
-                            wf_record.completed_at = wf_record.completed_at or datetime.now(timezone.utc)
-                            if final_report:
-                                wf_record.final_report = final_report
-                            if total_estimated_tokens:
-                                wf_record.token_used = (wf_record.token_used or 0) + total_estimated_tokens
-                            dbsave.commit()
-                            logger.info(f"工作流{session_id}报告已保存到数据库（SSE兜底）")
-                        dbsave.close()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-            # 清理
-            _WORKFLOW_PROGRESS.pop(session_id, None)
+                if loop.time() - heartbeat_at >= SSE_HEARTBEAT_SECONDS:
+                    heartbeat_at = loop.time()
+                    yield ": heartbeat\n\n"
 
         except Exception as e:
             err_msg = str(e)[:500]
@@ -784,7 +903,8 @@ async def start_workflow_stream(request: WorkflowRequest, http_request: Request)
 # ═══════════════════════════════════════════════════════
 
 @router.post("/workflow/start", response_model=AgentResponse)
-async def start_workflow(request: WorkflowRequest):
+async def start_workflow(request: WorkflowRequest, user: User = Depends(get_current_user),
+                         db: Session = Depends(get_db)):
     """同步启动工作流（一次性返回全部结果，耗时较长，推荐使用 start-stream）"""
     try:
         params = {
@@ -793,15 +913,25 @@ async def start_workflow(request: WorkflowRequest):
             "comparison_mode": request.comparison_mode or "single",
             "temperature_profile": request.temperature_profile or "normal",
         }
-        workflow, session_id = _get_or_create_workflow(request.session_id, params)
+        session_id = _register_workflow(request, user, db)
+        workflow = _build_registered_workflow(session_id, params)
         initial_state = {
             "session_id": session_id, "project_name": request.project_name,
             "file_paths": request.file_paths, "model_name": request.model_name,
             "use_rag": request.use_rag,
+            "require_approval": request.require_approval,
             "indicator_type": request.indicator_type or "项目支出指标体系",
             "step_control": {"language_style": request.language_style or "中立"},
         }
-        result = workflow.run_workflow(initial_state)
+        _WORKFLOW_PROGRESS[session_id] = {"status": "running", "last_step": 0, "step_results": {}}
+        try:
+            result = await run_in_threadpool(workflow.run_workflow, initial_state)
+            status = ("paused" if result.get("interrupted") else
+                      "completed" if 14 in result.get("completed_steps", []) else "failed")
+            _record_workflow_outcome(session_id, status, result.get("current_step", 0),
+                                     result.get("final_report", ""))
+        finally:
+            _WORKFLOW_PROGRESS.pop(session_id, None)
         return AgentResponse(success=True, data={
             "session_id": session_id,
             "completed_steps": result.get("completed_steps", []),
@@ -810,6 +940,8 @@ async def start_workflow(request: WorkflowRequest):
             "errors": result.get("errors", []),
             "warnings": result.get("warnings", []),
         }, message="工作流执行完成")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"启动工作流失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -819,134 +951,77 @@ async def start_workflow(request: WorkflowRequest):
 #  工作流 - 状态查询（从 checkpoint 读取真实进度）
 # ═══════════════════════════════════════════════════════
 
-@router.get("/workflow/{session_id}/status", response_model=AgentResponse)
-async def get_workflow_status(session_id: str):
-    """
-    获取工作流实时状态 — 从 LangGraph checkpoint 读取真实进度
-    支持：步骤摘要 / 审批状态 / 待处理步骤 / 警告 & 错误
-    """
-    try:
-        if session_id not in active_workflows:
-            if session_id not in active_workflow_configs:
-                # 服务器重启后内存为空 → 尝试从磁盘备份恢复步骤摘要
-                backup = PerformanceAgent.load_state_backup(session_id)
-                step_results = backup.get("step_results", {}) if backup else {}
-                if backup and step_results:
-                    step_summaries = []
-                    for sn_str in sorted(step_results.keys(), key=lambda x: int(x)):
-                        sn = int(sn_str)
-                        srn = step_results[sn_str] or {}
-                        content = srn.get("content", "") if isinstance(srn, dict) else str(srn)
-                        step_summaries.append({
-                            "step_number": sn,
-                            "step_name": STEP_META.get(sn, {}).get("name", f"Step {sn}"),
-                            "status": "completed",
-                            "content_preview": (content or "")[:200],
-                        })
-                    completed = [int(x) for x in step_results.keys()]
-                    return AgentResponse(success=True, data={
-                        "session_id": session_id, "status": "completed",
-                        "current_step": 14, "completed_steps": completed,
-                        "pending_steps": [], "requires_approval": False,
-                        "step_summaries": step_summaries,
-                        "errors": [], "warnings": [],
-                    }, message="已从备份恢复（服务器重启后）")
+@router.get("/workflow/{session_id}/status", response_model=AgentResponse, dependencies=[Depends(_require_path_workflow)])
+async def get_workflow_status(session_id: str, db: Session = Depends(get_db), after_step: int | None = None):
+    record = db.query(WorkflowSession).filter(WorkflowSession.session_id == session_id).first()
+    workflow = active_workflows.get(session_id)
+    config = {"configurable": {"thread_id": session_id}}
+    checkpoint = workflow.get_state(config) if workflow else None
+    values = getattr(checkpoint, "values", {}) or PerformanceAgent.load_state_backup(session_id)
+    progress = _WORKFLOW_PROGRESS.get(session_id)
+    results = {int(key): value if isinstance(value, dict) else {"content": str(value or "")}
+               for key, value in values.get("step_results", {}).items()}
+    if progress:
+        results.update({int(key): value for key, value in progress["step_results"].copy().items()})
 
-                # 数据库兜底
-                try:
-                    from backend.database import SessionLocal
-                    from backend.models.user_models import WorkflowSession
-                    dbs = SessionLocal()
-                    try:
-                        wf_record = dbs.query(WorkflowSession).filter(
-                            WorkflowSession.session_id == session_id
-                        ).first()
-                        if wf_record and wf_record.final_report:
-                            return AgentResponse(success=True, data={
-                                "session_id": session_id,
-                                "status": "completed",
-                                "current_step": 14,
-                                "completed_steps": list(range(1, 15)),
-                                "pending_steps": [],
-                                "requires_approval": False,
-                                "step_summaries": [],
-                                "errors": [], "warnings": [],
-                            }, message="已从数据库恢复")
-                    finally:
-                        dbs.close()
-                except Exception:
-                    pass
+    tasks = getattr(checkpoint, "tasks", ())
+    interrupts = [item for task in tasks for item in task.interrupts]
+    gate = interrupts[0].value if interrupts and isinstance(interrupts[0].value, dict) else {}
+    approval_step = gate.get("step_number") or values.get("step_control", {}).get("approval_step")
+    completed = sorted(results or values.get("completed_steps", []))
+    if not completed and record and record.status == "completed":
+        completed = list(range(1, 15))
+    status = record.status if record else ("completed" if 14 in completed else "not_found")
+    current = (record.current_step or 0) if record else max(completed, default=0)
+    if progress:
+        status = progress["status"]
+        current = progress.get("current_step") or progress["last_step"]
+    elif interrupts:
+        status = "awaiting_approval"
+        current = approval_step or current
 
-                return AgentResponse(success=True, data={
-                    "session_id": session_id, "status": "not_found",
-                    "current_step": 0, "completed_steps": [],
-                }, message="工作流未找到（可能已过期）")
-            cfg = active_workflow_configs[session_id]
-            workflow = PerformanceAgent(
-                session_id=session_id, model_name=cfg.get("model_name") or settings.DEFAULT_MODEL,
-                temperature=cfg.get("temperature", 0.7),
-                top_p=cfg.get("top_p", 0.9),
-                use_rag=cfg.get("use_rag", False),
-                comparison_mode=cfg.get("comparison_mode", "single"),
-                temperature_profile=cfg.get("temperature_profile", "normal"),
-            )
-            active_workflows[session_id] = workflow
-
-        workflow = active_workflows[session_id]
-        config = {"configurable": {"thread_id": session_id}}
-        state_obj = workflow.get_state(config)
-
-        if state_obj is None:
-            return AgentResponse(success=True, data={
-                "session_id": session_id, "status": "not_started",
-                "current_step": 0, "completed_steps": [],
-            }, message="工作流尚未启动")
-
-        values = getattr(state_obj, 'values', {}) or {}
-        sc = values.get("step_control", {})
-        requires_approval = sc.get("requires_approval", False)
-        approval_step = sc.get("approval_step")
-        current_step = sc.get("current_step", 0)
-        step_statuses = sc.get("step_statuses", {})
-
-        completed_steps = sorted([sn for sn, st in step_statuses.items() if st == "completed"])
-        pending_steps = [sn for sn in range(1, 15) if sn not in completed_steps]
-
-        sr = values.get("step_results", {})
-        step_summaries = []
-        for sn in completed_steps:
-            srn = sr.get(sn, {})
-            step_summaries.append({
-                "step_number": int(sn),
-                "step_name": STEP_META.get(int(sn), {}).get("name", f"Step {sn}"),
-                "status": srn.get("status", "completed"),
-                "content_preview": (srn.get("content", "") or "")[:200],
-            })
-
-        return AgentResponse(success=True, data={
-            "session_id": session_id,
-            "status": "awaiting_approval" if requires_approval else ("running" if pending_steps else "completed"),
-            "current_step": current_step,
-            "completed_steps": completed_steps,
-            "pending_steps": pending_steps,
-            "requires_approval": requires_approval,
-            "approval_step": approval_step,
-            "approval_step_name": STEP_META.get(approval_step or 0, {}).get("name", ""),
-            "step_summaries": step_summaries,
-            "errors": values.get("errors", []),
-            "warnings": values.get("warnings", []),
-        }, message="获取状态成功")
-    except Exception as e:
-        logger.error(f"获取工作流状态失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    summaries = []
+    for step, result in sorted(results.items()):
+        content = result.get("content") or ""
+        summary = {
+            "step_number": step, "step_name": result.get("step_name") or STEP_META.get(step, {}).get("name", ""),
+            "status": "completed", "content_preview": content[:200], "version": result.get("version", 1),
+        }
+        if after_step is not None and step > after_step:
+            summary["content"] = content
+            summary["evidence"] = values.get("step_evidence", {}).get(str(step), [])
+        summaries.append(summary)
+    return AgentResponse(success=True, data={
+        "session_id": session_id, "project_name": values.get("project_name") or (record.project_name if record else ""),
+        "status": status, "current_step": current, "current_step_name": STEP_META.get(current, {}).get("name", "初始化"),
+        "completed_steps": completed, "pending_steps": [step for step in range(1, 15) if step not in completed],
+        "requires_approval": status == "awaiting_approval", "approval_step": approval_step,
+        "approval_step_name": STEP_META.get(approval_step or 0, {}).get("name", ""),
+        "retryable": status == "failed" and any(task.error for task in tasks),
+        "review_steps": values.get("review_steps", []), "step_summaries": summaries,
+        "errors": values.get("errors", []), "warnings": values.get("warnings", []),
+    })
 
 
-# ═══════════════════════════════════════════════════════
-#  工作流 - 人工确认（审批 Step 3/6/11）
-# ═══════════════════════════════════════════════════════
+class RetryWorkflowRequest(BaseModel):
+    session_id: str
 
-@router.post("/workflow/approve", response_model=AgentResponse)
-async def approve_workflow(request: ApproveRequest):
+
+@router.post("/workflow/retry", dependencies=[Depends(_require_body_workflow)])
+async def retry_workflow(request: RetryWorkflowRequest):
+    session_id = request.session_id
+    workflow = active_workflows.get(session_id)
+    config = {"configurable": {"thread_id": session_id}}
+    checkpoint = workflow.get_state(config) if workflow else None
+    if session_id in _WORKFLOW_PROGRESS or not checkpoint or not any(task.error for task in checkpoint.tasks):
+        raise HTTPException(status_code=409, detail="没有可重试的失败步骤")
+    step = max(checkpoint.values.get("completed_steps", []), default=0) + 1
+    _launch_workflow(session_id, workflow, None, retry_step=step)
+    return AgentResponse(success=True, data={"session_id": session_id, "current_step": step, "status": "retrying"})
+
+
+@router.post("/workflow/approve", response_model=AgentResponse, dependencies=[Depends(_require_body_workflow)])
+async def approve_workflow(request: ApproveRequest, user: User = Depends(get_current_user)):
     """
     人工确认指定步骤
     前端在收到 approval_required 事件后调用此接口
@@ -955,30 +1030,39 @@ async def approve_workflow(request: ApproveRequest):
     """
     try:
         session_id = request.session_id
-        if session_id not in active_workflows:
-            if session_id not in active_workflow_configs:
-                raise HTTPException(status_code=404, detail="工作流不存在")
-            cfg = active_workflow_configs[session_id]
-            workflow = PerformanceAgent(
-                session_id=session_id, model_name=cfg.get("model_name") or settings.DEFAULT_MODEL,
-                temperature=cfg.get("temperature", 0.7),
-                top_p=cfg.get("top_p", 0.9),
-                use_rag=cfg.get("use_rag", False),
-                comparison_mode=cfg.get("comparison_mode", "single"),
-                temperature_profile=cfg.get("temperature_profile", "normal"),
-            )
-            active_workflows[session_id] = workflow
-
-        workflow = active_workflows[session_id]
+        if session_id in _WORKFLOW_PROGRESS:
+            raise HTTPException(status_code=409, detail="工作流正在执行")
+        workflow = active_workflows.get(session_id)
+        if workflow is None:
+            raise HTTPException(status_code=409, detail="没有可恢复的审批检查点")
         config = {"configurable": {"thread_id": session_id}}
+        checkpoint = workflow.get_state(config)
+        waiting = [item.value for task in checkpoint.tasks for item in task.interrupts] if checkpoint else []
+        if not waiting:
+            raise HTTPException(status_code=409, detail="没有可恢复的审批检查点")
+        gate = waiting[0] if isinstance(waiting[0], dict) else {}
+        if request.approval_step is not None and request.approval_step != gate.get("step_number"):
+            raise HTTPException(status_code=409, detail="审批点已变更，请刷新后确认当前步骤")
 
-        resume_value = {"approved": request.approved, "feedback": request.feedback or ""}
-        # 使用 resume_through_all 自动穿越步骤6和步骤11的审批点
-        # 用户只需在前端审批一次（步骤3），后续中断点系统自动通过
-        result = workflow.resume_through_all(resume_value=resume_value, config=config)
-
-        if not result.get("success"):
-            raise HTTPException(status_code=500, detail=result.get("error", "工作流执行失败"))
+        resume_value = {"approved": request.approved, "feedback": request.feedback or "", "user_id": user.id}
+        if request.background and checkpoint.values.get("require_approval"):
+            _launch_workflow(session_id, workflow, Command(resume=resume_value))
+            return AgentResponse(success=True, data={"session_id": session_id, "status": "running"})
+        _WORKFLOW_PROGRESS[session_id] = {"status": "running", "last_step": 0, "step_results": {}}
+        try:
+            resume = (workflow.resume_from_checkpoint if checkpoint.values.get("require_approval")
+                      else workflow.resume_through_all)
+            result = await run_in_threadpool(resume, resume_value, config)
+            if result.get("data", {}).get("__interrupt__"):
+                result["interrupted"] = True
+            status = ("paused" if result.get("interrupted") else
+                      "completed" if 14 in result.get("completed_steps", []) else "failed")
+            _record_workflow_outcome(session_id, status, result.get("current_step", 0),
+                                     result.get("final_report", ""))
+            if not result.get("success"):
+                raise HTTPException(status_code=500, detail=result.get("error", "工作流执行失败"))
+        finally:
+            _WORKFLOW_PROGRESS.pop(session_id, None)
 
         # 提取各步骤结果供前端更新
         step_results = {}
@@ -998,7 +1082,8 @@ async def approve_workflow(request: ApproveRequest):
             "current_step": result.get("current_step", 0),
             "final_report": result.get("final_report", ""),
             "step_results": step_results,
-        }, message="已确认，工作流继续执行至完成")
+            "status": status,
+        }, message="审批已处理")
     except HTTPException:
         raise
     except Exception as e:
@@ -1010,80 +1095,53 @@ async def approve_workflow(request: ApproveRequest):
 #  工作流 - 报告查询 & 编辑存储
 # ═══════════════════════════════════════════════════════
 
-@router.get("/workflow/{session_id}/report")
-async def get_report_content(session_id: str):
-    """获取完整报告Markdown内容（供编辑页面使用）"""
-    try:
-        content = ""
-        project_name = "绩效评价报告"
+def _report_review_steps(session_id):
+    return PerformanceAgent.load_state_backup(session_id).get("review_steps", [])
 
-        # 1. 内存中的工作流（服务器运行期间）
-        if session_id in active_workflows:
-            workflow = active_workflows[session_id]
-            config = {"configurable": {"thread_id": session_id}}
-            state_obj = workflow.get_state(config)
-            if state_obj is not None and getattr(state_obj, 'values', None):
-                values = state_obj.values
-                content = values.get("final_report", "") or ""
-                if not content or len(content.strip()) < 50:
-                    content = _assemble_report_from_steps(values)
-                project_name = values.get("project_name", project_name)
 
-        # 2. 数据库中的报告（服务器重启后）
-        if not content:
-            try:
-                from backend.database import SessionLocal
-                from backend.models.user_models import WorkflowSession
-                dbs = SessionLocal()
-                try:
-                    wf_record = dbs.query(WorkflowSession).filter(
-                        WorkflowSession.session_id == session_id
-                    ).first()
-                    if wf_record and wf_record.final_report:
-                        content = wf_record.final_report
-                        project_name = wf_record.project_name or project_name
-                finally:
-                    dbs.close()
-            except Exception:
-                pass
+def _read_report(session_id: str, db: Session) -> tuple[str, str]:
+    project_name = "绩效评价报告"
+    record = db.query(WorkflowSession).filter(WorkflowSession.session_id == session_id).first()
+    if record and record.final_report is not None:
+        return record.final_report, record.project_name or project_name
 
-        # 3. 磁盘状态备份（服务器重启后）
-        if not content:
-            backup = PerformanceAgent.load_state_backup(session_id)
-            if backup:
-                project_name = backup.get("project_name", project_name)
-                # 优先返回显式保存的报告内容（save-report 写入）
-                for key in ("final_report", "report_content", "report"):
-                    val = backup.get(key, "")
-                    if val and str(val).strip():
-                        content = str(val)
-                        break
-                # 否则用步骤14或各步骤内容拼装
-                if not content:
-                    step_results = backup.get("step_results", {})
-                    step_14 = step_results.get("14", {})
-                    if isinstance(step_14, dict) and step_14.get("content"):
-                        content = step_14["content"]
-                    elif step_results:
-                        content = _assemble_report_from_backup_steps(backup)
+    workflow = active_workflows.get(session_id)
+    if workflow:
+        config = {"configurable": {"thread_id": session_id}}
+        snapshot = workflow.get_state(config)
+        if snapshot and snapshot.values:
+            values = snapshot.values
+            content = values.get("final_report") or _assemble_report_from_steps(values)
+            if content:
+                return content, values.get("project_name") or project_name
 
-        if not content:
-            raise HTTPException(status_code=404, detail="报告不存在，请先完成工作流")
+    backup = PerformanceAgent.load_state_backup(session_id)
+    if backup:
+        project_name = backup.get("project_name") or project_name
+        for key in ("final_report", "report_content", "report"):
+            if isinstance(backup.get(key), str):
+                return backup[key], project_name
+        steps = backup.get("step_results", {})
+        step14 = steps.get("14", {})
+        content = (step14.get("content") if isinstance(step14, dict) else "")
+        content = content or _assemble_report_from_backup_steps(backup)
+        if content:
+            return content, project_name
 
-        return {
-            "success": True,
-            "data": {
-                "session_id": session_id,
-                "project_name": project_name,
-                "content": content,
-                "word_count": len(content),
-            }
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"获取报告内容失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    raise HTTPException(status_code=404, detail="报告不存在，请先完成工作流")
+
+
+@router.get("/workflow/{session_id}/report", dependencies=[Depends(_require_path_workflow)])
+async def get_report_content(session_id: str, db: Session = Depends(get_db)):
+    content, project_name = _read_report(session_id, db)
+    review = _report_review_steps(session_id)
+    return {
+        "success": True,
+        "data": {
+            "session_id": session_id, "project_name": project_name,
+            "content": content, "word_count": len(content), "review_steps": review,
+        },
+    }
 
 
 class SaveReportRequest(BaseModel):
@@ -1091,75 +1149,35 @@ class SaveReportRequest(BaseModel):
     content: str
 
 
-@router.post("/workflow/save-report")
-async def save_report_content(req: SaveReportRequest):
-    """保存编辑后的报告内容"""
-    try:
-        session_id = req.session_id
-        saved_to_state = False
+def _save_report(session_id: str, content: str, db: Session) -> None:
+    if session_id in _WORKFLOW_PROGRESS:
+        raise HTTPException(status_code=409, detail="工作流正在执行")
+    record = db.query(WorkflowSession).filter(WorkflowSession.session_id == session_id).first()
+    if record:
+        record.final_report = content
+        record.updated_at = datetime.now(timezone.utc)
+        db.commit()
+    elif PerformanceAgent.load_state_backup(session_id):
+        PerformanceAgent.update_state_backup(session_id, {"final_report": content})
+    else:
+        raise HTTPException(status_code=404, detail="工作流不存在，无法保存")
 
-        # 1. 更新内存中工作流的 LangGraph state（通过update_state写回checkpoint）
-        if session_id in active_workflows:
-            workflow = active_workflows[session_id]
-            config = {"configurable": {"thread_id": session_id}}
-            state_obj = workflow.get_state(config)
-            if state_obj is not None and getattr(state_obj, 'values', None):
-                saved_to_state = _persist_state(session_id, {"final_report": req.content})
-
-        # 2. 持久化到 DB
-        saved_to_db = False
+    workflow = active_workflows.get(session_id)
+    if workflow:
         try:
-            from backend.database import SessionLocal
-            from backend.models.user_models import WorkflowSession
-            db = SessionLocal()
-            try:
-                wf = db.query(WorkflowSession).filter(WorkflowSession.session_id == session_id).first()
-                if wf:
-                    wf.final_report = req.content
-                    wf.updated_at = datetime.now(timezone.utc)
-                    db.commit()
-                    saved_to_db = True
-            finally:
-                db.close()
-        except Exception as e:
-            logger.warning(f"持久化到DB失败（非致命）: {e}")
-
-        # 3. 工作流不在内存且DB无记录 → 尝试写入磁盘备份，避免编辑内容丢失
-        if not saved_to_state and not saved_to_db:
-            try:
-                backup = PerformanceAgent.load_state_backup(session_id)
-                if backup:
-                    backup["final_report"] = req.content
-                    backup["updated_at"] = datetime.now(timezone.utc).isoformat()
-                    backup_dir = os.path.join(
-                        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                        "state_backups",
-                    )
-                    os.makedirs(backup_dir, exist_ok=True)
-                    with open(os.path.join(backup_dir, f"{session_id}.json"), "w", encoding="utf-8") as f:
-                        json.dump(backup, f, ensure_ascii=False, indent=2)
-                    saved_to_state = True
-            except Exception as e:
-                logger.warning(f"写入磁盘备份失败（非致命）: {e}")
-
-        if not saved_to_state and not saved_to_db:
-            raise HTTPException(status_code=404, detail="工作流不存在，无法保存")
-
-        return {
-            "success": True,
-            "message": "报告已保存",
-            "data": {"session_id": session_id, "word_count": len(req.content)}
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"保存报告失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+            workflow.app.update_state({"configurable": {"thread_id": session_id}}, {"final_report": content})
+        except Exception:
+            logger.exception("同步报告检查点失败: {}", session_id)
 
 
-# ═══════════════════════════════════════════════════════
-#  辅助函数
-# ═══════════════════════════════════════════════════════
+@router.post("/workflow/save-report", dependencies=[Depends(_require_body_workflow)])
+async def save_report_content(req: SaveReportRequest, db: Session = Depends(get_db)):
+    _save_report(req.session_id, req.content, db)
+    return {
+        "success": True, "message": "报告已保存",
+        "data": {"session_id": req.session_id, "word_count": len(req.content)},
+    }
+
 
 def _assemble_report_from_steps(values: dict) -> str:
     """从各步骤State值拼装完整报告Markdown"""
@@ -1237,15 +1255,21 @@ def _assemble_report_from_backup_steps(backup: dict) -> str:
 #  文件下载
 # ═══════════════════════════════════════════════════════
 
+def _export_base_dir(user: User) -> str:
+    return os.path.join("backend", ExportService.EXPORT_DIR, str(user.id))
+
+
 @router.get("/download/{file_name}")
-async def download_export_file(file_name: str):
+async def download_export_file(file_name: str, user: User = Depends(get_current_user)):
     """
     下载导出的Word/PDF文件
     前端导出成功后通过此接口下载文件
     """
     # 安全检查：防止路径穿越
     safe_name = os.path.basename(file_name)
-    export_dir = os.path.join("backend", ExportService.EXPORT_DIR)
+    if safe_name != file_name or Path(safe_name).suffix.lower() not in {".pdf", ".docx"}:
+        raise HTTPException(status_code=404, detail="文件不存在")
+    export_dir = os.path.join(_export_base_dir(user), ExportService.EXPORT_DIR)
     file_path = os.path.join(export_dir, safe_name)
 
     if not os.path.exists(file_path):
@@ -1265,8 +1289,9 @@ async def download_export_file(file_name: str):
     )
 
 
-@router.post("/workflow/export", response_model=AgentResponse)
-async def export_workflow_report(request: ExportRequest):
+@router.post("/workflow/export", response_model=AgentResponse, dependencies=[Depends(_require_body_workflow)])
+async def export_workflow_report(request: ExportRequest, user: User = Depends(get_current_user),
+                                 db: Session = Depends(get_db)):
     """
     导出绩效评价报告（Word / PDF）
     支持：
@@ -1287,11 +1312,11 @@ async def export_workflow_report(request: ExportRequest):
 
             if fmt == "pdf":
                 file_path = ExportService.export_to_pdf(
-                    content, file_label, style, base_dir="backend", title=f"{project_name} - {step_name}"
+                    content, file_label, style, base_dir=_export_base_dir(user), title=f"{project_name} - {step_name}"
                 )
             else:
                 file_path = ExportService.export_to_word(
-                    content, file_label, style, base_dir="backend", title=f"{project_name} - {step_name}"
+                    content, file_label, style, base_dir=_export_base_dir(user), title=f"{project_name} - {step_name}"
                 )
 
             file_name = os.path.basename(file_path)
@@ -1302,91 +1327,20 @@ async def export_workflow_report(request: ExportRequest):
                 "step_number": request.step_number,
             }, message=f"步骤{request.step_number}导出成功")
 
-        # ── 完整报告导出 ──
-        # 尝试从工作流state获取报告内容
-        report_content = None
-
-        if session_id in active_workflows:
-            workflow = active_workflows[session_id]
-        elif session_id in active_workflow_configs:
-            cfg = active_workflow_configs[session_id]
-            workflow = PerformanceAgent(
-                session_id=session_id, model_name=cfg.get("model_name") or settings.DEFAULT_MODEL,
-                temperature=cfg.get("temperature", 0.7),
-                top_p=cfg.get("top_p", 0.9),
-                use_rag=cfg.get("use_rag", False),
-                comparison_mode=cfg.get("comparison_mode", "single"),
-                temperature_profile=cfg.get("temperature_profile", "normal"),
-            )
-            active_workflows[session_id] = workflow
-        else:
-            # 工作流不在内存中，尝试从数据库获取报告内容
-            try:
-                from backend.database import SessionLocal
-                from backend.models.user_models import WorkflowSession
-                dbsession = SessionLocal()
-                try:
-                    wf_record = dbsession.query(WorkflowSession).filter(
-                        WorkflowSession.session_id == session_id
-                    ).first()
-                    if wf_record and wf_record.final_report:
-                        report_content = wf_record.final_report
-                        project_name = request.project_name or wf_record.project_name or project_name
-                    dbsession.close()
-                except Exception:
-                    pass
-            except Exception:
-                pass
-
-            # 如果数据库也没有，尝试从磁盘备份恢复
-            if not report_content:
-                backup = PerformanceAgent.load_state_backup(session_id)
-                if backup:
-                    step_results = backup.get("step_results", {})
-                    project_name = request.project_name or backup.get("project_name", project_name)
-                    # 优先使用显式保存的报告（save-report 写入）
-                    for key in ("final_report", "report_content", "report"):
-                        val = backup.get(key, "")
-                        if val and len(str(val).strip()) > 100:
-                            report_content = str(val)
-                            break
-                    # 其次使用步骤14（组装最终报告）的内容
-                    if not report_content:
-                        step_14 = step_results.get("14", {})
-                        if isinstance(step_14, dict) and step_14.get("content"):
-                            report_content = step_14["content"]
-                            logger.info(f"从磁盘备份步骤14恢复了报告: {session_id}")
-                    # 最后从各步骤内容拼装
-                    if not report_content and step_results:
-                        report_content = _assemble_report_from_backup_steps(backup)
-
-            if not report_content:
-                raise HTTPException(status_code=404, detail="工作流不存在或已过期，请重新执行")
-
-        # 从LangGraph state获取报告
-        if not report_content and session_id in active_workflows:
-            config = {"configurable": {"thread_id": session_id}}
-            state_obj = active_workflows[session_id].get_state(config)
-
-            if state_obj is not None and getattr(state_obj, 'values', None):
-                values = state_obj.values
-                final_report = values.get("final_report", "")
-                if not final_report or len(final_report.strip()) < 100:
-                    # 从各步骤结果拼装完整报告
-                    final_report = _assemble_report_from_steps(values)
-                report_content = final_report
-                project_name = request.project_name or values.get("project_name", project_name)
-
+        if _report_review_steps(session_id):
+            raise HTTPException(status_code=409, detail="报告关联的步骤尚待复核，请复核后重新组装报告")
+        report_content, stored_project_name = _read_report(session_id, db)
+        project_name = request.project_name or stored_project_name
         if not report_content:
             raise HTTPException(status_code=400, detail="报告内容为空，请确认工作流已完成")
 
         if fmt == "pdf":
             file_path = ExportService.export_to_pdf(
-                report_content, project_name, style, base_dir="backend", title=project_name
+                report_content, project_name, style, base_dir=_export_base_dir(user), title=project_name
             )
         else:
             file_path = ExportService.export_to_word(
-                report_content, project_name, style, base_dir="backend", title=project_name
+                report_content, project_name, style, base_dir=_export_base_dir(user), title=project_name
             )
 
         file_name = os.path.basename(file_path)
@@ -1412,8 +1366,8 @@ class ExportStepRequest(BaseModel):
     format: str = "word"
 
 
-@router.post("/workflow/export-step", response_model=AgentResponse)
-async def export_step_content(request: ExportStepRequest):
+@router.post("/workflow/export-step", response_model=AgentResponse, dependencies=[Depends(_require_body_workflow)])
+async def export_step_content(request: ExportStepRequest, user: User = Depends(get_current_user)):
     """
     导出单个步骤的内容为Word或PDF
     从工作流State中获取步骤内容并导出
@@ -1463,12 +1417,12 @@ async def export_step_content(request: ExportStepRequest):
 
         if fmt == "pdf":
             file_path = ExportService.export_to_pdf(
-                step_content, file_label, style, base_dir="backend",
+                step_content, file_label, style, base_dir=_export_base_dir(user),
                 title=f"{project_name} - {step_name}"
             )
         else:
             file_path = ExportService.export_to_word(
-                step_content, file_label, style, base_dir="backend",
+                step_content, file_label, style, base_dir=_export_base_dir(user),
                 title=f"{project_name} - {step_name}"
             )
 
@@ -1505,56 +1459,79 @@ class QuestionnaireAnswerItem(BaseModel):
 class SubmitQuestionnaireRequest(BaseModel):
     session_id: str
     answers: List[QuestionnaireAnswerItem]
+    questionnaire_version: str | None = None
+
+
+def _published_questionnaire(session_id: str) -> dict:
+    _validate_session_id(session_id)
+    data = _QUESTIONNAIRE_CACHE.get(session_id) or (
+        PerformanceAgent.load_state_backup(session_id).get("questionnaire") or {}
+    )
+    if not data.get("questions"):
+        raise HTTPException(status_code=404, detail="问卷不存在或尚未生成")
+    return data
+
+
+def _questionnaire_response(session_id, data):
+    return AgentResponse(success=True, data={
+        "session_id": session_id, "questionnaire": data["questions"],
+        "display_markdown": data.get("display_md", ""),
+        "total_questions": len(data["questions"]), "questionnaire_version": data.get("version"),
+    })
+
+
+@router.get("/workflow/{session_id}/questionnaire", response_model=AgentResponse)
+async def get_public_questionnaire(session_id: str):
+    return _questionnaire_response(session_id, _published_questionnaire(session_id))
 
 
 @router.post("/workflow/questionnaire/submit")
-async def submit_questionnaire_answers(req: SubmitQuestionnaireRequest):
-    """
-    提交调查问卷答案并持久化到数据库
-    每个答案独立存储为一条 QuestionnaireAnswer 记录
-    """
-    from backend.database import SessionLocal
+async def submit_questionnaire_answers(req: SubmitQuestionnaireRequest, db: Session = Depends(get_db)):
     from backend.models.user_models import QuestionnaireAnswer
 
-    db = SessionLocal()
-    saved = 0
-    errors = []
+    current = _published_questionnaire(req.session_id)
+    history = PerformanceAgent.load_state_backup(req.session_id).get("questionnaire_history", [])
+    versions = [current, *reversed(history)]
+    if req.questionnaire_version:
+        versions = [item for item in versions if item.get("version") == req.questionnaire_version]
+    questions = {}
+    for version in versions:
+        for question in version.get("questions", []):
+            questions.setdefault(question.get("question_id") or question.get("id"), question)
 
-    for a in req.answers:
-        try:
-            row = QuestionnaireAnswer(
-                session_id=req.session_id,
-                question_id=a.question_id,
-                question_text=a.question_text,
-                question_type=a.question_type,
-                related_indicator_id=a.related_indicator_id,
-                related_indicator_name=a.related_indicator_name,
-                selected_level_index=a.selected_level_index,
-                text_answer=a.text_answer,
-                submitted_at=datetime.now(timezone.utc),
-            )
-            db.add(row)
-            saved += 1
-        except Exception as e:
-            errors.append({"question_id": a.question_id, "error": str(e)})
-
-    try:
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"提交失败: {str(e)}")
-    finally:
-        db.close()
-
-    logger.info(f"问卷答案已保存: session={req.session_id}, 成功={saved}, 失败={len(errors)}")
-    return {
-        "success": True,
-        "data": {"saved": saved, "errors": errors},
-        "message": f"已保存 {saved} 条答案",
-    }
+    seen = set()
+    rows = []
+    for answer in req.answers:
+        question = questions.get(answer.question_id)
+        if not question or answer.question_id in seen:
+            raise HTTPException(status_code=422, detail="答卷包含未知或重复题目，请重新加载问卷")
+        seen.add(answer.question_id)
+        kind = question.get("question_type") or answer.question_type
+        index = answer.selected_level_index
+        if kind == "likert":
+            if index is None:
+                continue
+            if not 0 <= index < len(question.get("scale_levels") or range(5)):
+                raise HTTPException(status_code=422, detail="量表选项超出范围")
+        elif not (answer.text_answer or "").strip():
+            continue
+        rows.append(QuestionnaireAnswer(
+            session_id=req.session_id, question_id=answer.question_id,
+            question_text=question.get("question_text") or question.get("question") or answer.question_text,
+            question_type=kind, related_indicator_id=question.get("related_indicator_id"),
+            related_indicator_name=question.get("related_indicator_name"),
+            selected_level_index=index if kind == "likert" else None,
+            text_answer=answer.text_answer if kind != "likert" else None,
+            submitted_at=datetime.now(timezone.utc),
+        ))
+    if not rows:
+        raise HTTPException(status_code=422, detail="请至少回答一道题")
+    db.add_all(rows)
+    db.commit()
+    return {"success": True, "data": {"saved": len(rows), "errors": []}, "message": "答卷已保存"}
 
 
-@router.get("/workflow/{session_id}/questionnaire/answers")
+@router.get("/workflow/{session_id}/questionnaire/answers", dependencies=[Depends(_require_path_workflow)])
 async def get_questionnaire_answers(session_id: str):
     """获取指定 session 的问卷答案（用于报告生成引用）"""
     from backend.database import SessionLocal
@@ -1588,141 +1565,65 @@ async def get_questionnaire_answers(session_id: str):
 #  工作流 - 调查问卷生成
 # ═══════════════════════════════════════════════════════
 
-@router.post("/workflow/questionnaire", response_model=AgentResponse)
+@router.post("/workflow/questionnaire", response_model=AgentResponse, dependencies=[Depends(_require_body_workflow)])
 async def generate_questionnaire(request: QuestionnaireRequest):
-    """
-    生成调查问卷（里克特5级量表）
-    基于工作流中最新的指标体系
-    """
-    try:
-        session_id = request.session_id
+    session_id = request.session_id
+    values = _get_workflow_values(session_id)
+    indicators = values.get("indicator_system") or {}
+    if not indicators.get("level1_indicators"):
+        raise HTTPException(status_code=400, detail="指标体系尚未生成，请先完成步骤 3")
+    signature = hashlib.sha256(json.dumps(
+        [indicators, sorted(set(request.custom_indicator_ids)) if request.custom_indicator_ids is not None else None,
+         request.max_questions], ensure_ascii=False, sort_keys=True,
+    ).encode()).hexdigest()
+    backup = PerformanceAgent.load_state_backup(session_id)
+    previous = _QUESTIONNAIRE_CACHE.get(session_id) or backup.get("questionnaire", {})
+    if previous.get("indicator_version") == signature and previous.get("questions"):
+        return _questionnaire_response(session_id, previous)
 
-        # 优先从内存缓存返回已有问卷
-        if session_id in _QUESTIONNAIRE_CACHE:
-            qcache = _QUESTIONNAIRE_CACHE[session_id]
-            return AgentResponse(success=True, data={
-                "session_id": session_id,
-                "questionnaire": qcache["questions"],
-                "display_markdown": qcache.get("display_md", ""),
-                "total_questions": len(qcache["questions"]),
-            }, message=f"已返回 {len(qcache['questions'])} 道问卷题目（缓存）")
-
-        # 尝试恢复工作流（内存 → 配置 → 磁盘备份）
-        workflow = None
-        indicator_system = {}
-        project_core_content = ""
-
-        if session_id in active_workflows:
-            workflow = active_workflows[session_id]
-        elif session_id in active_workflow_configs:
-            cfg = active_workflow_configs[session_id]
-            workflow = PerformanceAgent(
-                session_id=session_id, model_name=cfg.get("model_name") or settings.DEFAULT_MODEL,
-                temperature=cfg.get("temperature", 0.7),
-                top_p=cfg.get("top_p", 0.9),
-                use_rag=cfg.get("use_rag", False),
-                comparison_mode=cfg.get("comparison_mode", "single"),
-                temperature_profile=cfg.get("temperature_profile", "normal"),
-            )
-            active_workflows[session_id] = workflow
-
-        if workflow:
-            config = {"configurable": {"thread_id": session_id}}
-            state_obj = workflow.get_state(config)
-            if state_obj and getattr(state_obj, 'values', None):
-                indicator_system = state_obj.values.get("indicator_system", {})
-                project_core_content = state_obj.values.get("effective_data", "") or ""
-
-        # 始终尝试从文件备份恢复（服务器重启后唯一数据源）
-        backup = PerformanceAgent.load_state_backup(session_id)
-        if backup:
-            # 优先检查是否已有缓存的问卷
-            cached_q = backup.get("questionnaire", {})
-            if cached_q.get("questions"):
-                return AgentResponse(success=True, data={
-                    "session_id": session_id,
-                    "questionnaire": cached_q["questions"],
-                    "display_markdown": cached_q.get("display_md", ""),
-                    "total_questions": len(cached_q["questions"]),
-                }, message=f"已返回 {len(cached_q['questions'])} 道问卷题目（备份）")
-
-            if not indicator_system or not indicator_system.get("level1_indicators"):
-                indicator_system = backup.get("indicator_system", {})
-                project_core_content = backup.get("effective_data", "") or project_core_content
-                logger.info(f"从文件备份恢复了指标体系: {session_id}")
-
-        if not workflow and (not indicator_system or not indicator_system.get("level1_indicators")):
-            raise HTTPException(status_code=404, detail="工作流不存在，请先启动")
-
-        if not indicator_system or not indicator_system.get("level1_indicators"):
-            raise HTTPException(status_code=400, detail="指标体系尚未生成，请先完成Step 3")
-
-        generator = QuestionnaireGenerator()
-        # 使用工作流已有的 base_agent，避免重复创建LLM连接
-        if workflow and hasattr(workflow, 'base_agent') and workflow.base_agent:
-            generator.base_agent = workflow.base_agent
-
-        questions = generator.generate_questions(
-            indicator_system,
-            project_core_content=project_core_content,
-            custom_indicators=request.custom_indicator_ids,
-            max_questions=request.max_questions,
-        )
-        display_md = generator.format_questionnaire_for_display(questions, title="调查问卷")
-
-        # 获取项目名称
-        project_name = "未命名项目"
-        if state_obj and getattr(state_obj, 'values', None):
-            project_name = state_obj.values.get("project_name") or project_name
-        if project_name == "未命名项目" and backup:
-            project_name = backup.get("project_name") or project_name
-
-        # 缓存问卷到内存（供 list 端点使用）
-        _QUESTIONNAIRE_CACHE[session_id] = {
-            "project_name": project_name,
-            "questions": questions,
-            "display_md": display_md,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-
-        # 也保存到文件备份，防止服务器重启丢失问卷数据
-        try:
-            backup_save = PerformanceAgent.load_state_backup(session_id) or {}
-            backup_save["questionnaire"] = {
-                "questions": questions,
-                "display_md": display_md,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-                "project_name": project_name,
-            }
-            backup_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "state_backups")
-            os.makedirs(backup_dir, exist_ok=True)
-            with open(os.path.join(backup_dir, f"{session_id}.json"), "w", encoding="utf-8") as f:
-                json.dump(backup_save, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
-
+    generator = QuestionnaireGenerator()
+    questions = generator.generate_questions(
+        indicators, custom_indicators=request.custom_indicator_ids, max_questions=request.max_questions,
+    )
+    if not questions:
         return AgentResponse(success=True, data={
-            "session_id": session_id,
-            "questionnaire": questions,
-            "display_markdown": display_md,
-            "total_questions": len(questions),
-        }, message=f"已生成 {len(questions)} 道问卷题目")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"问卷生成失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+            "session_id": session_id, "questionnaire": [], "display_markdown": "", "total_questions": 0,
+        }, message="资料不足，当前指标中没有符合条件的问卷题目")
+    for item in previous.get("questions", []):
+        if item.get("created_by") == "user" and item.get("question_type") == "open_ended":
+            questions.append({**item, "index": len(questions) + 1})
+
+    published = {
+        "project_name": values.get("project_name") or "未命名项目", "questions": questions,
+        "display_md": generator.format_questionnaire_for_display(questions),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "indicator_version": signature, "version": uuid.uuid4().hex,
+    }
+    history = backup.get("questionnaire_history", [])
+    if previous.get("questions"):
+        history = [*history, previous]
+    PerformanceAgent.update_state_backup(session_id, {"questionnaire": published, "questionnaire_history": history})
+    _QUESTIONNAIRE_CACHE[session_id] = published
+    return _questionnaire_response(session_id, published)
 
 
 @router.get("/workflow/questionnaire/list", response_model=AgentResponse)
-async def list_questionnaires():
+async def list_questionnaires(user: User = Depends(get_current_user),
+                              db: Session = Depends(get_db)):
     """
     列出所有已有问卷的 WorkflowSession 记录
     前端「问卷填写」Tab 调用此接口获取问卷列表
     """
     try:
+        allowed_ids = None
+        if user.role != UserRole.ADMIN:
+            allowed_ids = {sid for (sid,) in _owned_workflows(db, user).with_entities(
+                WorkflowSession.session_id
+            )}
         results = []
         for sid, data in _QUESTIONNAIRE_CACHE.items():
+            if data.get("deleted") or (allowed_ids is not None and sid not in allowed_ids):
+                continue
             results.append({
                 "session_id": sid,
                 "project_name": data.get("project_name", "未命名项目"),
@@ -1732,7 +1633,7 @@ async def list_questionnaires():
 
         # 也检查 active_workflows 中有 indicator_system 的session（可生成问卷但尚未生成）
         for sid, wf in active_workflows.items():
-            if sid in _QUESTIONNAIRE_CACHE:
+            if (allowed_ids is not None and sid not in allowed_ids) or sid in _QUESTIONNAIRE_CACHE:
                 continue
             try:
                 config = {"configurable": {"thread_id": sid}}
@@ -1752,6 +1653,8 @@ async def list_questionnaires():
 
         # 也检查 active_workflow_configs 中的session（内存evict后从配置重建）
         for sid in active_workflow_configs:
+            if allowed_ids is not None and sid not in allowed_ids:
+                continue
             if sid in _QUESTIONNAIRE_CACHE or any(r.get("session_id") == sid for r in results):
                 continue
             try:
@@ -1767,12 +1670,14 @@ async def list_questionnaires():
 
         # 始终尝试从文件备份恢复问卷列表（服务器重启后内存数据丢失，磁盘备份是唯一数据源）
         try:
-            backup_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "state_backups")
+            backup_dir = performance_agent.STATE_BACKUP_DIR
             if os.path.exists(backup_dir):
                 for fname in os.listdir(backup_dir):
                     if not fname.endswith(".json"):
                         continue
                     sid = fname[:-5]
+                    if allowed_ids is not None and sid not in allowed_ids:
+                        continue
                     # 跳过已在内存中的 session
                     if any(r.get("session_id") == sid for r in results):
                         continue
@@ -1780,6 +1685,8 @@ async def list_questionnaires():
                         with open(os.path.join(backup_dir, fname), "r", encoding="utf-8") as f:
                             backup = json.load(f)
                         qdata = backup.get("questionnaire", {})
+                        if qdata.get("deleted"):
+                            continue
                         indicator_system = backup.get("indicator_system", {})
                         has_indicator = bool(indicator_system and indicator_system.get("level1_indicators"))
                         results.append({
@@ -1801,115 +1708,41 @@ async def list_questionnaires():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/workflow/questionnaire/{session_id}", response_model=AgentResponse)
-async def delete_questionnaire(session_id: str):
-    """
-    删除指定 session 的问卷数据（从内存缓存、数据库和磁盘备份中彻底移除）
-    """
-    try:
-        deleted = False
-        if session_id in _QUESTIONNAIRE_CACHE:
-            del _QUESTIONNAIRE_CACHE[session_id]
-            deleted = True
-        if session_id in active_workflows:
-            try:
-                active_workflows[session_id].close()
-            except Exception:
-                pass
-            del active_workflows[session_id]
-            deleted = True
-        if session_id in active_workflow_configs:
-            del active_workflow_configs[session_id]
-            deleted = True
-        if session_id in _WORKFLOW_PROGRESS:
-            del _WORKFLOW_PROGRESS[session_id]
-            deleted = True
+def _delete_questionnaire_data(session_id: str, db: Session) -> None:
+    from backend.models.user_models import QuestionnaireAnswer
 
-        # 删除数据库中的 WorkflowSession 记录
-        try:
-            from backend.database import SessionLocal
-            from backend.models.user_models import WorkflowSession
-            db = SessionLocal()
-            try:
-                ws = db.query(WorkflowSession).filter(WorkflowSession.session_id == session_id).first()
-                if ws:
-                    db.delete(ws)
-                    db.commit()
-                    deleted = True
-            finally:
-                db.close()
-        except Exception as e:
-            logger.warning(f"删除问卷DB记录失败: {e}")
+    deleted = {"questions": [], "deleted": True}
+    PerformanceAgent.update_state_backup(session_id, {"questionnaire": deleted, "questionnaire_history": []})
+    _QUESTIONNAIRE_CACHE[session_id] = deleted
+    db.query(QuestionnaireAnswer).filter(QuestionnaireAnswer.session_id == session_id).delete()
 
-        # 删除磁盘备份文件
-        try:
-            backup_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "state_backups")
-            backup_file = os.path.join(backup_dir, f"{session_id}.json")
-            if os.path.exists(backup_file):
-                os.remove(backup_file)
-                logger.info(f"已删除备份文件: {backup_file}")
-                deleted = True
-        except Exception as e:
-            logger.warning(f"删除备份文件失败: {e}")
 
-        if deleted:
-            logger.info(f"问卷已删除: {session_id}")
-            return AgentResponse(success=True, data={"session_id": session_id}, message="问卷已删除")
-        else:
-            return AgentResponse(success=False, data=None, message="未找到对应的问卷")
-    except Exception as e:
-        logger.error(f"删除问卷失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+@router.delete("/workflow/questionnaire/{session_id}", response_model=AgentResponse,
+               dependencies=[Depends(_require_path_workflow)])
+async def delete_questionnaire(session_id: str, db: Session = Depends(get_db)):
+    _delete_questionnaire_data(session_id, db)
+    db.commit()
+    return AgentResponse(success=True, data={"session_id": session_id}, message="问卷已删除")
 
 
 class BatchDeleteQRequest(BaseModel):
     session_ids: list[str]
 
+
 @router.post("/workflow/questionnaire/batch-delete", response_model=AgentResponse)
-async def batch_delete_questionnaires(req: BatchDeleteQRequest):
-    """批量删除问卷（内存、数据库、磁盘备份）"""
-    deleted = []
-    for session_id in req.session_ids:
-        try:
-            if session_id in _QUESTIONNAIRE_CACHE: del _QUESTIONNAIRE_CACHE[session_id]
-            if session_id in active_workflows:
-                try: active_workflows[session_id].close()
-                except Exception: pass
-                del active_workflows[session_id]
-            if session_id in active_workflow_configs: del active_workflow_configs[session_id]
-            if session_id in _WORKFLOW_PROGRESS: del _WORKFLOW_PROGRESS[session_id]
-            # 删除磁盘备份文件
-            try:
-                backup_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "state_backups")
-                backup_file = os.path.join(backup_dir, f"{session_id}.json")
-                if os.path.exists(backup_file):
-                    os.remove(backup_file)
-                    logger.info(f"已删除备份文件: {backup_file}")
-            except Exception:
-                pass
-            deleted.append(session_id)
-        except Exception:
-            pass
-    # 批量删除数据库中的 WorkflowSession 记录
-    try:
-        from backend.database import SessionLocal
-        from backend.models.user_models import WorkflowSession
-        db = SessionLocal()
-        try:
-            db.query(WorkflowSession).filter(WorkflowSession.session_id.in_(req.session_ids)).delete(synchronize_session=False)
-            db.commit()
-        finally:
-            db.close()
-    except Exception as e:
-        logger.warning(f"批量删除问卷DB记录失败: {e}")
-    return AgentResponse(success=True, data={"deleted": len(deleted), "session_ids": deleted}, message=f"成功删除 {len(deleted)} 条问卷")
+async def batch_delete_questionnaires(req: BatchDeleteQRequest, user: User = Depends(get_current_user),
+                                      db: Session = Depends(get_db)):
+    session_ids = list(dict.fromkeys(req.session_ids))
+    for session_id in session_ids:
+        _require_workflow(session_id, user, db)
+    for session_id in session_ids:
+        _delete_questionnaire_data(session_id, db)
+    db.commit()
+    return AgentResponse(success=True, data={"deleted": len(session_ids), "session_ids": session_ids},
+                         message=f"成功删除 {len(session_ids)} 条问卷")
 
 
-# ═══════════════════════════════════════════════════════
-#  工作流 - 步骤9多视角分析
-# ═══════════════════════════════════════════════════════
-
-@router.post("/workflow/{session_id}/perspective", response_model=AgentResponse)
+@router.post("/workflow/{session_id}/perspective", response_model=AgentResponse, dependencies=[Depends(_require_path_workflow)])
 async def analyze_perspective(session_id: str, request: Dict[str, Any]):
     """
     步骤9多视角分析 — 前端切换视角时调用
@@ -2044,14 +1877,14 @@ class GenerateIndicatorAnalysisRequest(BaseModel):
     score_inputs: List[IndicatorScoreItem] = []
 
 
-@router.get("/workflow/{session_id}/indicators-for-scoring")
+@router.get("/workflow/{session_id}/indicators-for-scoring", dependencies=[Depends(_require_path_workflow)])
 async def get_indicators_for_scoring(session_id: str):
     """
     步骤7：获取需要进行评分的指标体系结构（用于前端生成评分输入框）
     返回所有三级指标及其评分标准、指标解释，供逐指标填写得分和原因
     """
     try:
-        workflow, values = _get_workflow_values(session_id)
+        values = _get_workflow_values(session_id)
         indicator_system = values.get("indicator_system", {})
         if not indicator_system or not indicator_system.get("level1_indicators"):
             raise HTTPException(status_code=400, detail="指标体系尚未生成，请先完成步骤3")
@@ -2094,14 +1927,14 @@ async def get_indicators_for_scoring(session_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/workflow/generate-indicator-analysis")
+@router.post("/workflow/generate-indicator-analysis", dependencies=[Depends(_require_body_workflow)])
 async def generate_indicator_analysis(req: GenerateIndicatorAnalysisRequest):
     """
     步骤7：为单个三级指标生成分析内容
     根据操作者输入的评分要点的得分和原因，由大模型撰写指标分析
     """
     try:
-        workflow, values = _get_workflow_values(req.session_id)
+        values = _get_workflow_values(req.session_id)
         cfg = active_workflow_configs.get(req.session_id, {})
         model_name = cfg.get("model_name") or settings.DEFAULT_MODEL
 
@@ -2147,23 +1980,31 @@ async def generate_indicator_analysis(req: GenerateIndicatorAnalysisRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/workflow/save-indicator-scores")
+@router.post("/workflow/save-indicator-scores", dependencies=[Depends(_require_body_workflow)])
 async def save_indicator_scores(req: BatchIndicatorScoreRequest):
     """
     步骤7：保存逐指标评分结果并生成评分表
     """
     try:
-        workflow, values = _get_workflow_values(req.session_id)
-        # 保存评分到state（写回checkpoint）
-        score_map = {}
-        for s in req.scores:
-            score_map[s.indicator_id] = {
-                "indicator_name": s.indicator_name,
-                "level1_name": s.level1_name,
-                "level2_name": s.level2_name,
-                "full_score": s.full_score,
-                "actual_score": s.actual_score,
-                "score_reason": s.score_reason,
+        values = _get_workflow_values(req.session_id)
+        if req.session_id in _WORKFLOW_PROGRESS:
+            raise HTTPException(status_code=409, detail="工作流执行中，暂不能修改评分")
+        indicators = {item.get("id"): item for item in indicator_leaves(
+            values.get("indicator_system", {}).get("level1_indicators", [])
+        )}
+        score_map = dict(values.get("indicator_score_map", {}))
+        seen = set()
+        for entry in req.scores:
+            indicator = indicators.get(entry.indicator_id)
+            full = score_number(indicator.get("score")) if indicator else None
+            actual = score_number(entry.actual_score)
+            if (entry.indicator_id in seen or full is None or actual is None
+                    or actual > full or score_number(entry.full_score) != full):
+                raise HTTPException(status_code=422, detail=f"指标 {entry.indicator_id} 的分值、满分或 ID 无效")
+            seen.add(entry.indicator_id)
+            score_map[entry.indicator_id] = {
+                **entry.model_dump(), "indicator_name": indicator["name"],
+                "full_score": full, "actual_score": actual,
             }
 
         # 生成评分表
@@ -2171,9 +2012,10 @@ async def save_indicator_scores(req: BatchIndicatorScoreRequest):
         _persist_state(req.session_id, {
             "indicator_score_map": score_map,
             "score_table": score_table,
+            "review_steps": _review_after(values, 7),
         })
 
-        return {"success": True, "data": {"score_table": score_table, "saved_count": len(score_map)}}
+        return {"success": True, "data": {"score_table": score_table, "saved_count": len(seen)}}
     except HTTPException:
         raise
     except Exception as e:
@@ -2185,16 +2027,15 @@ async def save_indicator_scores(req: BatchIndicatorScoreRequest):
 #  步骤9 - 扣分点一键提取
 # ═══════════════════════════════════════════════════════
 
-@router.get("/workflow/{session_id}/extract-deductions")
+@router.get("/workflow/{session_id}/extract-deductions", dependencies=[Depends(_require_path_workflow)])
 async def extract_deduction_points(session_id: str):
     """
     步骤9：从步骤7指标分析中提取扣分点
     返回扣分指标列表，供操作者选择哪些作为问题提出
     """
     try:
-        workflow, values = _get_workflow_values(session_id)
+        values = _get_workflow_values(session_id)
         indicator_analysis = values.get("indicator_analysis", "")
-        score_table = values.get("score_table", "")
         score_map = values.get("indicator_score_map", {})
 
         if not indicator_analysis and not score_map:
@@ -2203,9 +2044,9 @@ async def extract_deduction_points(session_id: str):
         deduction_points = []
         if score_map:
             for ind_id, info in score_map.items():
-                actual = info.get("actual_score", 0)
-                full = info.get("full_score", 0)
-                if actual < full:
+                actual = score_number(info.get("actual_score"))
+                full = score_number(info.get("full_score"))
+                if actual is not None and full is not None and actual < full:
                     deduction_points.append({
                         "indicator_id": ind_id,
                         "indicator_name": info.get("indicator_name", ""),
@@ -2218,21 +2059,6 @@ async def extract_deduction_points(session_id: str):
                         "selected": True,
                         "source": "score_map",
                     })
-
-        # 如果score_map为空，从分析文本中智能提取
-        if not deduction_points and indicator_analysis:
-            lines = indicator_analysis.split("\n")
-            for line in lines:
-                if "扣" in line or "得分" in line or "分" in line:
-                    match = re.search(r'(?:扣|减)\s*(\d+\.?\d*)\s*分', line)
-                    if match:
-                        deduction_points.append({
-                            "indicator_name": line[:60],
-                            "deduction": float(match.group(1)),
-                            "context": line[:200],
-                            "selected": True,
-                            "source": "text_extraction",
-                        })
 
         return {
             "success": True,
@@ -2255,14 +2081,14 @@ class DeductionSelectionRequest(BaseModel):
     manual_problems: Optional[List[Dict[str, str]]] = None
 
 
-@router.post("/workflow/confirm-deductions")
+@router.post("/workflow/confirm-deductions", dependencies=[Depends(_require_body_workflow)])
 async def confirm_deduction_points(req: DeductionSelectionRequest):
     """
     步骤9：确认扣分点选择（含手动添加的问题）
     操作者选择哪些扣分点作为问题提出，也可以手动添加问题
     """
     try:
-        workflow, values = _get_workflow_values(req.session_id)
+        values = _get_workflow_values(req.session_id)
         _persist_state(req.session_id, {
             "confirmed_deduction_points": req.selected_points,
             "manual_problems": req.manual_problems or [],
@@ -2286,14 +2112,14 @@ async def confirm_deduction_points(req: DeductionSelectionRequest):
 #  步骤10后 - 逻辑校对
 # ═══════════════════════════════════════════════════════
 
-@router.post("/workflow/{session_id}/verify-logic")
+@router.post("/workflow/{session_id}/verify-logic", dependencies=[Depends(_require_path_workflow)])
 async def verify_logic_consistency(session_id: str):
     """
     步骤10后：对指标体系、指标分析、问题、建议进行逻辑校对
     确保通篇逻辑合理、数据一致
     """
     try:
-        workflow, values = _get_workflow_values(session_id)
+        values = _get_workflow_values(session_id)
         cfg = active_workflow_configs.get(session_id, {})
 
         indicator_system = values.get("indicator_system", {})
@@ -2367,7 +2193,7 @@ class GradeThresholdsRequest(BaseModel):
     poor: float = 0
 
 
-@router.get("/workflow/{session_id}/score-summary")
+@router.get("/workflow/{session_id}/score-summary", dependencies=[Depends(_require_path_workflow)])
 async def get_score_summary(
     session_id: str,
     excellent: float = Query(90, description="优秀线"),
@@ -2379,7 +2205,7 @@ async def get_score_summary(
     从指标体系+评分结果计算汇总得分、判定等级、生成图表数据
     """
     try:
-        workflow, values = _get_workflow_values(session_id)
+        values = _get_workflow_values(session_id)
         indicator_system = values.get("indicator_system", {})
         score_map = values.get("indicator_score_map", {})
 
@@ -2390,6 +2216,8 @@ async def get_score_summary(
         level1_scores = []
         total_score = 0
         total_full = 0
+        missing = 0
+        assessed = 0
 
         for l1 in indicator_system.get("level1_indicators", []):
             l1_name = l1.get("name", "")
@@ -2405,18 +2233,18 @@ async def get_score_summary(
 
                 for l3 in l2.get("children", []):
                     l3_name = l3.get("name", "")
-                    l3_full_score = l3.get("score", 0)
+                    l3_full_score = score_number(l3.get("score")) or 0
                     l3_id = l3.get("id", f"{l1_name}_{l2_name}_{l3_name}")
-                    actual = score_map.get(l3_id, {}).get("actual_score", 0) if score_map else l3_full_score
-                    l3_score = float(actual) if actual else l3_full_score
-
-                    l2_score += l3_score
+                    l3_score = actual_indicator_score(l3, score_map, l3_id)
+                    missing += l3_score is None
+                    assessed += l3_score is not None
+                    l2_score += l3_score if l3_score is not None else 0
                     l2_full += l3_full_score
                     level3_data.append({
                         "name": l3_name,
                         "full_score": l3_full_score,
                         "actual_score": l3_score,
-                        "score_rate": round(l3_score / l3_full_score * 100, 1) if l3_full_score > 0 else 0,
+                        "score_rate": round(l3_score / l3_full_score * 100, 1) if l3_score is not None and l3_full_score > 0 else None,
                     })
 
                 l1_score += l2_score
@@ -2441,7 +2269,10 @@ async def get_score_summary(
 
         # 等级判定
         score_100 = round(total_score / total_full * 100, 2) if total_full > 0 else 0
-        if score_100 >= excellent:
+        if missing or not assessed or abs(total_full - 100) > 0.01:
+            grade = "待核实"
+            score_100 = None
+        elif score_100 >= excellent:
             grade = "优秀"
         elif score_100 >= good:
             grade = "良好"
@@ -2463,13 +2294,11 @@ async def get_score_summary(
             "total_full": total_full,
             "score_100": score_100,
             "grade": grade,
+            "missing_count": missing,
             "thresholds": {"excellent": excellent, "good": good, "medium": medium},
             "level1_scores": level1_scores,
             "chart_data": chart_data,
         }
-
-        # 保存到state（写回checkpoint）
-        _persist_state(session_id, {"score_summary": result})
 
         return {"success": True, "data": result}
     except HTTPException:
@@ -2498,7 +2327,7 @@ class ModuleGenerateRequest(BaseModel):
     module_name: Optional[str] = None
 
 
-@router.post("/workflow/generate-module")
+@router.post("/workflow/generate-module", dependencies=[Depends(_require_body_workflow)])
 async def generate_module_content(req: ModuleGenerateRequest):
     """
     步骤12：单独生成某一个模块的内容
@@ -2510,7 +2339,7 @@ async def generate_module_content(req: ModuleGenerateRequest):
 
         module_name = req.module_name or STEP12_MODULES.get(req.module_key, req.module_key)
 
-        workflow, values = _get_workflow_values(req.session_id)
+        values = _get_workflow_values(req.session_id)
         cfg = active_workflow_configs.get(req.session_id, {})
         model_name = cfg.get("model_name") or settings.DEFAULT_MODEL
 
@@ -2565,11 +2394,11 @@ async def generate_module_content(req: ModuleGenerateRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/workflow/{session_id}/modules")
+@router.get("/workflow/{session_id}/modules", dependencies=[Depends(_require_path_workflow)])
 async def get_module_contents(session_id: str):
     """获取步骤12各模块内容"""
     try:
-        workflow, values = _get_workflow_values(session_id)
+        values = _get_workflow_values(session_id)
         modules = values.get("basic_info_modules", {}) or {}
         return {
             "success": True,
@@ -2598,7 +2427,7 @@ class AddOpenQuestionRequest(BaseModel):
     related_indicator_name: Optional[str] = None
 
 
-@router.post("/workflow/questionnaire/add-open-question")
+@router.post("/workflow/questionnaire/add-open-question", dependencies=[Depends(_require_body_workflow)])
 async def add_open_ended_question(req: AddOpenQuestionRequest):
     """
     向已有问卷手动添加开放性问题（填空题）
@@ -2607,55 +2436,16 @@ async def add_open_ended_question(req: AddOpenQuestionRequest):
     try:
         session_id = req.session_id
 
-        # 从缓存获取已有问卷
-        if session_id in _QUESTIONNAIRE_CACHE:
-            qcache = _QUESTIONNAIRE_CACHE[session_id]
-            questions = qcache.get("questions", [])
-        else:
-            # 尝试从备份恢复
-            backup = PerformanceAgent.load_state_backup(session_id)
-            qcache = backup.get("questionnaire", {})
-            questions = qcache.get("questions", [])
-            if not questions:
-                raise HTTPException(status_code=404, detail="未找到问卷，请先生成问卷")
-
-        import uuid
-        new_question = {
-            "id": str(uuid.uuid4())[:8],
-            "index": len(questions) + 1,
-            "question": req.question_text,
-            "question_type": "open_ended",
-            "related_indicator_id": req.related_indicator_id or "",
-            "related_indicator_name": req.related_indicator_name or "",
-            "scale_levels": [],
-            "created_by": "user",
-        }
-        questions.append(new_question)
-
-        # 更新缓存
-        if session_id in _QUESTIONNAIRE_CACHE:
-            _QUESTIONNAIRE_CACHE[session_id]["questions"] = questions
-        else:
-            _QUESTIONNAIRE_CACHE[session_id] = {
-                "questions": questions,
-                "display_md": "",
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
-
-        # 同时保存到文件备份
-        try:
-            backup_save = PerformanceAgent.load_state_backup(session_id) or {}
-            backup_save["questionnaire"] = {
-                "questions": questions,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-                "project_name": qcache.get("project_name", backup_save.get("project_name", "")),
-            }
-            backup_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "state_backups")
-            os.makedirs(backup_dir, exist_ok=True)
-            with open(os.path.join(backup_dir, f"{session_id}.json"), "w", encoding="utf-8") as f:
-                json.dump(backup_save, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        qcache = _published_questionnaire(session_id)
+        questions = list(qcache["questions"])
+        new_question = QuestionnaireGenerator().add_open_ended_question(questions, req.question_text)
+        new_question["related_indicator_id"] = req.related_indicator_id or ""
+        new_question["related_indicator_name"] = req.related_indicator_name or ""
+        updated = {**qcache, "questions": questions,
+                   "display_md": QuestionnaireGenerator().format_questionnaire_for_display(questions),
+                   "updated_at": datetime.now(timezone.utc).isoformat()}
+        PerformanceAgent.update_state_backup(session_id, {"questionnaire": updated})
+        _QUESTIONNAIRE_CACHE[session_id] = updated
 
         return {
             "success": True,
@@ -2678,7 +2468,7 @@ class LanguageStyleRequest(BaseModel):
     language_style: str = "中立"
 
 
-@router.post("/workflow/set-language-style")
+@router.post("/workflow/set-language-style", dependencies=[Depends(_require_body_workflow)])
 async def set_language_style(req: LanguageStyleRequest):
     """
     设置步骤9、10的语言风格（中立/尖锐/委婉）
@@ -2688,7 +2478,7 @@ async def set_language_style(req: LanguageStyleRequest):
         raise HTTPException(status_code=400, detail=f"无效的语言风格，支持: {valid_styles}")
 
     try:
-        workflow, values = _get_workflow_values(req.session_id)
+        values = _get_workflow_values(req.session_id)
         sc = values.get("step_control", {})
         sc["language_style"] = req.language_style
         _persist_state(req.session_id, {"step_control": sc})
@@ -2704,58 +2494,47 @@ async def set_language_style(req: LanguageStyleRequest):
 #  辅助函数
 # ═══════════════════════════════════════════════════════
 
-def _get_workflow_values(session_id: str):
-    """获取工作流状态值（自动重建workflow）"""
-    if session_id not in active_workflows:
-        if session_id not in active_workflow_configs:
-            raise HTTPException(status_code=404, detail="工作流不存在")
-        cfg = active_workflow_configs[session_id]
-        workflow = PerformanceAgent(
-            session_id=session_id, model_name=cfg.get("model_name") or settings.DEFAULT_MODEL,
-            temperature=cfg.get("temperature", 0.7),
-            top_p=cfg.get("top_p", 0.9),
-            use_rag=cfg.get("use_rag", False),
-            comparison_mode=cfg.get("comparison_mode", "single"),
-            temperature_profile=cfg.get("temperature_profile", "normal"),
-        )
-        active_workflows[session_id] = workflow
-    else:
-        workflow = active_workflows[session_id]
+def _get_workflow_values(session_id: str) -> dict:
+    """Read the checkpoint or disk projection, using legacy name-based indicator IDs."""
+    workflow = active_workflows.get(session_id)
+    snapshot = workflow.get_state({"configurable": {"thread_id": session_id}}) if workflow else None
+    values = dict(getattr(snapshot, "values", {}) or PerformanceAgent.load_state_backup(session_id))
+    if not values:
+        raise HTTPException(status_code=404, detail="工作流状态不存在")
+    if "step_results" in values:
+        values["step_results"] = {int(key): value for key, value in values["step_results"].items()}
 
-    config = {"configurable": {"thread_id": session_id}}
-    state_obj = workflow.get_state(config)
-    if not state_obj or not getattr(state_obj, 'values', None):
-        raise HTTPException(status_code=400, detail="工作流尚未启动")
-    return workflow, state_obj.values
+    def with_ids(items, parents=()):
+        nodes = []
+        for item in items:
+            names = (*parents, item.get("name") or "")
+            node = {**item, "id": item.get("id") or "_".join(names)}
+            if item.get("children"):
+                node["children"] = with_ids(item["children"], names)
+            nodes.append(node)
+        return nodes
+
+    system = values.get("indicator_system")
+    if system and system.get("level1_indicators"):
+        values["indicator_system"] = {**system, "level1_indicators": with_ids(system["level1_indicators"])}
+    return values
 
 
-def _persist_state(session_id: str, updates: dict) -> bool:
-    """
-    将状态修改写入LangGraph checkpoint。
-    注意：get_state() 返回的 values 是快照，直接修改不会持久化，
-    必须通过 update_state 写回，否则下一次读取会丢失修改。
-    """
-    try:
-        workflow = active_workflows.get(session_id)
-        if workflow is None:
-            if session_id not in active_workflow_configs:
-                return False
-            cfg = active_workflow_configs[session_id]
-            workflow = PerformanceAgent(
-                session_id=session_id, model_name=cfg.get("model_name") or settings.DEFAULT_MODEL,
-                temperature=cfg.get("temperature", 0.7),
-                top_p=cfg.get("top_p", 0.9),
-                use_rag=cfg.get("use_rag", False),
-                comparison_mode=cfg.get("comparison_mode", "single"),
-                temperature_profile=cfg.get("temperature_profile", "normal"),
-            )
-            active_workflows[session_id] = workflow
+def _persist_state(session_id: str, updates: dict) -> None:
+    if session_id in _WORKFLOW_PROGRESS and updates.keys() & {"indicator_system", "indicator_score_map", "step_results"}:
+        raise HTTPException(status_code=409, detail="工作流执行中，暂不能修改指标或步骤")
+    workflow = active_workflows.get(session_id)
+    if workflow:
         config = {"configurable": {"thread_id": session_id}}
         workflow.app.update_state(config, updates)
-        return True
-    except Exception as e:
-        logger.warning(f"工作流状态写入checkpoint失败（非致命）: {e}")
-        return False
+    persisted = dict(updates)
+    if "step_results" in updates:
+        persisted["step_results"] = {
+            key: {**item, "created_at": str(item.get("created_at", "")),
+                  "updated_at": str(item.get("updated_at", ""))}
+            for key, item in updates["step_results"].items()
+        }
+    PerformanceAgent.update_state_backup(session_id, persisted)
 
 
 def _parse_evaluation_points(scoring_standard: str) -> list:
@@ -2788,17 +2567,17 @@ def _generate_score_table(indicator_system: dict, score_map: dict) -> str:
             sub_rows = []
             for l3 in l2.get("children", []):
                 l3_name = l3.get("name", "")
-                l3_full = l3.get("score", 0)
+                l3_full = score_number(l3.get("score")) or 0
                 l3_id = l3.get("id", f"{l1_name}_{l2_name}_{l3_name}")
-                actual = score_map.get(l3_id, {}).get("actual_score", l3_full)
-                rate = round(actual / l3_full * 100, 1) if l3_full > 0 else 0
+                actual = actual_indicator_score(l3, score_map, l3_id)
+                rate = f"{actual / l3_full * 100:.1f}%" if actual is not None and l3_full else "—"
                 l2_full += l3_full
-                l2_score += actual
-                sub_rows.append(f"| {l1_name} | {l2_name} | {l3_name} | {l3_full} | {actual} | {rate}% |")
+                l2_score += actual if actual is not None else 0
+                score_text = actual if actual is not None else "待核实"
+                sub_rows.append(f"| {l1_name} | {l2_name} | {l3_name} | {l3_full} | {score_text} | {rate} |")
             for sr in sub_rows:
                 rows.append(sr)
-            l2_rate = round(l2_score / l2_full * 100, 1) if l2_full > 0 else 0
-            rows.append(f"| | **{l2_name} 小计** | | **{l2_full}** | **{l2_score}** | **{l2_rate}%** |")
+            rows.append(f"| | **{l2_name} 已核实小计** | | **{l2_full}** | **{l2_score}** | — |")
 
     return "\n".join(rows)
 
@@ -2816,7 +2595,7 @@ class ReorderRequest(BaseModel):
     parent_l2_idx: Optional[int] = None  # level3时需指定属于哪个二级指标
 
 
-@router.post("/workflow/reorder-indicators")
+@router.post("/workflow/reorder-indicators", dependencies=[Depends(_require_body_workflow)])
 async def reorder_indicators(req: ReorderRequest):
     """
     步骤6：拖拽重排序指标体系
@@ -2825,7 +2604,7 @@ async def reorder_indicators(req: ReorderRequest):
     level3: 三级指标在某二级指标内拖动（不能跨二级指标）
     """
     try:
-        workflow, values = _get_workflow_values(req.session_id)
+        values = _get_workflow_values(req.session_id)
         indicator_system = values.get("indicator_system", {})
         if not indicator_system or not indicator_system.get("level1_indicators"):
             raise HTTPException(status_code=400, detail="指标体系尚未生成")
@@ -2867,7 +2646,8 @@ async def reorder_indicators(req: ReorderRequest):
             raise HTTPException(status_code=400, detail="level参数无效，支持: level1/level2/level3")
 
         # 写回checkpoint（workflow.app 是编译后的图，才有update_state方法）
-        _persist_state(req.session_id, {"indicator_system": indicator_system})
+        _persist_state(req.session_id, {"indicator_system": indicator_system,
+                                       "review_steps": _review_after(values, 3)})
 
         return {"success": True, "message": f"{req.level} 指标重排序完成"}
     except HTTPException:
@@ -3013,7 +2793,7 @@ def _load_templates() -> dict:
     return defaults
 
 
-@router.get("/workflow/templates")
+@router.get("/workflow/templates", dependencies=[Depends(get_current_user)])
 async def list_templates():
     """获取所有可用的指标体系模板"""
     try:
@@ -3030,7 +2810,7 @@ async def list_templates():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/workflow/templates/{template_id}")
+@router.get("/workflow/templates/{template_id}", dependencies=[Depends(get_current_user)])
 async def get_template(template_id: str):
     """获取单个模板详情"""
     try:
@@ -3049,7 +2829,7 @@ class ImportTemplateRequest(BaseModel):
     template_id: str
 
 
-@router.post("/workflow/templates/import")
+@router.post("/workflow/templates/import", dependencies=[Depends(_require_body_workflow)])
 async def import_template(req: ImportTemplateRequest):
     """
     步骤3：一键导入模板指标体系到当前工作流
@@ -3059,7 +2839,7 @@ async def import_template(req: ImportTemplateRequest):
         if req.template_id not in templates:
             raise HTTPException(status_code=404, detail="模板不存在")
 
-        workflow, values = _get_workflow_values(req.session_id)
+        values = _get_workflow_values(req.session_id)
         template = templates[req.template_id]
 
         # 导入模板的指标体系
@@ -3068,7 +2848,8 @@ async def import_template(req: ImportTemplateRequest):
             "level1_indicators": template["level1_indicators"],
             "source": f"template:{req.template_id}",
         }
-        _persist_state(req.session_id, {"indicator_system": indicator_system})
+        _persist_state(req.session_id, {**_indicator_change(values, indicator_system),
+                                       "review_steps": _review_after(values, 3)})
 
         return {"success": True, "data": indicator_system, "message": f"已导入模板「{template['name']}」"}
     except HTTPException:
@@ -3084,11 +2865,11 @@ class SaveTemplateRequest(BaseModel):
     template_type: str = "自定义"
 
 
-@router.post("/workflow/templates/save")
+@router.post("/workflow/templates/save", dependencies=[Depends(_require_body_workflow)])
 async def save_as_template(req: SaveTemplateRequest):
     """将当前工作流的指标体系保存为新模板"""
     try:
-        workflow, values = _get_workflow_values(req.session_id)
+        values = _get_workflow_values(req.session_id)
         indicator_system = values.get("indicator_system", {})
         if not indicator_system or not indicator_system.get("level1_indicators"):
             raise HTTPException(status_code=400, detail="指标体系为空")
@@ -3146,11 +2927,11 @@ class ReportOrderRequest(BaseModel):
     sections: List[Dict[str, Any]]
 
 
-@router.get("/workflow/{session_id}/report-order")
+@router.get("/workflow/{session_id}/report-order", dependencies=[Depends(_require_path_workflow)])
 async def get_report_order(session_id: str):
     """获取最终报告的章节顺序"""
     try:
-        workflow, values = _get_workflow_values(session_id)
+        values = _get_workflow_values(session_id)
         saved_order = values.get("report_section_order")
         if saved_order:
             return {"success": True, "data": saved_order, "is_custom": True}
@@ -3167,11 +2948,11 @@ async def get_report_order(session_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/workflow/report-order")
+@router.post("/workflow/report-order", dependencies=[Depends(_require_body_workflow)])
 async def set_report_order(req: ReportOrderRequest):
     """设置最终报告的自定义章节顺序"""
     try:
-        workflow, values = _get_workflow_values(req.session_id)
+        values = _get_workflow_values(req.session_id)
         _persist_state(req.session_id, {"report_section_order": req.sections})
         return {"success": True, "message": "报告章节顺序已更新"}
     except HTTPException:
@@ -3186,14 +2967,14 @@ class AssembleReportRequest(BaseModel):
     include_sections: Optional[List[str]] = None
 
 
-@router.post("/workflow/assemble-report")
-async def assemble_final_report(req: AssembleReportRequest):
+@router.post("/workflow/assemble-report", dependencies=[Depends(_require_body_workflow)])
+async def assemble_final_report(req: AssembleReportRequest, db: Session = Depends(get_db)):
     """
     步骤14：按自定义顺序组装最终报告
     支持选择性地包含某些章节
     """
     try:
-        workflow, values = _get_workflow_values(req.session_id)
+        values = _get_workflow_values(req.session_id)
         project_name = values.get("project_name", "未命名项目")
 
         # 使用自定义顺序或默认顺序
@@ -3204,6 +2985,8 @@ async def assemble_final_report(req: AssembleReportRequest):
             section_map = {k: {"key": k, "name": v, "enabled": True} for k, v in REPORT_SECTION_ORDER.items()}
 
         # 按顺序组装
+        review = set(values.get("review_steps", []))
+        stale_fields = {STEP_CONTENT_FIELDS.get(step) for step in review}
         report_sections = []
         ordered_keys = custom_order and [s["key"] for s in custom_order] or list(REPORT_SECTION_ORDER.keys())
         if req.include_sections:
@@ -3216,6 +2999,9 @@ async def assemble_final_report(req: AssembleReportRequest):
             title = sec.get("name", REPORT_SECTION_ORDER.get(key, key))
             # 通过映射获取正确的状态字段（basic_info / work_introduction 等）
             state_field = _SECTION_KEY_TO_STATE_FIELD.get(key, "")
+            if state_field in stale_fields:
+                report_sections.append(f"## {title}\n\n待复核：上游结果已修改。")
+                continue
             content = values.get(state_field, "") if state_field else ""
             if not content:
                 content = values.get(key, "") or ""
@@ -3228,7 +3014,13 @@ async def assemble_final_report(req: AssembleReportRequest):
         if req.show_title:
             full_report = f"# {project_name}绩效评价报告\n\n{full_report}"
 
-        _persist_state(req.session_id, {"final_report": full_report})
+        index = report_evidence_index(values.get("step_evidence", {}))
+        if index:
+            full_report += "\n\n" + index
+        if review:
+            return {"success": True, "data": {"report": full_report, "section_count": len(report_sections),
+                                             "review_steps": sorted(review), "draft": True}}
+        _save_report(req.session_id, full_report, db)
         return {"success": True, "data": {"report": full_report, "section_count": len(report_sections)}}
     except HTTPException:
         raise
@@ -3237,14 +3029,14 @@ async def assemble_final_report(req: AssembleReportRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/workflow/{session_id}/format-check")
+@router.post("/workflow/{session_id}/format-check", dependencies=[Depends(_require_path_workflow)])
 async def check_report_format(session_id: str):
     """
     步骤14：依据396号文要求进行格式校对
     检查最终报告的格式规范性和内容完整性
     """
     try:
-        workflow, values = _get_workflow_values(session_id)
+        values = _get_workflow_values(session_id)
         final_report = values.get("final_report", "")
         if not final_report:
             raise HTTPException(status_code=400, detail="请先组装最终报告")
@@ -3300,14 +3092,14 @@ class AddCustomModuleRequest(BaseModel):
     content: Optional[str] = None
 
 
-@router.post("/workflow/add-custom-module")
+@router.post("/workflow/add-custom-module", dependencies=[Depends(_require_body_workflow)])
 async def add_custom_module(req: AddCustomModuleRequest):
     """
     步骤12：添加自定义模块（除默认5个模块外）
     操作者可根据项目需要新增模块内容
     """
     try:
-        workflow, values = _get_workflow_values(req.session_id)
+        values = _get_workflow_values(req.session_id)
         modules = values.get("basic_info_modules", {}) or {}
 
         if req.module_key in modules:
@@ -3336,11 +3128,11 @@ class DeleteModuleRequest(BaseModel):
     module_key: str
 
 
-@router.post("/workflow/delete-module")
+@router.post("/workflow/delete-module", dependencies=[Depends(_require_body_workflow)])
 async def delete_module(req: DeleteModuleRequest):
     """步骤12：删除自定义模块"""
     try:
-        workflow, values = _get_workflow_values(req.session_id)
+        values = _get_workflow_values(req.session_id)
         modules = values.get("basic_info_modules", {}) or {}
 
         if req.module_key not in modules:
@@ -3356,13 +3148,13 @@ async def delete_module(req: DeleteModuleRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/workflow/update-module-content")
+@router.post("/workflow/update-module-content", dependencies=[Depends(_require_body_workflow)])
 async def update_module_content(req: AddCustomModuleRequest):
     """
     步骤12：更新已有模块内容（支持默认5模块+自定义模块）
     """
     try:
-        workflow, values = _get_workflow_values(req.session_id)
+        values = _get_workflow_values(req.session_id)
         modules = values.get("basic_info_modules", {}) or {}
         modules[req.module_key] = req.content or ""
         _persist_state(req.session_id, {"basic_info_modules": modules})
@@ -3385,14 +3177,14 @@ class ExportStyleRequest(BaseModel):
     page_margin: float = 2.5
 
 
-@router.post("/workflow/export-style")
+@router.post("/workflow/export-style", dependencies=[Depends(_require_body_workflow)])
 async def set_export_style(req: ExportStyleRequest):
     """
     设置导出PDF/Word文档的自定义样式
     支持的字体：SimSun(宋体), SimHei(黑体), KaiTi(楷体), FangSong(仿宋)
     """
     try:
-        workflow, values = _get_workflow_values(req.session_id)
+        values = _get_workflow_values(req.session_id)
         style = {
             "font_family": req.font_family,
             "font_size": req.font_size,
@@ -3407,11 +3199,11 @@ async def set_export_style(req: ExportStyleRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/workflow/{session_id}/export-style")
+@router.get("/workflow/{session_id}/export-style", dependencies=[Depends(_require_path_workflow)])
 async def get_export_style(session_id: str):
     """获取当前的导出样式设置"""
     try:
-        workflow, values = _get_workflow_values(session_id)
+        values = _get_workflow_values(session_id)
         style = values.get("export_style", {
             "font_family": "SimSun", "font_size": 12,
             "line_spacing": 1.5, "page_margin": 2.5,
