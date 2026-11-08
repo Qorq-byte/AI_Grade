@@ -830,22 +830,32 @@ def admin_update_prompt(
 
 @router.post("/prompts/{prompt_id}/reset")
 def admin_reset_prompt(prompt_id: int, db: Session = Depends(get_db), admin: User = Depends(get_admin_user)):
-    """重置提示词为系统默认"""
-    from backend.services.rag_service import get_default_prompts
+    """重置提示词为系统默认。
+
+    默认提示词的唯一来源是 `default_prompts.PromptTemplateFactory`
+    （此前误从 `services.rag_service` 导入不存在的 `get_default_prompts`，接口必 500）。
+    库内格式沿用 `PromptManager.save_to_database` 的约定：`system + "\\n\\n---\\n\\n" + human`。
+    """
+    from backend.agents.prompts.default_prompts import get_all_default_prompts_as_dict
+
     prompt = db.query(PromptTemplate).filter(PromptTemplate.id == prompt_id).first()
     if not prompt:
         raise HTTPException(status_code=404, detail="提示词不存在")
-    defaults = get_default_prompts() if callable(get_default_prompts) else {}
-    default_content = defaults.get(prompt.step_number, "") if isinstance(defaults, dict) else ""
-    if not default_content and hasattr(defaults, 'get'):
-        default_content = defaults.get(str(prompt.step_number), "")
-    prompt.prompt_content = default_content or prompt.prompt_content
+
+    default_data = get_all_default_prompts_as_dict().get(prompt.step_number) or {}
+    if not default_data.get("system_prompt") and not default_data.get("human_prompt"):
+        raise HTTPException(status_code=400, detail=f"步骤 {prompt.step_number} 没有系统默认提示词")
+
+    prompt.prompt_content = (
+        f"{default_data.get('system_prompt', '')}\n\n---\n\n{default_data.get('human_prompt', '')}"
+    )
+    prompt.step_name = default_data.get("step_name") or prompt.step_name
     prompt.version = (prompt.version or 0) + 1
     prompt.modified_by = admin.id
     prompt.change_log = "重置为系统默认"
     prompt.updated_at = datetime.now(timezone.utc)
     db.commit()
-    return {"success": True, "message": "已重置为系统默认"}
+    return {"success": True, "message": "已重置为系统默认", "data": {"version": prompt.version}}
 
 
 @router.delete("/prompts/{prompt_id}")
