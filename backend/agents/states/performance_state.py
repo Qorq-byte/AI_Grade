@@ -195,6 +195,8 @@ class PerformanceState(TypedDict, total=False):
     _step9_deduction_context: str
     raw_text: str                       # 所有文件提取后的原始文本
     all_raw_texts: Dict[str, str]       # 按文件名的原始文本映射 {filename: text}
+    raw_line_counts: Dict[str, int]     # 步骤7弱定位用：{文件名(去上传前缀): 非空行数}，轻量投影便于进备份
+    document_coverage: Dict[str, Any]   # 提示词资料覆盖度（总字数/使用字数/未引用块/是否已压缩）
 
     # ── 步骤控制 ──
     step_control: StepControl
@@ -250,6 +252,8 @@ class PerformanceState(TypedDict, total=False):
     final_report_modules: Dict[str, str]   # Step14: 报告各模块内容
     report_module_order: List[str]         # Step14: 模块排列顺序
     report_section_order: List[Dict[str, Any]]  # Step14: 自定义章节顺序
+    consistency: Dict[str, Any]            # Step14: 步骤间一致性检查结果（纯程序，不调模型）
+    score_disposition: Dict[str, Any]      # Step7: 逐指标评分处置台账（已落地/模型待核实/引用无法定位…）
 
     # ── 前端交互写入的扩展状态（通过update_state持久化） ──
     indicator_score_history: List[Dict[str, Any]]
