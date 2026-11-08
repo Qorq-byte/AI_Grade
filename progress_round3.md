@@ -1,4 +1,4 @@
-# 第三轮优化 · 进度记录（Batch 1–12）
+# 第三轮优化 · 进度记录（Batch 1–15）
 
 本轮按《优化提示词_第三轮_全面优化.md》执行，遵守「分批交付、基线优先、向后兼容」纪律。
 已完成**阶段一（前端模块化）主体**与**阶段二（连接契约与传输层）的核心 SSE 部分**，
@@ -38,6 +38,7 @@
 | 四 | 步骤7弱定位独立成项（Batch 12 新增） | ✅ 完成（第 6 类锚点 `material_locator` + 第 7 类状态 `anchor_weak`，**不计入总分**；标题改从原文抽，不再把自己生成的表格标题当证据。同一备份重放：`b425eb90` 1/20→3/20 且总分仍等于备份真实值 11.0） |
 | 四 | 3. 结构化修复不得缩水（Batch 13 新增） | ✅ 完成（回显上限步骤 7 单独 24,000；提示词不再教删条目；`repair_shrunk` 拦缩水并保留原文；首次正文留档 `raw_content`。历史备份：`ok` 组正文最短 5,751 字、`repaired` 组最长 3,218 字，**零重叠**；真实 14 步验证「格式修好、条目没少」的正常修复未被误伤） |
 | 四 | 3. 缩水闸门不能自带盲区（Batch 14 新增） | ✅ 完成（基准改为原文 JSON 条目，认 dict/list/扁平三形态；加「可计分数值分不得减少」；判不了置 `unverifiable` 并写 warning。22 份备份新旧口径对比只变 1 份，且是**修正真实误伤**：`11b16a29` 的 15 条数组形态旧规则数成 0 → 误判缩水。真实 26 条/6 分值、12,608 字→2,745 字的修复未被误伤） |
+| 二 | 备份文件读写竞态（Batch 15 新增，B14.5 挂账） | ✅ 完成（写/删加 2 秒退避重试，问卷列表读路径改走持锁入口；双进程对打 162/400→0/400 次 `WinError 5`；那条「偶发 500」可在 12 秒内稳定复现了） |
 | 四 | 4/5/6/8/9/10 | ❌ 未开始 |
 | 四 | 7. 模型调用韧性 | ⚠️ 部分（流式 usage 优先上游、无 usage 标注 estimated 不落假数据；降级链与分级超时未做） |
 | 五 | 1. 解耦 agent → routes 循环依赖 | ✅ 完成（`progress_bus`） |
@@ -2298,3 +2299,166 @@ node tests/test_workflow_sse.cjs                                       # 8 pass
 7. **「缩水」的真值仍是人工判断。** 本批保证的是「不比原文少」，不是「每条都对」。
 
 
+
+---
+
+# 批次 15：把备份文件的读写竞态关掉（B14.5 挂的账）
+
+## B15.1 起点：这不是「偶发」，是两条路径抢同一个文件
+
+B14.5 记下的失败原文：
+
+```
+[ERROR] 未处理的异常 [POST /api/agent/workflow/questionnaire]:
+        [WinError 5] 拒绝访问。: 'state_backups\tmpqfie3sht' -> 'state_backups\<sid>.json'
+```
+
+当时的结论是「重跑就过，偶发」。这一批不接受这个结论，先把它变成能稳定复现的东西。
+
+用全仓库检索确认了范围——读写 `state_backups` 的地方一共三类：
+
+| 位置 | 操作 | 是否持 `_STATE_BACKUP_LOCK` |
+|---|---|---|
+| `performance_agent.update_state_backup` | 写临时文件 + `Path.replace` | 持 |
+| `performance_agent.load_state_backup` | `open().read()` | 持 |
+| `agent_routes.py:1933` 问卷列表恢复循环 | `open().read()` | **不持** |
+| `client_routes.py:685` `_remove_report_snapshot` | `unlink` | **不持** |
+
+`_STATE_BACKUP_LOCK` 是进程内 `RLock`。写路径持锁 + `os.replace`，读路径不持锁直接开文件——
+Windows 的 `open()` 不带 `FILE_SHARE_DELETE`，只要读句柄还开着，`os.replace` 就必然失败。
+这跟「概率」无关，只跟「有没有重叠」有关，而备份文件已有 24 份、列表接口每次全量扫一遍，
+重叠窗口越来越大，所以它只会越来越常见。
+
+## B15.2 取证：先让它在 12 秒内稳定红
+
+新增 `tests/test_state_backup_race.py`，第一条用例就是真实复现：起一个线程打开备份文件、
+持有 0.2 秒，主线程在此期间调 `update_state_backup`。
+
+改前跑出来的是：
+
+```
+E   PermissionError: [WinError 5] 拒绝访问。:
+    '...\backups\tmpf3ur7i7v' -> '...\backups\race.json'
+```
+
+**与生产日志同一形状**（临时文件 → 正式文件），且 12 秒内必现——从「跑 46 项 e2e 靠运气」变成
+「一条用例、一次命中」。
+
+## B15.3 做法（三处，都是最小改动）
+
+1. **写入侧加退避重试。** 新增模块级 `_retry_on_transient_permission(op, budget)`：
+   只对 `PermissionError` 重试，预算 `STATE_BACKUP_IO_BUDGET_SEC = 2.0` 秒，指数退避
+   （20ms 起，封顶 250ms）；预算耗尽**照原样抛出**，不吞。发布与删除各包一层
+   （`_publish_backup` / `_discard_backup`）。
+2. **读路径收口。** `agent_routes.py` 的列表恢复循环改用 `PerformanceAgent.load_state_backup(sid)`，
+   与写入共用一把锁；`if not backup: continue` 保留「文件坏了就跳过这条」的原有语义
+   （改前是 `except Exception: pass`，等价）。
+3. **删除路径收口。** 新增 `PerformanceAgent.delete_state_backup(session_id)`（持锁 + 重试），
+   `client_routes._remove_report_snapshot` 改调它；文件本来就不存在时返回 `False`，调用方未用返回值，
+   行为不变。
+
+顺手把 `NamedTemporaryFile(delete=False)` 换成 `mkstemp(suffix=".tmp")`——不是重构癖，
+是为了让「临时文件有没有残留」这件事**可以被断言**（`glob("*.tmp")`）。
+
+## B15.4 验证（四个方向）
+
+**① 单测 6 条全绿**（改前 5 红 1 绿）：
+
+```
+tests/test_state_backup_race.py ......                                 6 passed
+```
+
+覆盖：真实占用下写入落地、重试循环真的重试了 3 次、占用不放时响亮失败且旧内容完好、
+删除走持锁入口、列表接口必须经过 `load_state_backup`（用 spy 断言，退回裸 `open()` 必红）、
+坏文件与 `deleted` 备份仍被跳过。
+
+**② 跨进程探针：162/400 → 0/400。** `_STATE_BACKUP_LOCK` 挡不住别的进程，所以专门用
+两个进程对打（一个持续开读句柄，一个写 400 次），把「预算」当开关对比：
+
+```
+改前（预算 0 秒，失败即抛）: 162/400 次 PermissionError
+改后（预算 2 秒，退避重试）: 0/400 次 PermissionError
+```
+
+40.5% 的写入会失败——这就是那个「偶发 500」的真身。
+
+**③ 全量回归 268 → 274 passed**（新增 6 条，无既有用例改动）：
+
+```
+.venv/Scripts/python -m pytest tests/ -q --ignore=tests/rag_eval
+274 passed, 368 warnings in 30.58s
+```
+
+**④ 变异检验：新增 4 个变异体全部被抓，既有两个脚本未受影响。**
+
+```
+抓住  发布不重试（目标被占用就直接抛）
+抓住  发布后不清临时文件
+抓住  删除假装成功（不真删文件）
+抓住  列表接口退回裸 open（绕过锁）
+```
+
+真实服务上：`test_all_apis.py` **46/46**、`frontend_e2e_check.py` **72 通过 / 0 失败**
+（服务已用本批代码重启，非旧进程）。
+
+## B15.5 改动清单
+
+| 文件 | 跟踪状态 | 改了什么 |
+|---|---|---|
+| `backend/agents/performance_agent.py` | `M` | 新增 `STATE_BACKUP_IO_*` 三个常量、`_retry_on_transient_permission` / `_publish_backup` / `_discard_backup`；`update_state_backup` 改 `mkstemp` + 重试发布；新增 `delete_state_backup` |
+| `backend/routes/agent_routes.py` | `M` | 问卷列表恢复循环改走 `load_state_backup`（不再裸 `open`），补 `if not backup: continue` |
+| `backend/routes/client_routes.py` | `M` | `_remove_report_snapshot` 改调 `delete_state_backup` |
+| `tests/test_state_backup_race.py` | 新增 | 6 条：真实占用复现、重试计数、占用不放要报错、删除持锁、列表必须走持锁入口、坏文件/已删跳过 |
+| `tests/_probe_backup_race.py` | 新增 | 双进程对打探针，预算 0 秒 vs 2 秒的失败次数对比 |
+| `tests/_mutate_backup_race.py` | 新增 | 4 个变异体 |
+
+没有改：接口路径、SSE 事件名与语义、DB 字段、提示词模板、备份文件格式（仍是单个 JSON）。
+
+## B15.6 可重跑命令
+
+```bash
+# 单测（6 条，Windows 上是真实竞态复现）
+.venv/Scripts/python -m pytest tests/test_state_backup_race.py -q
+
+# 全量回归
+.venv/Scripts/python -m pytest tests/ -q --ignore=tests/rag_eval      # 274 passed
+
+# 跨进程探针：改前 162/400 失败，改后 0/400
+.venv/Scripts/python tests/_probe_backup_race.py
+
+# 变异测试：新增 4 个 + 既有 28 个 + 既有 7 个
+.venv/Scripts/python tests/_mutate_backup_race.py
+.venv/Scripts/python tests/_mutate_step7.py
+.venv/Scripts/python tests/_mutate_consistency.py
+
+# 真实服务端到端（需先启动 uvicorn）
+.venv/Scripts/python test_all_apis.py                                  # 46/46
+.venv/Scripts/python frontend_e2e_check.py                             # 72 通过 / 0 失败
+```
+
+## B15.7 回滚方式
+
+1. 完全回滚：`git checkout -- backend/agents/performance_agent.py backend/routes/agent_routes.py backend/routes/client_routes.py`，
+   删掉 `tests/test_state_backup_race.py`、`tests/_probe_backup_race.py`、`tests/_mutate_backup_race.py`。
+2. **只关效果不动结构**：把 `STATE_BACKUP_IO_BUDGET_SEC` 设为 `0`，重试立即失效（第一次
+   `PermissionError` 就抛），即回到改前行为——这一步可以单独用来复现线上那个 500。
+3. 只回滚读路径：把 `agent_routes.py` 那段换回 `with open(...) as f: backup = json.load(f)`。
+
+## B15.8 剩余风险与未验证项（诚实列出）
+
+1. **2 秒预算只覆盖 2 秒以内的占用。** 被占更久（大文件备份软件、在线杀毒全盘扫描）仍会抛错；
+   `_persist_state_backup` 会吞掉并记 warning，用户侧表现为「这一步的备份没落盘」而不是 500。
+   这是刻意的取舍：宁可留 warning，也不静默丢数据。
+2. **锁仍是进程内的。** 多 worker 部署（`uvicorn --workers 4`）下，跨进程只靠重试，
+   不靠锁；本批**没有**验证多 worker 场景（本地是单进程）。要彻底解决得上文件锁
+   （`msvcrt.locking` / `portalocker`），那是另一批的事。
+3. **`load_state_backup` 吞 `OSError` 的行为没变。** 极端窗口里读不到会返回 `{}`，
+   列表接口这一轮就跳过该记录（下一轮恢复）。与改前的 `except Exception: pass` 等价，
+   但「读不到」和「文件真的是空的」在返回值上无法区分——这是既有设计，本批不动。
+4. **只收口了 `state_backups`。** `uploads/`、`exports/`、`state_backups` 之外的磁盘写入
+   没有扫同类竞态（例如导出目录的清理定时器与下载请求）。**未验证**，不敢说没有。
+5. **探针用读句柄模拟占用，没有真的跑杀毒软件。** 两者在 Win32 层是同一类失败
+   （缺 `FILE_SHARE_DELETE`），但严格说不是同一件事。
+6. **用例 1 与探针在 POSIX 上恒绿**（`os.replace` 在 POSIX 允许覆盖被打开的文件），
+   即这两条只在 Windows——本项目的实际部署目标——具备证伪能力。CI 若跑 Linux，
+   它们不会替我们发现回归。
