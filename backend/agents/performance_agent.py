@@ -169,6 +169,28 @@ DISPOSITION_LABELS = {
 # 作用只有一个：把这批分值和「实测表现得分」分开计数，好在报告里如实披露。
 NO_EVIDENCE_MARKER = "未提供佐证"
 
+# 步骤 3 的 `scoring_standard` 是「尺子」，不该写本项目的资料核对结论。
+# 实测 27 份备份里 400/543（74%）的叶子把结论写进了这一栏，报告因此自相矛盾：
+# 标准栏写着「无法判断」，同行的分值却已经落地。这里只做计数，不改原文。
+STANDARD_VERDICT_MARKERS = ("待核实", "无法判断", "资料不足", "现有资料未", "本项资料未")
+
+
+def audit_standard_purity(system: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """数一数有多少条叶子指标的 `scoring_standard` 夹带了资料核对结论。
+
+    只计数、不改写：把命中数暴露出来，好判断提示词的约束到底有没有生效；
+    若在这里顺手删掉那些话，模型行为就被掩盖了，报告里的矛盾也只是从
+    「看得见」变成「看不见」。
+    """
+    from backend.agents.tools.questionnaire_gen import indicator_leaves
+
+    leaves = list(indicator_leaves((system or {}).get("level1_indicators") or []))
+    hits = [leaf.get("id") for leaf in leaves
+            if any(marker in str(leaf.get("scoring_standard") or "")
+                   for marker in STANDARD_VERDICT_MARKERS)]
+    return {"leaves": len(leaves), "with_verdict": len(hits), "ids": hits}
+
+
 
 def summarize_disposition(items: Dict[str, Dict[str, Any]],
                           unmatched: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
@@ -1170,6 +1192,14 @@ class PerformanceAgent:
         else:
             isys["indicator_type"] = itype
             state["indicator_system"] = isys
+            # 只记账、不拦树：命中不代表这份体系错了，只代表标准字段里混进了结论。
+            purity = audit_standard_purity(isys)
+            state["standard_purity"] = purity
+            if purity["with_verdict"]:
+                logger.warning(
+                    f"[Step 3] {purity['with_verdict']}/{purity['leaves']} 条叶子指标的"
+                    f"scoring_standard 夹带了资料核对结论：{purity['ids'][:5]}"
+                )
         self._record_step_result(state, 3, content, structured=outcome)
         return state
 
