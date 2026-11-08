@@ -682,7 +682,7 @@ def _remove_report_snapshot(session_id: str) -> None:
         except Exception:
             logger.exception("关闭已删除的工作流失败: {}", session_id)
     try:
-        (performance_agent.STATE_BACKUP_DIR / f"{session_id}.json").unlink(missing_ok=True)
+        performance_agent.PerformanceAgent.delete_state_backup(session_id)
     except OSError:
         logger.exception("删除报告备份失败: {}", session_id)
 

@@ -1930,8 +1930,11 @@ async def list_questionnaires(user: User = Depends(get_current_user),
                     if any(r.get("session_id") == sid for r in results):
                         continue
                     try:
-                        with open(os.path.join(backup_dir, fname), "r", encoding="utf-8") as f:
-                            backup = json.load(f)
+                        # 必须走持锁的读入口：本循环可能与 update_state_backup 的
+                        # 原子替换并发，直接 open() 会让对方拿到 WinError 5
+                        backup = PerformanceAgent.load_state_backup(sid)
+                        if not backup:
+                            continue
                         qdata = backup.get("questionnaire", {})
                         if qdata.get("deleted"):
                             continue

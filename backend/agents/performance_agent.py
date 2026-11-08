@@ -13,6 +13,7 @@ PerformanceAgent — 绩效评价报告生成Agent（企业级LangGraph编排 v2
 from typing import TypedDict, List, Dict, Any, Optional, AsyncIterator
 from datetime import datetime
 import time, json, uuid, re
+import os
 import tempfile
 from pathlib import Path
 from threading import RLock
@@ -74,6 +75,48 @@ _NODE_STEP_14    = "step14_final_report"
 
 STATE_BACKUP_DIR = Path(__file__).resolve().parents[2] / "state_backups"
 _STATE_BACKUP_LOCK = RLock()
+
+# 备份的发布与删除都是「先写临时文件，再原子替换/删除」。Windows 上目标文件只要
+# 还挂着读句柄（本进程的列表接口、别的 worker、杀毒软件扫描都算），`os.replace`
+# 与 `unlink` 就会抛 `PermissionError [WinError 5]`——`_STATE_BACKUP_LOCK` 只挡得住
+# 本进程，挡不住这些。所以在预算内退避重试；预算耗尽仍失败就抛出去，让调用方
+# 决定是吞掉还是报错，绝不静默丢数据。
+STATE_BACKUP_IO_BUDGET_SEC = 2.0
+STATE_BACKUP_IO_BASE_DELAY_SEC = 0.02
+STATE_BACKUP_IO_MAX_DELAY_SEC = 0.25
+
+
+def _retry_on_transient_permission(op, budget: Optional[float] = None):
+    """反复执行 op，直到成功、或遇到非权限类异常、或重试预算耗尽。"""
+    budget = STATE_BACKUP_IO_BUDGET_SEC if budget is None else budget
+    deadline = time.monotonic() + budget
+    delay = STATE_BACKUP_IO_BASE_DELAY_SEC
+    while True:
+        try:
+            return op()
+        except PermissionError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise
+            time.sleep(min(delay, remaining))
+            delay = min(delay * 2, STATE_BACKUP_IO_MAX_DELAY_SEC)
+
+
+def _publish_backup(temp_path: Path, path: Path, budget: Optional[float] = None) -> None:
+    """把临时文件原子替换成正式备份；目标被占用时在预算内重试。"""
+    _retry_on_transient_permission(lambda: temp_path.replace(path), budget)
+
+
+def _discard_backup(path: Path, budget: Optional[float] = None) -> bool:
+    """删除备份文件，文件本来就不存在时返回 False；被占用时在预算内重试。"""
+    def remove() -> bool:
+        try:
+            path.unlink()
+            return True
+        except FileNotFoundError:
+            return False
+    return _retry_on_transient_permission(remove, budget)
+
 
 
 def _ensure_step_control(state: PerformanceState) -> dict:
@@ -977,16 +1020,23 @@ class PerformanceAgent:
             backup.update(updates)
             STATE_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
             path = STATE_BACKUP_DIR / f"{session_id}.json"
-            with tempfile.NamedTemporaryFile(mode="w", dir=STATE_BACKUP_DIR, encoding="utf-8",
-                                             delete=False) as target:
-                temp_path = Path(target.name)
-                try:
+            fd, temp_name = tempfile.mkstemp(dir=str(STATE_BACKUP_DIR), suffix=".tmp")
+            temp_path = Path(temp_name)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as target:
                     json.dump(backup, target, ensure_ascii=False, indent=2)
-                    target.close()
-                    temp_path.replace(path)
-                finally:
-                    target.close()
-                    temp_path.unlink(missing_ok=True)
+                _publish_backup(temp_path, path)
+            finally:
+                temp_path.unlink(missing_ok=True)
+
+    @staticmethod
+    def delete_state_backup(session_id: str) -> bool:
+        """删除某个session的磁盘备份，返回是否真的删掉了文件。
+
+        与写入共用一把锁，避免「刚判断存在就被别人替换」的窗口。
+        """
+        with _STATE_BACKUP_LOCK:
+            return _discard_backup(STATE_BACKUP_DIR / f"{session_id}.json")
 
     @staticmethod
     def load_state_backup(session_id: str) -> Dict[str, Any]:
