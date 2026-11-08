@@ -22,6 +22,17 @@ from backend.services import retrieval
 # 返回条数。只改排序、不改预算，基线的提升才归因于排序本身。
 PROJECT_LIMIT = 3
 KNOWLEDGE_LIMIT = 2
+
+# ── 小材料全给（Batch 19）────────────────────────────────────────────
+# 实测（29 份备份）：材料只有 16 行时，3 条块合计 **53 字**；而分类原文里一个块编号都没有，
+# 于是模型只能写「fe_wf_sample.txt」这种文件名级引用——台账记成「引用无法定位」，
+# 36 条真实失败里有 24 条属于这一类。问题不在模型，在于「可引的东西没下发」。
+# 只对步骤 7 生效：那是唯一做锚点校验的步骤，其它步骤没有实测证据支持改动。
+ADAPTIVE_PROJECT_STEPS = (7,)
+# 材料总字数不超过这个预算时，才允许整份下发（超过仍按 PROJECT_LIMIT）。
+PROJECT_CHAR_BUDGET = 6000
+# 整份下发也要有条数上限：几千个短块会把提示词撑爆。
+MAX_ADAPTIVE_PROJECT_BLOCKS = 40
 # 单份文件进入索引的最大字符数。超出部分不再静默消失——会写进 warnings。
 # 原来的 100_000 是无提示截断，与 Batch 5 修的是同一类问题。
 MAX_INDEX_CHARS_PER_DOC = 300_000
@@ -265,6 +276,23 @@ def _legacy_rank(state, step: int, project_limit: int, knowledge_limit: int,
     return selected
 
 
+def effective_project_limit(project: List[dict], step: int, limit: int) -> int:
+    """步骤 7 在小材料上把块发全；其余情形原样返回 `limit`。
+
+    只在 `limit == PROJECT_LIMIT`（调用方没显式指定）时生效——显式传限额表示
+    「我就要这么多」，不能被这里改掉（评估的问句模式就靠这个保持可比）。
+    材料总字数超预算时也原样返回：大材料下发全部块会把提示词撑爆。
+    """
+    if step not in ADAPTIVE_PROJECT_STEPS or limit != PROJECT_LIMIT:
+        return limit
+    if len(project) <= limit:
+        return limit
+    total = sum(len(hit.get("text") or "") for hit in project)
+    if total > PROJECT_CHAR_BUDGET:
+        return limit
+    return min(len(project), MAX_ADAPTIVE_PROJECT_BLOCKS)
+
+
 def retrieve_step_evidence(db, state, step, include_knowledge=False, query=None,
                           project_limit: Optional[int] = None,
                           knowledge_limit: Optional[int] = None):
@@ -281,6 +309,15 @@ def retrieve_step_evidence(db, state, step, include_knowledge=False, query=None,
     if not project and not knowledge:
         return []
 
+    explicit = (query or "").strip()
+    adaptive = False
+    if not explicit:
+        # 只在线上路径（没有显式 query）放开：评估的「问题模式」必须保持固定预算，
+        # 否则 Recall@3 的历史基线就不可比了。
+        widened = effective_project_limit(project, step, project_limit)
+        adaptive = widened > project_limit
+        project_limit = widened
+
     key = (
         tuple((hit["id"], len(hit["text"])) for hit in project),
         step if include_knowledge else None,
@@ -288,18 +325,46 @@ def retrieve_step_evidence(db, state, step, include_knowledge=False, query=None,
     )
     index = _cached_index(key, project + knowledge)
 
-    explicit = (query or "").strip()
     text_query = explicit or step_query(state, step)
     if not index.known_tokens(text_query):
-        return _legacy_rank(state, step, project_limit, knowledge_limit, knowledge)
-
-    if explicit or not USE_FACET_PLAN or step not in STEP_SUBQUERIES:
+        ranked = _legacy_rank(state, step, project_limit, knowledge_limit, knowledge)
+    elif explicit or not USE_FACET_PLAN or step not in STEP_SUBQUERIES:
         ranked = _rank(index, text_query, step, project_limit, knowledge_limit)
     else:
         ranked = _plan_rank(index, state, step, project_limit, knowledge_limit)
-    if ranked:
+    if not ranked:
+        ranked = _legacy_rank(state, step, project_limit, knowledge_limit, knowledge)
+    if adaptive:
+        ranked = _augment_with_unscored(ranked, project, project_limit)
+    return ranked
+
+
+def _augment_with_unscored(ranked: List[dict], project: List[dict], target: int) -> List[dict]:
+    """把「没被查询词打上分」的项目块补进结果，直到项目块数达到 target。
+
+    为什么光调高 limit 不够：BM25 只返回命中的块。样例材料 16 行、limit 放到 16，
+    实测仍然只回来 8 条——未命中的那 8 行在提示词里根本不存在，模型没有编号可引，
+    只能写「fe_wf_sample.txt」，台账于是记成「引用无法定位」（16 条因此丢分）。
+
+    补的是「同一份材料里、只是没匹配上查询词」的块，不是放宽任何判定：
+    编号照旧来自真实块，锚点照旧要能落到行。顺序按原文，便于模型按小节阅读。
+    """
+    if target <= 0:
         return ranked
-    return _legacy_rank(state, step, project_limit, knowledge_limit, knowledge)
+    kept = list(ranked)
+    have = {hit.get("id") for hit in kept}
+    project_have = sum(1 for hit in kept if hit.get("kind") == "project")
+    if project_have >= target:
+        return kept
+    for chunk in project:
+        if project_have >= target:
+            break
+        if chunk.get("id") in have:
+            continue
+        kept.append(chunk)
+        have.add(chunk.get("id"))
+        project_have += 1
+    return kept
 
 
 def render_evidence(hits):
