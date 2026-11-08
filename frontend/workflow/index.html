@@ -457,7 +457,7 @@
 
     <div id="toast-container"></div>
 
-    <script src="/static/workflow/sse.js"></script>
+    <script src="/static/shared/workflow-controller.js"></script>
     <script>
     // ══════════════════════════════════════
     //  State
@@ -651,14 +651,37 @@
         });
     }
 
+    // token 增量：50ms 合并后追加到步骤详情，避免逐字重排
+    const deltaRenderer = WorkflowController.createDeltaRenderer((step, text) => {
+        const panel = document.getElementById('step-detail-panel');
+        const content = document.getElementById('step-detail-content');
+        if (!content || !panel) return;
+        if (panel.classList.contains('hidden')) {
+            document.getElementById('step-detail-title').textContent = (STEPS[step] || '步骤' + step) + ' · 生成中';
+            content.innerHTML = '<pre class="live-output" style="white-space:pre-wrap;margin:0;font-family:inherit"></pre>';
+            panel.classList.remove('hidden');
+        }
+        const pre = content.querySelector('.live-output');
+        if (pre) {
+            pre.textContent += text;
+            panel.scrollIntoView({ block: 'nearest' });
+        }
+    });
+
     function handleSSEEvent(event) {
         const type = event.event;
 
+        if (type === 'token_delta') {
+            deltaRenderer.push(event.step_number, event.delta);
+            return;
+        }
         if (type === 'step_start') {
+            deltaRenderer.reset();
             updateStepStatus(event.step_number, 'running', event.step_name);
             document.getElementById('status-title').textContent = '执行中 · ' + event.step_name;
             updateProgressBar();
         } else if (type === 'step_complete') {
+            deltaRenderer.flushNow();
             updateStepStatus(event.step_number, 'completed', event.step_name);
             completedSteps.add(event.step_number);
             workflowStepResults[event.step_number] = event;
