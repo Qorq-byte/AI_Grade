@@ -6,7 +6,7 @@
 **新对话开场白（直接粘贴）：**
 
 ```
-读 D:/python/AI_Grade/NEXT_STEPS.md，从「批次 18」开始实施。
+读 D:/python/AI_Grade/NEXT_STEPS.md，从「批次 19」开始实施。
 动手前先按第 5 节取基线，改完按第 5 节的五段式交付。
 ```
 
@@ -16,8 +16,8 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `main` / 批次 17 提交，工作区干净 |
-| 已完成批次 | 第三轮 B1–B17（每批都有独立交付章节）+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
+| 分支 / HEAD | `main` / 批次 18 提交，工作区干净 |
+| 已完成批次 | 第三轮 B1–B18（每批都有独立交付章节）+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
 | 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），135 个端点 |
 | 前端 | 零构建，原生 HTML/CSS/JS + `frontend/shared/` |
 | 存储 | MySQL（库 `ai_grade_d`）+ `state_backups/*.json` 磁盘投影 |
@@ -26,12 +26,12 @@
 
 | 检查 | 命令 | 当前 |
 |---|---|---|
-| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **306 passed** |
+| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **322 passed** |
 | 前端共享层 / SSE | `node --test tests/test_*.cjs` | **42 pass**（5 个文件） |
 | 前端联通性 | `python frontend_e2e_check.py` | **72 通过 / 0 失败** |
 | 全接口 | `python test_all_apis.py` | **46/46** |
 | 真实工作流 | `python wf_e2e.py` | **47 项 / 0 失败**（约 4~5 分钟，要真实模型） |
-| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` | **28 / 7 / 4 / 6 / 8 全抓**（串行跑，别并发） |
+| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` | **28 / 7 / 4 / 6 / 8 / 11 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核） |
 | 检索基线 | `python -m tests.rag_eval.run --check` | Recall@3 **0.448**、MRR 0.391、P 0.161 |
 
 ---
@@ -54,6 +54,7 @@
 |---|---|---|---|
 | ~~**A1**~~ | ~~步骤 7 下发提示词~~ | ✅ **批次 16 已完成**：放弃率 77% → 8%，落地 6 → 24/26，总分不变；根因是步骤 5 的标准自带「待核实」+ 三处授权语句；台账新增 `no_evidence_scored` 披露 | 见 `progress_round3.md` B16 |
 | ~~**A2**~~ | ~~结构化闸门扩到步骤 3 / 4~~ | ✅ **批次 17 已完成**：步骤 3 按叶子计数（改前恒 0 条）、步骤 4 走 scores，`SHRINK_CHECKED_STEPS=(3,4,7)`；26 份备份回放 0 误判。**遗留**：非修复路径的「步骤 4 少给分」仍静默，见 B17.5 第 1 条 | 见 `progress_round3.md` B17 |
+| ~~**A5**~~ | ~~评分标准夹带资料核对结论~~ | ✅ **批次 18 已完成**：73.8%（401/543）的叶子标准栏写着「无法判断」，而同行的分值已经落地（批次 16 之后）；改步骤 3 提示词 + 新增 `audit_standard_purity` 只计数不清洗；A/B 两份 75%/88% → **0%**，叶子未减少（20→26、25→25），缺口信息移入正文「资料核对提示」 | 见 `progress_round3.md` B18 |
 | **A3** | **`main.py` 迁移到 `lifespan`** | `on_event` 仍有 2 处（`@app.on_event("startup"/"shutdown")`），测试里一直报 deprecation；后台任务未持引用、shutdown 不取消 | 启动/关闭日志与现有行为一致；清理定时器在 shutdown 时被取消（有测试） |
 | **A4** | **上传解析复用** | `agent_routes.py` 预览与 `performance_agent` 正式解析是两条独立路径，同一文件可能解析两次（阶段二第 4 项，❌ 未开始） | 先量：同一文件解析次数 / 耗时 / 文本一致性；达到同等结果再谈复用 |
 
@@ -152,7 +153,7 @@
 
 ```bash
 cd /d/python/AI_Grade
-NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 274
+NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 322
 node --test tests/test_*.cjs                                                          # 42
 NO_PROXY='*' .venv/Scripts/python.exe -c "import backend.main"                        # 导入自检
 ```
@@ -177,6 +178,7 @@ NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 72/0
 **重构改了被锚定的代码时**，脚本会以「锚点失效」计入存活（看起来像覆盖不足，其实是没跑到）→ 改完实现先 grep 一遍被锚定的片段（B16/B17 各踩一次） |
 | 变异体语法错误 | `SyntaxError` 会被当成「抓到」→ 每个变异体先离线 `compile()` |
 | **变异脚本并发** | 两个脚本都会临时改写 `performance_agent.py`，并发跑会互相覆盖，报出「漏抓」假象 → **必须串行**（B16 踩过） |
+| **变异脚本跑完没还原** | 批次 18 遇到：工作树里 `list_questionnaires` 被留成了「裸 open」变异体，而注释还写着「必须走持锁的读入口」；下一次全量回归照样 322 passed（守门用例当时没覆盖到）。→ **每跑完一批变异脚本先 `git status --short`**，只应看到自己的改动；发现多出来的文件改动先用 `git diff` 看清再 `git checkout --` 还原 |
 | **8000 端口有旧进程** | 上一轮留下的 uvicorn 还占着 8000 时，新起的会绑失败，而 `test_all_apis` / `frontend_e2e_check` / `wf_e2e` 全是硬编码 8000 → 检查打在**旧代码**上。先 `netstat -ano \| grep :8000` 确认 PID，必要时重启 |
 | heredoc 里的反引号 | 会被 shell 当命令执行，提交信息会被吃掉 → 用 `git commit -F - <<'MSG'` 且避免反引号 |
 | Git 网络 | 需要 `git config --local http.proxy http://127.0.0.1:56907`；curl 走代理访问 `raw.githubusercontent.com` 会失败 |
@@ -187,11 +189,13 @@ NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 72/0
 
 ## 7. 一句话判断该先做哪个
 
-A1 已经做完（批次 16）。接下来的顺序变了：
+A1 / A2 / A5 已经做完（批次 16 / 17 / 18）。顺序又变了：
 
-- **如果只做一件事：把步骤 4 的「静默少给分」堵掉。** 现在闸门只在修复路径生效，
-  而模型直接少给几百个键时，程序只 apply 有值的、缺的沿用上一版，什么都不说——
-  这是比「修复缩水」更容易发生、也更难发现的一类（B17.5 第 1 条）。
+- **步骤 4 的「静默少给分」不用做了。** 批次 18 取证：27 份备份里漏给分 0 份、
+  步骤 3 分≠现分 0 份，唯一的 `16f133f0` 是「步骤 4 内容为空」而不是「少给」。
+  这条留在表里当**已知**，别再当待办（B18.1）。
+- **如果只做一件事：把步骤 5 正文里的「待核实」也清掉。** 26/26 份步骤 5 正文含同款字样，
+  它不进报告表但进模型上下文，是步骤 6/7 的二次诱因（B18.5 第 2 条）。改法与 A5 同构：提示词 + 审计计数。
 - **如果要做「让报告更可信」而不是「更完整」：做 B3（质量门禁）**，把每步的字数/引用覆盖率/
   无依据断言数摆出来，比再加提示词更有用。
 - **C 类（拆文件、CI、安全）不要先做**：它们不会让任何一份报告变好，只是让后面更好维护。
