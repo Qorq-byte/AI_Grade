@@ -171,10 +171,15 @@ def _match_chunk_locator""",
         "台账 accepted 不再带 evidence_anchor",
         "agent",
         """                          "anchor_from": anchor_from,
+                          # 「按未取得佐证计分」和「实测表现得分」在分数上长得一样，
+                          # 但对报告结论的含义完全相反：前者必须写进评价局限。
+                          # 靠模型在 reason 里的固定前缀识别，不改任何既有字段语义。
+                          "no_evidence": reason_text.startswith(NO_EVIDENCE_MARKER),
                           # 与 refresh_disposition 写入的字段同名同形：否则人工补分前后
                           # 台账字段集合不同，前端读 matched 会时有时无
                           "evidence_anchor": {**anchor.as_dict(), "from": anchor_from}}""",
-        """                          "anchor_from": anchor_from}""",
+        """                          "anchor_from": anchor_from,
+                          "no_evidence": reason_text.startswith(NO_EVIDENCE_MARKER)}""",
         "tests/test_step7_scoring.py",
     ),
     (
