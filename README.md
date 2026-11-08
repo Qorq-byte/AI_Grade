@@ -1,740 +1,501 @@
-# 云海睿评 - AI绩效评价报告生成系统
+<div align="center">
 
-> 基于大模型 + 提示词 + 知识库的智能绩效评价报告生成系统，通过 14 步标准化流程自动化完成从资料整理到最终报告导出，将传统耗时数周的绩效评价工作压缩至分钟级。
+# 云海睿评 · AI_Grade
 
----
+**把数周的绩效评价工作，压进一次对话**
 
-## 目录
+基于 LangGraph 的多步 Agent，把财政绩效评价从「读材料、搭指标、逐项打分、写报告」
+变成一条可审计、可回滚、可人工接管的流水线。
 
-- [项目介绍](#项目介绍)
-- [核心功能](#核心功能)
-- [技术栈](#技术栈)
-- [项目结构](#项目结构)
-- [快速开始](#快速开始)
-- [环境配置](#环境配置)
-- [使用指南](#使用指南)
-- [14步工作流详解](#14步工作流详解)
-- [管理端功能](#管理端功能)
-- [数据库设计](#数据库设计)
-- [API接口概览](#api接口概览)
-- [安全与权限](#安全与权限)
-- [数据保留策略](#数据保留策略)
-- [测试与验证](#测试与验证)
-- [常见问题排查](#常见问题排查)
-- [许可证](#许可证)
+[![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.109%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-0.0.20%2B-1C3C3C?logo=langchain&logoColor=white)](https://github.com/langchain-ai/langgraph)
+[![MySQL](https://img.shields.io/badge/MySQL-8.0-4479A1?logo=mysql&logoColor=white)](https://www.mysql.com/)
+[![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](./Dockerfile)
+[![Tests](https://img.shields.io/badge/tests-268%20passed-brightgreen)](#-测试)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![PRs](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
+
+[快速开始](#-快速开始) · [运行流程](#-14-步工作流) · [API 参考](./docs/API.md) · [贡献指南](./CONTRIBUTING.md) · [安全策略](./SECURITY.md)
+
+</div>
 
 ---
 
-## 项目介绍
+## 这是什么
 
-**云海睿评** 面向财政、审计、人大等部门绩效评价业务场景，覆盖项目支出、部门整体、下级政府运行、专项债、社保基金等评价类型。系统自动完成资料清单整理、核心信息提取、三级指标体系构建、分值分配、评分标准制定、指标分析、问题诊断、改进建议、综合评价、报告组装，并支持一键导出符合规范的 Word / PDF 报告。
+**云海睿评**面向财政、审计、人大等绩效评价场景，覆盖项目支出、部门整体、下级政府运行、
+专项债、社保基金等评价类型。上传资料后，系统自动完成资料清单、核心信息提取、
+三级指标体系、分值分配、评分标准、逐项评分、问题诊断、改进建议、综合评价，
+最终组装成可导出的 Word / PDF 报告。
 
-### 核心定位
-- **项目名称**: 云海睿评
-- **版本**: v1.0.0
-- **开发语言**: Python 3.9+
-- **架构模式**: FastAPI + LangGraph + MySQL + ChromaDB
+它不是一个「让模型写一篇报告」的壳子。这个项目真正花力气的地方是：
+**把模型输出里不可信的部分标出来，而不是抹平。**
 
----
-
-## 核心功能
-
-1. **智能文件解析**: 支持 PDF / Word / Excel / TXT / 图片等多格式文件上传、批量上传与内容提取
-2. **14步标准化流程**: 自动完成资料清单 → 核心信息提取 → 指标体系 → 分值 → 评分标准 → 指标体系表 → 指标分析 → 经验做法 → 问题分析 → 改进建议 → 综合评价 → 基本情况 → 评价工作简介 → 报告组装
-3. **三级指标体系**: 自动构建三级绩效评价指标体系，支持 6 种指标类型（项目支出 / 部门整体 / 下级政府运行 / 专项债 / 社保基金 / 自定义），所选类型真实影响指标体系生成
-4. **多视角分析**: 支持财政、人大、审计等多视角分析
-5. **智能问卷生成**: 基于指标体系自动生成里克特 5 级量表问卷，支持在线填写、提交与 CSV 导出
-6. **一键导出报告**: 支持 **真实 Word (.docx)** 与 **真实 PDF (.pdf)** 双格式导出（PDF 由 reportlab 原生生成，含中文排版），支持经典排版与自定义排版（字体/字号/行距/页边距）
-7. **多模型支持**: 通义千问、DeepSeek、OpenAI、Anthropic，单模型 / 多模型对比两种模式
-8. **SSE 实时流式进度**: 工作流步骤实时推送（step_start / step_complete / token_update / questionnaire_ready / complete / error）
-9. **AI辅助对话**: 每个步骤支持多轮 AI 对话优化，可人工修改生成内容
-10. **报告编辑与组装**: 报告编辑器支持在线修改、保存、章节拖拽排序、格式校对、逻辑校对
-11. **管理端**: 用户、模型、提示词、知识库、模板、工作流监控、审计日志、文件管理、数据清理、系统设置
-12. **Token追踪**: 实时记录各步骤 Token 消耗，支持用量统计与成本分析
-13. **数据持久化与重启恢复**: 工作流会话落库，报告保存至数据库与磁盘备份，服务器重启后仍可查看、导出、编辑历史报告
+- 每个评分必须能落到原文的某一行、某一段或某条检索证据上，落不到就单列，不进总分；
+- 每个 JSON 输出都过形状校验，不合规修一次，修不好交人工，**绝不静默回落成空数据**；
+- 同一份材料会声明「总共多少字、实际用了多少、哪些没用到」，而不是假装看完了；
+- 每次请求有 `request_id`，报错时把请求号给用户，一行日志定位全链路。
 
 ---
 
-## 技术栈
+## ✨ 核心特性
 
-### 后端框架
-- **Web框架**: FastAPI >= 0.109.0
-- **ASGI服务器**: Uvicorn >= 0.27.0
-- **数据验证**: Pydantic >= 2.5.0, Pydantic Settings >= 2.1.0
-
-### AI与大模型
-- **LangChain**: langchain >= 0.1.0, langchain-core >= 0.1.0, langchain-community >= 0.0.20
-- **LangGraph**: langgraph >= 0.0.20（状态图引擎，MemorySaver 断点续跑）
-- **LangSmith**: langsmith >= 0.0.80（可选追踪）
-- **支持的LLM提供商**:
-  - 通义千问 (DashScope): qwen-turbo, qwen-plus, qwen-max, qwen-long
-  - DeepSeek: deepseek-chat, deepseek-coder, deepseek-v4-flash
-  - OpenAI: gpt-3.5-turbo, gpt-4, gpt-4-turbo, gpt-4o
-  - Anthropic: claude-3-opus, claude-3-sonnet, claude-3-haiku, claude-2.1
-
-### 向量数据库与RAG
-- **ChromaDB**: chromadb >= 0.4.22（向量存储）
-- **FAISS**: faiss-cpu >= 1.7.4（相似度搜索）
-- **Sentence Transformers**: sentence-transformers >= 2.3.1（文本嵌入）
-
-### 数据库
-- **关系型数据库**: MySQL（SQLAlchemy >= 2.0.0, PyMySQL >= 1.1.0）
-- **迁移工具**: Alembic >= 1.13.0（可选）
-- **缓存**: Redis >= 5.0.1（可选）
-
-### 文件处理与导出
-- **Word文档**: python-docx >= 1.1.0
-- **Excel表格**: openpyxl >= 3.1.2
-- **PDF生成**: reportlab >= 4.0.0
-- **PDF解析**: PyPDF2 >= 3.0.1
-- **图片OCR**: Pillow >= 10.2.0, pytesseract >= 0.3.10
-- **通用解析**: docx2txt >= 0.8, unstructured >= 0.12.0
-
-### 认证与安全
-- **JWT认证**: python-jose[cryptography] >= 3.3.0
-- **密码加密**: passlib[bcrypt] >= 1.7.4
-
-### 前端技术
-- **纯HTML/CSS/JavaScript**: 无框架依赖，轻量级实现
-- **图标库**: Lucide Icons
-- **字体**: Inter, Helvetica Now Display Bold
+| 能力 | 说明 |
+|------|------|
+| **14 步标准化流程** | LangGraph `StateGraph` 编排，步骤间共享类型化状态，每步可单独重跑与人工改写 |
+| **三级指标体系** | 6 种指标类型（项目支出 / 部门整体 / 下级政府运行 / 专项债 / 社保基金 / 自定义），类型真实影响生成结果 |
+| **可解释的评分落地** | 六类引用锚点 + 七类处置状态；「引用能定位但证据不在本步」单列为弱定位，**不计入总分** |
+| **结构化输出兜底** | 形状校验 → 一次修复 → `manual_review`；修复不得缩水，首次正文留档可复盘 |
+| **长文档覆盖度** | 带定位符切块、头尾双端预算、覆盖度声明、未引用部分压缩；`used + omitted == total` 可对账 |
+| **SSE 实时流** | token 级增量、`seq` 去重、`Last-Event-ID` 断线续传、心跳注释帧 |
+| **步骤间一致性** | 纯程序校验（零 token）：分值合计、等级与分数矛盾、正文自述分与程序值不一致等 |
+| **真实导出** | Word 由 `python-docx` 生成，PDF 由 `reportlab` 原生排版（含中文），支持字体 / 字号 / 行距 / 页边距定制 |
+| **重启可恢复** | 会话落 MySQL + `state_backups/*.json` 磁盘投影，重启后历史报告仍可查看、导出、编辑 |
+| **零构建前端** | 原生 HTML/CSS/JS + 共享模块，无 npm、无打包、无 node_modules |
 
 ---
 
-## 项目结构
+## 🏗 架构
 
-```
-AI_Grade/
-├── backend/                          # 后端代码
-│   ├── agents/                       # Agent核心模块
-│   │   ├── base_agent.py             # Agent基类（多模型支持、记忆管理）
-│   │   ├── performance_agent.py      # 绩效评价Agent（14步工作流，LangGraph编排）
-│   │   ├── states/                   # 状态定义
-│   │   │   └── performance_state.py  # 绩效评价状态模型（TypedDict）
-│   │   ├── tools/                    # 工具模块
-│   │   │   ├── content_indexer.py    # 内容索引器
-│   │   │   ├── score_validator.py    # 分数校验器（四维校验）
-│   │   │   ├── indicator_manager.py  # 指标管理器（内置模板）
-│   │   │   ├── multi_model_compare.py # 多模型对比
-│   │   │   ├── questionnaire_gen.py  # 问卷生成器
-│   │   │   └── export_service.py     # 导出服务（Word / 真实PDF）
-│   │   └── prompts/                  # Prompt模板管理
-│   │       ├── prompt_manager.py     # Prompt管理器（DB优先，默认兜底）
-│   │       └── default_prompts.py    # 默认Prompt模板
-│   ├── routes/                       # API路由
-│   │   ├── agent_routes.py           # Agent工作流接口（SSE流式、问卷、导出、组装等）
-│   │   ├── auth_routes.py            # 认证接口（登录/注册/刷新）
-│   │   ├── admin_routes.py           # 管理端接口
-│   │   └── client_routes.py          # 客户端接口（报告/对话/通知/AI聊天）
-│   ├── services/                     # 业务服务
-│   │   ├── auth_service.py           # 认证服务
-│   │   ├── file_processor.py         # 文件处理服务
-│   │   ├── memory_service.py         # 记忆服务
-│   │   ├── rag_service.py            # RAG检索增强服务
-│   │   ├── token_service.py          # Token消耗记录服务
-│   │   └── cleanup_service.py        # 数据清理服务（90天过期策略）
-│   ├── models/                       # 数据模型
-│   │   ├── user_models.py            # 用户/项目/工作流/报告/Token/提示词/通知等
-│   │   └── memory_models.py          # 记忆模型
-│   ├── middleware/                   # 中间件
-│   │   ├── auth_middleware.py        # JWT认证中间件（依赖注入）
-│   │   └── rate_limit.py             # 限流中间件
-│   ├── utils/                        # 工具函数
-│   │   ├── llm_helper.py             # LLM辅助函数（模型/凭证管理）
-│   │   └── log_utils.py              # 日志工具
-│   ├── config.py                     # 配置管理（pydantic-settings）
-│   ├── database.py                   # 数据库初始化
-│   └── main.py                       # FastAPI应用入口（前端页面托管 + 路由注册）
-├── frontend/                         # 前端页面（后端静态托管）
-│   ├── index.html                    # 首页（落地页）
-│   ├── login/index.html              # 登录注册页面
-│   ├── client/index.html             # 客户端（14步工作流/AI聊天/报告/问卷/设置）
-│   ├── admin/index.html              # 管理端
-│   ├── workflow/index.html           # 独立工作流页面
-│   ├── report/index.html             # 报告预览编辑页面
-│   ├── questionnaire/index.html      # 问卷填写页面
-│   └── avatars/                      # 用户头像存储
-├── uploads/                          # 用户上传文件（90天保留）
-├── templates/                        # 指标体系模板（indicator_templates.json）
-├── state_backups/                    # 工作流状态磁盘备份（重启恢复）
-├── backend/exports/                  # 导出报告存储目录
-├── backend/data/chroma_db/           # ChromaDB向量数据库
-├── backend/knowledge_base/           # 知识库文件
-├── .env                              # 环境变量配置（不入库）
-├── .env.example                      # 环境变量示例
-├── requirements.txt                  # Python依赖
-├── start_backend.bat                 # Windows 一键启动脚本（cmd）
-├── start_backend.ps1                 # Windows 一键启动脚本（PowerShell）
-├── test_all_apis.py                  # API 全功能测试
-├── frontend_e2e_check.py             # 前端联通性检查（65项）
-├── wf_e2e.py                         # 工作流端到端测试（需真实LLM密钥）
-└── README.md                         # 项目说明文档
+```mermaid
+flowchart TB
+    subgraph Browser["浏览器 · 零构建前端"]
+        direction LR
+        L["login"] --> C["client 工作台"]
+        C --> W["workflow"]
+        C --> R["report 编辑"]
+        C --> Q["questionnaire"]
+    end
+
+    subgraph API["FastAPI · 单进程"]
+        MW["RequestContext 中间件<br/>X-Request-ID 贯通"]
+        REST["REST · 135 个端点"]
+        STREAM["SSE /stream<br/>seq · Last-Event-ID"]
+    end
+
+    subgraph Graph["LangGraph 状态图"]
+        SG["StateGraph · 14 节点"]
+        CP["MemorySaver 检查点"]
+        GATE{"步骤 3 / 6 / 11<br/>人工确认闸门"}
+    end
+
+    subgraph Pure["纯程序能力 · 零 token"]
+        RET["BM25 检索<br/>中文二元组"]
+        COV["覆盖度计划"]
+        ANC["引用锚点解析"]
+        CON["步骤间一致性"]
+    end
+
+    DB[("MySQL<br/>用户 / 会话 / 报告")]
+    FS[("state_backups<br/>磁盘投影")]
+    LLM["LLM 提供商<br/>DashScope · DeepSeek<br/>OpenAI · Anthropic"]
+
+    Browser --> MW --> REST --> SG
+    SG --> GATE
+    SG --> Pure
+    SG --> LLM
+    SG --> CP
+    STREAM -. 推送增量 .-> C
+    REST --> DB
+    SG --> FS
+
+    classDef pure fill:#eef7ff,stroke:#4a90d9,color:#123
+    classDef store fill:#f6f6f6,stroke:#999,color:#333
+    class RET,COV,ANC,CON pure
+    class DB,FS store
 ```
 
+设计上刻意把「需要模型的」和「不需要模型的」分开：检索、覆盖度、锚点、一致性全部是
+纯程序，可单测、可复现、零 token；模型只负责它真正擅长的生成与判断。
+
 ---
 
-## 快速开始
+## 🔄 14 步工作流
 
-### 1. 环境要求
-- Python 3.9+
-- MySQL 5.7+ / 8.0（或 MariaDB）
+```mermaid
+flowchart TD
+    START([POST /workflow/start-stream]) --> S0["Step 0 · 初始化<br/>解析 PDF / Word / Excel / 图片"]
+    S0 --> S1["Step 1 · 整理所需资料清单"]
+    S1 --> S2["Step 2 · 提取核心信息<br/>建立内容索引"]
+    S2 --> S3["Step 3 · 构建三级指标体系"]
+    S3 --> S4["Step 4 · 生成各指标分值"]
+    S4 --> S5["Step 5 · 生成评分标准"]
+    S5 --> S6["Step 6 · 生成评价指标体系表"]
+    S6 --> S7["Step 7 · 指标得分及分析"]
+    S7 --> S8["Step 8 · 总结主要经验做法"]
+    S8 --> S9["Step 9 · 分析存在问题及原因"]
+    S9 --> S10["Step 10 · 提出改进建议"]
+    S10 --> S11["Step 11 · 综合评价分析及结论"]
+    S11 --> S12["Step 12 · 生成基本情况"]
+    S12 --> S13["Step 13 · 生成评价工作简介"]
+    S13 --> S14["Step 14 · 组装最终报告"]
+    S14 --> CONS["步骤间一致性检查<br/>纯程序 · 零 token"]
+    CONS --> Q{存在阻断性问题?}
+    Q -- 是 --> WARN["写入 warnings<br/>报告仍可导出"]
+    Q -- 否 --> DONE
+    WARN --> DONE([complete 事件])
 
-### 2. 创建虚拟环境并安装依赖
+    subgraph Human["人工介入点（接口保留，默认自动放行）"]
+        H1["步骤 3 确认指标体系"]
+        H2["步骤 6 确认指标体系表 / 生成问卷"]
+        H3["步骤 11 确认综合评价"]
+    end
 
-**Windows（cmd）:**
+    S3 -.-> H1
+    S6 -.-> H2
+    S11 -.-> H3
+
+    classDef human fill:#fff8e6,stroke:#d9a441,color:#4a3200
+    classDef proc fill:#eef7ff,stroke:#4a90d9,color:#123
+    class H1,H2,H3 human
+    class CONS proc
+```
+
+步骤 3 / 6 / 11 在 `StateGraph` 里保留了 `interrupt()` 断点，`/workflow/approve` 接口也在；
+当前版本默认全自动跑完，需要人工确认时把闸门打开即可，不必改流程结构。
+
+每一步的产出都会写入 `step_results`，包含正文、`structured_status`、
+修复前的 `raw_content`（若有）、以及该步的证据集，支持单步查看、AI 改写与导出。
+
+---
+
+## 🧩 单步内部：结构化校验与修复回路
+
+步骤 3 / 4 / 7 要求模型输出 JSON。这三个步骤走同一条「校验 → 修复 → 兜底」链路：
+
+```mermaid
+flowchart LR
+    GEN["模型输出"] --> P["解析 JSON<br/>取代码块或首个完整对象"]
+    P -->|解析失败| R
+    P --> V{"形状校验<br/>顶层结构 / 容器类型 / 是否有可用条目"}
+    V -- 合规 --> OK["status = ok<br/>进入下游"]
+    V -- 阻断性错误 --> R["修复一次<br/>回喂具体错误 + 原文"]
+    R --> P2{"再校验"}
+    P2 -- 合规 --> SHRINK{"覆盖是否缩水?<br/>条目数 / 可计分数值分"}
+    SHRINK -- 未缩水 --> FIX["status = repaired<br/>原正文存入 raw_content"]
+    SHRINK -- 缩水 --> MR
+    P2 -- 仍不合规 --> MR["status = manual_review<br/>完整保留原始输出 + warning"]
+    MR --> HUMAN["交人工复核<br/>不静默降级、不用正则硬凑"]
+
+    classDef bad fill:#ffecec,stroke:#c0392b,color:#5a0000
+    classDef good fill:#eaf7ea,stroke:#2d8a4e,color:#0b3d1e
+    class MR,HUMAN bad
+    class OK,FIX good
+```
+
+修复链路本身有两条容易踩的坑，这里都堵上了：
+
+1. **修复提示词不能教模型删条目** —— 原文里「宁可少写条目也不要编造」被实测证明会把
+   20 条砍成 5 条；
+2. **回喂原文不能被截断** —— 步骤 7 的正常输出可达 12,000 字，旧的 6,000 字上限让模型
+   物理上看不见一半指标（实测 11,780 字输入只看得见 11/20 个指标）。
+
+---
+
+## 🎯 步骤 7：评分为什么「落地」或「不落地」
+
+这是整个项目最值得看的一段逻辑。模型写出的引用五花八门，判「对/错」二分会同时冤枉
+真实引用和放过假引用，所以这里做的是**分级 + 分状态**：
+
+```mermaid
+flowchart TD
+    REF["模型给出的 evidence 字符串"] --> A{"编号在本步证据池？"}
+    A -- 是 --> K1["evidence_id"]
+    A -- 否 --> B{"编号出现在下发材料？"}
+    B -- 是 --> K2["material_id"]
+    B -- 否 --> C{"文件名 + 行号<br/>与本步检索块 locator 一致？"}
+    C -- 是 --> K3["evidence_locator"]
+    C -- 否 --> D{"第 N 部分 / 第 N 章<br/>能还原成材料小节？"}
+    D -- 是 --> K4["section_ordinal"]
+    D -- 否 --> E{"行号在原文范围内？"}
+    E -- 是 --> K5["material_locator<br/>弱定位"]
+    E -- 否 --> F{"引号内文字<br/>能对上原文小节名？"}
+    F -- 是 --> K6["heading"]
+    F -- 否 --> K0["anchor_unresolved"]
+
+    K1 --> AC["accepted<br/>进入 indicator_score_map<br/>计入总分"]
+    K2 --> AC
+    K3 --> AC
+    K4 --> AC
+    K6 --> AC
+    K5 --> WEAK["anchor_weak<br/>可见 · 可核对<br/>不计入总分"]
+    K0 --> MIS["不计分<br/>单列待人工确认"]
+
+    classDef ok fill:#eaf7ea,stroke:#2d8a4e,color:#0b3d1e
+    classDef warn fill:#fff8e6,stroke:#d9a441,color:#4a3200
+    classDef bad fill:#ffecec,stroke:#c0392b,color:#5a0000
+    class AC,K1,K2,K3,K4,K6 ok
+    class WEAK,K5 warn
+    class K0,MIS bad
+```
+
+为什么弱定位不计分？实测某一轮里 4 条「第 1 段」引用中有 3 条的 reason 自己写着
+「无法评价，暂按 1.00 分基础分处理」。放行它们会让总分从 30.0 抬到 33.0——
+数字更好看，但那是假的。所以给它们一个独立身份：**能看见、可核对、不假装。**
+
+处置台账共 7 类（外加体系外 id 单列），在状态接口与页面徽标上同步展示：
+
+| 状态 | 含义 | 计分 |
+|------|------|:----:|
+| `accepted` | 引用可定位，条目可用 | ✅ |
+| `model_pending` | 模型主动判「资料不足 / 待核实」 | ❌ |
+| `anchor_weak` | 引用定位到原文行，但该行未进入本步证据 | ❌ |
+| `anchor_unresolved` | 引用无法定位 | ❌ |
+| `score_invalid` | 分值不是合法数字（如「很高」） | ❌ |
+| `reason_missing` | 缺少评分理由 | ❌ |
+| `not_mentioned` | 模型完全没提这个指标 | ❌ |
+
+---
+
+## 📡 实时推送与断线续传
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as 浏览器
+    participant A as FastAPI
+    participant G as LangGraph
+    participant B as progress_bus
+
+    U->>A: POST /workflow/start-stream
+    A-->>U: SSE 连接建立（step_start）
+    loop 每个步骤
+        A->>G: 执行节点
+        G->>B: push_delta(token)
+        B-->>A: 取增量
+        A-->>U: token_delta（id: n）
+        G->>B: 写入 step_complete
+        A-->>U: step_complete（id: n+1）
+    end
+    Note over U,A: 网络中断
+    U->>A: GET /workflow/{id}/stream<br/>Last-Event-ID: n+1
+    A-->>U: 补发 n+2 起的缓冲帧
+    A-->>U: complete
+```
+
+- 每帧带自增 `id`，前端按 id 去重，乱序帧直接丢弃；
+- `progress_bus` 缓存最近 400 帧用于补发，心跳用注释帧避免代理超时；
+- 进度与增量走**进程内总线**，因此当前仅支持单 worker（多 worker 需替换为 Redis 发布订阅，接口不变）。
+
+---
+
+## ✅ 哪些是程序保证，哪些依赖模型
+
+把这条写进 README，是为了让人知道**哪些结论可以直接引用，哪些必须人工复核**。
+
+**程序保证（有测试或代码强制）**
+
+- 私有资源归属：工作流、报告、问卷、导出文件均按 `user_id` 校验，匿名 401、越权 404；
+- 启动幂等：同一 `session_id` 只能登记一次，重复启动 409；
+- 评分口径：模型输出须通过 ID / 范围 / 证据校验才进入结构化结果，缺项标「待核实」；
+- 引用与证据：证据条目必须逐字出现在原文中，引用必须能落到本步证据池或原文定位；
+- 传输协议：SSE 每帧带 `seq`，支持 `Last-Event-ID` 补发，心跳为注释帧；
+- 可追溯：每个响应带 `X-Request-ID`，错误体回显 `request_id`，日志第三段即该请求号；
+- 导出幂等：同内容同排版 10 分钟内只渲染一次，响应 `reused=true`；
+- 结构化输出：不合规修一次，仍不合规则 `manual_review` 且完整保留原文；
+- 资料覆盖度：`used_chars + omitted_chars == total_chars`，声明数字与实际送入提示词一致。
+
+**依赖模型自觉（程序只能提示，不能保证正确）**
+
+- 文本事实准确性：金额、时间、产出是否与原始材料一致，只能靠证据引用 + 人工复核；
+- 指标设计的专业性：层级与权重是否合理属于领域判断；
+- 建议的可行性：程序能检查 `issue_id → suggestion_ids` 的覆盖关系，判断不了建议好不好；
+- 打分理由的充分性：程序校验「有没有证据」，不校验「论证是否成立」；
+- 长文档覆盖：超长材料仍会截断，尚未实现分块 map-reduce。
+
+**部署语义**
+
+- 进度与 token 增量仅在接住请求的进程内有效，**单 worker**；
+- 工作流检查点仍为进程内 `MemorySaver`，进程重启后无法续跑未完成任务
+  （已完成步骤与人工编辑可从 MySQL / 磁盘备份恢复）。
+
+---
+
+## 🚀 快速开始
+
+### 方式一：Docker
+
 ```bash
+cp .env.example .env                  # 填入至少一个 LLM API Key 与 MySQL 连接
+docker build -t ai-grade .
+docker run -d --name ai-grade -p 8000:8000 --env-file .env ai-grade
+```
+
+`.env` 里的 `MYSQL_HOST` 必须是**容器内可达**的地址：Windows / macOS 用
+`host.docker.internal`，Linux 可用宿主机内网 IP 或 `--network host`。
+
+访问 <http://localhost:8000>，默认管理员 `admin` / `Admin@123456`（**请立即修改**）。
+
+> 应用当前不依赖 Redis；`docker-entrypoint.sh` 仅在显式配置 `REDIS_URL` 时等待 Redis 就绪。
+
+### 方式二：本地运行
+
+```bash
+# 1. 环境：Python 3.9+（Docker 镜像为 3.11）、MySQL 5.7+/8.0
 python -m venv .venv
-.venv\Scripts\activate
+.venv\Scripts\activate          # Windows
+# source .venv/bin/activate     # Linux / macOS
+
 pip install -r requirements.txt
+
+# 2. 配置
+cp .env.example .env            # 至少填一个 *_API_KEY 与 MySQL 连接
+
+# 3. 建库（表在首次启动时自动创建）
+mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS ai_grade_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+# 4. 启动
+python -m backend.main          # 或 .\start_backend.ps1
 ```
 
-**Windows（PowerShell）:**
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-
-**Linux / macOS:**
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-### 3. 配置环境变量
-
-复制 `.env.example` 为 `.env` 并修改配置：
+健康检查：
 
 ```bash
-cp .env.example .env
-```
-
-编辑 `.env` 文件，至少配置以下项：
-
-```env
-# LLM API 密钥（至少配置一个）
-DASHSCOPE_API_KEY=sk-your-dashscope-key
-DEEPSEEK_API_KEY=your-deepseek-key
-OPENAI_API_KEY=your-openai-key
-ANTHROPIC_API_KEY=your-anthropic-key
-
-# 数据库配置
-MYSQL_HOST=localhost
-MYSQL_PORT=3306
-MYSQL_USER=root
-MYSQL_PASSWORD=your-mysql-password
-MYSQL_DATABASE=ai_grade_db
-
-# JWT 配置（生产环境请使用随机生成的强密钥）
-JWT_SECRET_KEY=your-random-secret-key
-
-# 默认模型（建议配置为已具备有效密钥的模型）
-DEFAULT_MODEL=deepseek-chat
-
-# 模型参数
-TEMPERATURE=0.7
-TOP_P=0.9
-MAX_TOKENS=4000
-```
-
-> **注意**：`DEFAULT_MODEL` 决定了未显式选择模型时的工作流/AI聊天默认模型，请务必设置为密钥有效的模型。
-
-### 4. 创建数据库
-
-在 MySQL 中执行：
-
-```sql
-CREATE DATABASE IF NOT EXISTS ai_grade_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-```
-
-> 数据表会在首次启动时自动创建（`init_db`），默认管理员账号与系统提示词模板也会自动初始化。
-
-### 5. 启动服务器
-
-**方式一：一键脚本（Windows）**
-```bash
-start_backend.bat        # cmd
-# 或
-.\start_backend.ps1      # PowerShell
-```
-
-**方式二：手动启动**
-```bash
-python -m backend.main
-# 或
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
-```
-
-服务器启动后访问 **http://localhost:8000**。
-
-### 6. 快速验证
-
-```bash
-# 健康检查
 curl http://localhost:8000/health
-# → {"status":"healthy","service":"云海睿评 - AI绩效评价报告生成系统","version":"1.0.0"}
+# {"status":"healthy","service":"云海睿评 - AI绩效评价报告生成系统","version":"1.0.0"}
 ```
-
----
-
-## 使用指南
 
 ### 页面入口
 
 | 页面 | 路径 | 说明 |
 |------|------|------|
 | 首页 | `/` | 平台介绍与入口 |
-| 登录/注册 | `/login` | 登录、注册、记住登录状态 |
-| 客户端 | `/client` | 主工作台：绩效评价、AI助手、我的报告、问卷填写、个人设置 |
-| 管理端 | `/admin` | 系统管理（仅管理员） |
-| 独立工作流 | `/workflow` | 精简版工作流页面（需登录） |
-| 报告编辑 | `/report?session=<会话ID>` | 报告在线预览与编辑 |
-| 问卷填写 | `/questionnaire?session=<会话ID>` | 独立问卷填写页 |
-
-### 登录
-- 首次启动自动创建默认管理员账号：`admin` / `Admin@123456`（**请尽快修改密码**）
-- 新用户可通过登录页注册
-- 管理员可在管理端创建用户
-
-### 客户端使用流程（/client）
-
-1. **创建评价项目**
-   - 进入「绩效评价」页，输入项目名称
-   - 上传相关资料文件（支持 PDF / Word / Excel / TXT / 图片，可拖拽）
-   - 选择 AI 模型（默认跟随系统配置 `DEFAULT_MODEL`）
-   - 配置温度档位（严谨/普通/发散）、Top-P、指标体系类型、分析视角
-   - 点击「开始评价」
-
-2. **14步工作流执行**
-   - 实时进度条与 14 步状态（完成/进行中/待处理）
-   - 每步完成后点击步骤查看内容，可进行：
-     - **AI 对话优化**：输入指令让 AI 调整该步骤内容
-     - **人工修改**：直接编辑生成内容
-     - **步骤导出**：将单步内容导出为 Word / PDF
-     - **问卷生成**：步骤 6 完成后一键生成调查问卷
-
-3. **报告与导出**
-   - 工作流完成后，可导出完整报告 Word / PDF
-   - 「我的报告」页查看历史报告，支持重新导出、批量删除
-   - 「报告编辑」页（工作流页 → 编辑报告）可在线修改并保存，支持章节拖拽排序、格式校对、逻辑校对
-
-4. **AI助手**
-   - 多轮对话（自动保存会话历史），支持切换模型
-   - 管理员可在管理端全局开关 AI 聊天功能
-
-5. **问卷填写**
-   - 基于指标体系自动生成里克特 5 级量表问卷
-   - 支持在线作答、提交、CSV 导出、打印
-
-### 管理端（/admin）
-覆盖仪表盘、用户、模型、提示词、知识库、模板、工作流监控、审计日志、文件管理、数据清理、系统设置等模块，详见 [管理端功能](#管理端功能)。
+| 登录 / 注册 | `/login` | 支持记住登录状态 |
+| 客户端 | `/client` | 绩效评价、AI 助手、我的报告、问卷、设置 |
+| 管理端 | `/admin` | 用户 / 模型 / 提示词 / 知识库 / 监控 / 审计 |
+| 独立工作流 | `/workflow` | 精简版工作流页 |
+| 报告编辑 | `/report?session=<id>` | 在线预览与编辑 |
+| 问卷填写 | `/questionnaire?session=<id>` | 独立问卷页 |
 
 ---
 
-## 14步工作流详解
+## ⚙️ 配置
 
-| 步骤 | 功能名称 | 说明 |
-|------|---------|------|
-| Step 0 | 初始化与文件解析 | 解析上传文件，提取文本内容 |
-| Step 1 | 整理所需资料清单 | 分析文件，生成完整资料清单 |
-| Step 2 | 提取核心有效信息+内容索引 | 提取核心信息，建立内容索引 |
-| Step 3 | 构建绩效评价指标体系 | 构建三级指标体系，支持 6 种类型（类型选择真实生效） |
-| Step 4 | 生成各指标分值 | 分配分值，含四维校验（总分 100 分约束） |
-| Step 5 | 生成各指标评分标准 | 制定详细评分标准 |
-| Step 6 | 生成评价指标体系表 | 整合指标体系表，可生成调查问卷 |
-| Step 7 | 生成指标得分及分析 | 逐项评分分析，含得分/扣分原因，支持逐指标评分与AI辅助分析 |
-| Step 8 | 总结主要经验做法 | 提炼可推广的经验做法 |
-| Step 9 | 分析存在问题及原因 | 识别问题、分析原因，支持中立/尖锐/委婉三种语言风格 |
-| Step 10 | 提出改进建议 | 针对性建议，含逻辑一致性校验 |
-| Step 11 | 综合评价分析及结论 | 综合评分、等级判定、可视化展示 |
-| Step 12 | 生成基本情况 | 项目背景、内容、组织管理、资金投入、绩效目标等模块，支持自定义模块 |
-| Step 13 | 生成评价工作简介 | 评价目的、对象、范围、原则、方法、标准、过程等模块 |
-| Step 14 | 组装最终报告 | 按 8 大章节组装，支持拖拽调整顺序、格式校对、导出样式定制 |
+完整清单见 [`.env.example`](./.env.example)，关键项：
 
-> **说明**：系统默认全自动执行全部 14 步（当前版本已禁用步骤 3/6/11 的人工暂停点，前端确认交互接口保留，便于后续启用）。
-
----
-
-## 管理端功能
-
-### 仪表盘
-- 用户、工作流、Token、AI 对话统计卡片
-- Token 消耗趋势（近30天）、热门用户排行
-- AI 聊天总开关
-
-### 用户管理
-- 用户列表、搜索、角色筛选、排序
-- 新建用户、编辑、启用/禁用、修改密码
-- 导出用户 CSV
-
-### 模型管理
-- AI 模型配置的增删改查、启用/禁用开关
-- 支持平台、模型名、API Key、Base URL、视觉/文件能力配置
-
-### 提示词管理
-- 14 个步骤的 Prompt 模板查看/编辑
-- 按步骤、指标层级、维度筛选
-- 支持细粒度提示词（层级/维度级）
-- 修改日志追踪、重置为系统默认
-
-### 知识库
-- 知识库条目的增删改查，按步骤/分类筛选
-- 内容编辑、启用/禁用
-
-### 模板管理 / 模块序列
-- 报告模块顺序配置，支持拖拽排序、批量保存
-- 指标类型本地配置
-
-### 工作流监控
-- 所有用户工作流会话列表（状态、进度、Token）
-- 状态筛选
-
-### 审计日志
-- 操作日志查询（按操作类型、用户筛选）
-- 审计摘要统计
-
-### 文件管理
-- 文件总览、按类型/上传类别统计
-- 90 天到期预警
-
-### 数据清理
-- 过期数据预览（90天/30天）
-- 手动执行清理
-- 清理卡住的工作流
-
-### 系统设置
-- AI 聊天功能开关
-- 评分等级阈值设置（优秀/良好/合格）
-- 管理员密码修改
-
-### 通知中心
-- 向指定用户发送通知、查看发送记录、撤回通知
-
----
-
-## 数据库设计
-
-> 所有表在首次启动时自动创建。`workflow_sessions.final_report` 等大文本列使用 `MEDIUMTEXT`（16MB），支持大型报告存储。
-
-### 主要数据表
-
-| 表名 | 说明 | 主要字段 |
-|------|------|---------|
-| `users` | 用户表 | id, username, password_hash, role, phone, is_active, tokens_used, avatar_url, last_login_at, created_at |
-| `projects` | 项目表 | id, user_id, name, type, status, uploaded_files, created_at |
-| `project_files` | 项目文件表 | id, user_id, project_id, original_name, file_type, file_path, upload_type, expires_at |
-| `workflow_sessions` | 工作流会话表 | id, session_id(唯一), user_id(可空), project_name, status, current_step, model_name, final_report(MEDIUMTEXT), token_used, created_at, completed_at |
-| `reports` | 报告表 | id, project_id, user_id, step_number, step_name, content(MEDIUMTEXT), model_used, is_final, created_at |
-| `token_usage` | Token消耗记录 | id, user_id, session_id, step_number, model_name, prompt_tokens, completion_tokens, total_tokens |
-| `prompt_templates` | 提示词模板 | id, step_number, step_name, prompt_content, is_system, version, change_log, indicator_level, dimension |
-| `ai_conversations` | AI对话 | id, user_id, title, created_at, updated_at |
-| `ai_messages` | AI消息 | id, conversation_id, role, content, created_at |
-| `notifications` | 通知 | id, user_id, title, content, is_read, sender_id, created_at |
-| `operation_logs` | 操作日志 | id, user_id, username, action, resource_type, resource_id, detail, ip_address, created_at |
-| `report_module_sequences` | 报告模块排序 | id, step_number, module_key, module_name, sort_order, is_visible, client_editable |
-| `knowledge_base` | 知识库 | id, name, content, category, step_number, indicator_level, is_active |
-| `model_configs` | 模型配置 | id, platform, model_name, model_id, api_key, api_base_url, is_enabled, supports_vision, supports_file, sort_order |
-| `questionnaire_answers` | 问卷答案 | id, session_id, question_id, question_text, question_type, selected_level_index, text_answer, submitted_at |
-| `user_sessions` / `short_term_memories` / `long_term_memories` / `conversation_summaries` | 记忆表 | Agent 短期/长期记忆与会话摘要 |
-
----
-
-## API接口概览
-
-> 认证接口返回统一包装格式：`{"success": true, "data": {...}, "message": "..."}`。除登录/注册/健康检查外，`/api/client/*` 与 `/api/admin/*` 需要 `Authorization: Bearer <token>`。
-
-### 认证接口 `/api/auth`
-
-| 方法 | 路径 | 说明 |
+| 变量 | 说明 | 默认 |
 |------|------|------|
-| POST | `/api/auth/register` | 注册（username/password/phone） |
-| POST | `/api/auth/login` | 登录，返回 access_token + refresh_token |
-| POST | `/api/auth/refresh?refresh_token_str=xxx` | 刷新访问令牌 |
-| GET | `/api/auth/me` | 当前用户信息 |
-| POST | `/api/auth/admin/create-user` | 管理员创建用户 |
-| GET | `/api/auth/users` | 用户列表 |
-| POST | `/api/auth/users/{id}/toggle-status` | 切换用户状态 |
-| GET | `/api/auth/init-admin` | 初始化默认管理员 |
+| `MYSQL_HOST` / `PORT` / `USER` / `PASSWORD` / `DATABASE` | 数据库连接 | `localhost` / `3306` / `root` / — / `ai_grade_db` |
+| `JWT_SECRET_KEY` | Token 签名密钥，**生产必须改** | 占位值 |
+| `JWT_ALGORITHM` / `ACCESS_TOKEN_EXPIRE_MINUTES` / `REFRESH_TOKEN_EXPIRE_DAYS` | 令牌策略 | `HS256` / `1440` / `30` |
+| `DASHSCOPE_API_KEY` / `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | LLM 密钥（至少一个） | — |
+| `DEFAULT_MODEL` | 未显式选择模型时的默认值 | `deepseek-chat` |
+| `TEMPERATURE` / `TOP_P` / `MAX_TOKENS` | 生成参数 | `0.7` / `0.9` / `4000` |
+| `ALLOWED_ORIGINS` | CORS 白名单（逗号分隔） | `localhost:3000,5173,8000` |
 
-#### 登录示例
-```
-POST /api/auth/login
-Content-Type: application/json
-
-{"username": "admin", "password": "Admin@123456"}
-```
-响应：
-```json
-{
-  "success": true,
-  "message": "登录成功",
-  "data": {
-    "user_id": 1,
-    "username": "admin",
-    "role": "admin",
-    "tokens_used": 198,
-    "access_token": "eyJhbGciOiJIUzI1NiIs...",
-    "refresh_token": "eyJhbGciOiJIUzI1NiIs..."
-  }
-}
-```
-
-### Agent 工作流接口 `/api/agent`
-
-#### 启动工作流（SSE 流式，前端主用）
-```
-POST /api/agent/workflow/start-stream
-Content-Type: application/json
-Authorization: Bearer <token>
-
-{
-  "project_name": "测试项目",
-  "file_paths": ["D:/AI_Grade/uploads/xxx.txt"],
-  "model_name": "deepseek-chat",
-  "comparison_mode": "single",
-  "temperature_profile": "normal",
-  "top_p": 0.9,
-  "indicator_type": "项目支出指标体系"
-}
-```
-
-SSE 事件（`data: {...}` 格式）：
-| 事件 | 说明 |
-|------|------|
-| `step_start` | 步骤开始 |
-| `step_complete` | 步骤完成（含 content 与 content_preview） |
-| `token_update` | Token 消耗更新 |
-| `questionnaire_ready` | 步骤6完成，问卷可生成 |
-| `complete` | 工作流完成（含 final_report_preview） |
-| `error` | 错误信息 |
-
-#### 工作流相关
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/api/agent/workflow/start` | 同步启动（兼容旧调用，耗时较长） |
-| GET | `/api/agent/workflow/{session_id}/status` | 工作流实时状态（步骤摘要/审批/错误） |
-| GET | `/api/agent/workflow/{session_id}/report` | 获取完整报告内容（重启后可恢复） |
-| POST | `/api/agent/workflow/save-report` | 保存编辑后的报告 |
-| POST | `/api/agent/workflow/approve` | 人工确认节点（接口保留） |
-| POST | `/api/agent/workflow/refine` | AI 对话优化指定步骤 |
-| POST | `/api/agent/workflow/export` | 导出完整报告 / 单步骤（word/pdf） |
-| GET | `/api/agent/download/{file_name}` | 下载导出的 Word/PDF 文件 |
-| POST | `/api/agent/upload` / `/api/agent/upload/batch` | 单文件 / 批量上传 |
-
-#### 问卷接口
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/api/agent/workflow/questionnaire` | 生成问卷（基于指标体系） |
-| GET | `/api/agent/workflow/questionnaire/list` | 问卷列表 |
-| POST | `/api/agent/workflow/questionnaire/submit` | 提交答卷 |
-| GET | `/api/agent/workflow/{session_id}/questionnaire/answers` | 查看答卷 |
-| DELETE | `/api/agent/workflow/questionnaire/{session_id}` | 删除问卷 |
-| POST | `/api/agent/workflow/questionnaire/batch-delete` | 批量删除问卷 |
-
-#### 评分与分析接口
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/agent/workflow/{session_id}/indicators-for-scoring` | 获取待评分指标 |
-| POST | `/api/agent/workflow/generate-indicator-analysis` | AI 辅助生成指标分析 |
-| POST | `/api/agent/workflow/save-indicator-scores` | 保存逐指标评分并生成评分表 |
-| GET | `/api/agent/workflow/{session_id}/score-summary` | 评分汇总与等级判定 |
-| GET | `/api/agent/workflow/{session_id}/extract-deductions` | 提取扣分点 |
-| POST | `/api/agent/workflow/confirm-deductions` | 确认扣分点 |
-| POST | `/api/agent/workflow/{session_id}/verify-logic` | 逻辑一致性校对 |
-| POST | `/api/agent/workflow/set-language-style` | 设置语言风格（中立/尖锐/委婉） |
-| POST | `/api/agent/workflow/{session_id}/perspective` | 多视角分析 |
-
-#### 报告组装与定制
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET/POST | `/api/agent/workflow/{session_id}/report-order` | 获取/保存章节顺序 |
-| POST | `/api/agent/workflow/assemble-report` | 按自定义顺序组装最终报告 |
-| POST | `/api/agent/workflow/{session_id}/format-check` | 报告格式校对 |
-| GET/POST | `/api/agent/workflow/{session_id}/export-style` | 导出样式定制 |
-| GET | `/api/agent/workflow/templates` | 指标体系模板库 |
-| POST | `/api/agent/workflow/templates/import` / `save` | 导入/保存模板 |
-| POST | `/api/agent/workflow/reorder-indicators` | 指标拖拽排序 |
-| GET | `/api/agent/workflow/{session_id}/modules` | 步骤12模块列表 |
-| POST | `/api/agent/workflow/generate-module` / `add-custom-module` / `update-module-content` / `delete-module` | 模块生成与增删改 |
-
-### 客户端接口 `/api/client`
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/client/me` | 当前用户信息（含统计） |
-| PUT | `/api/client/profile` | 修改用户名 |
-| PUT | `/api/client/password` | 修改密码 |
-| POST | `/api/client/avatar` | 上传头像 |
-| DELETE | `/api/client/account` | 注销账号（级联删除全部数据） |
-| GET | `/api/client/dashboard` | 客户端仪表盘数据 |
-| GET | `/api/client/activity` | 最近活动 |
-| GET | `/api/client/reports` | 报告列表（含内存/备份恢复） |
-| DELETE | `/api/client/reports/{session_id}` | 删除报告 |
-| POST | `/api/client/reports/batch-delete` | 批量删除报告 |
-| GET | `/api/client/token-stats` | Token 消耗统计 |
-| GET | `/api/client/notifications` | 通知列表 |
-| PUT | `/api/client/notifications/{id}/read` | 标记单条已读 |
-| PUT | `/api/client/notifications/read-all` | 全部已读 |
-| DELETE | `/api/client/notifications/{id}` | 删除单条通知 |
-| DELETE | `/api/client/notifications` | 清空通知 |
-| POST | `/api/client/ai/chat` | AI 聊天 |
-| POST | `/api/client/ai/voice-chat` | 语音聊天（form 提交识别文本） |
-| GET | `/api/client/ai/chat-status` | AI 聊天功能开关状态 |
-| GET | `/api/client/ai/models` | 可用模型列表（按密钥配置过滤） |
-| GET/POST | `/api/client/ai/conversations` | 对话列表/新建对话 |
-| GET/PUT/DELETE | `/api/client/ai/conversations/{id}` | 对话详情/改名/删除 |
-
-### 管理端接口 `/api/admin`
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/admin/dashboard` | 仪表盘（总览 + 最近操作） |
-| GET | `/api/admin/token-stats` | Token 统计（趋势/分布/Top用户） |
-| GET | `/api/admin/ai-chat-stats` | AI 对话统计 |
-| GET | `/api/admin/settings` | 系统设置 |
-| POST | `/api/admin/settings/ai-chat-toggle` | 切换 AI 聊天开关 |
-| POST | `/api/admin/settings/rating-thresholds` | 评分等级阈值 |
-| GET/POST/PUT/DELETE | `/api/admin/users` | 用户管理 |
-| GET/POST/PUT/PATCH/DELETE | `/api/admin/models` | 模型管理 |
-| GET/POST/PUT/DELETE | `/api/admin/prompts` | 提示词管理（含 granular/defaults/reset） |
-| GET/POST/PUT/DELETE | `/api/admin/knowledge` | 知识库管理 |
-| GET | `/api/admin/workflows` | 工作流监控 |
-| GET | `/api/admin/audit-logs` | 审计日志 |
-| GET | `/api/admin/audit-logs/summary` | 审计摘要 |
-| GET | `/api/admin/file-stats` | 文件统计 |
-| GET | `/api/admin/step-config` | 步骤配置总览 |
-| GET/POST/PUT/DELETE | `/api/admin/module-sequences` | 报告模块排序 |
-| GET/POST | `/api/admin/notifications` | 通知发送/记录 |
-| DELETE | `/api/admin/notifications/by-title` | 按标题撤回 |
-| GET | `/api/admin/cleanup/preview` | 清理预览 |
-| POST | `/api/admin/cleanup/execute` | 执行清理 |
-| POST | `/api/admin/cleanup/fix-failed` | 清理卡住工作流 |
-
-### 健康检查
-```
-GET /health
-→ {"status": "healthy", "service": "云海睿评 - AI绩效评价报告生成系统", "version": "1.0.0"}
-```
+> 模型列表接口只展示**已配置有效密钥**的模型；`your_*` 占位值会被过滤，
+> 因此「模型列表为空」通常意味着密钥没填对。
 
 ---
 
-## 安全与权限
+## 🗂 项目结构
 
-### 认证机制
-- 基于 JWT 的 Token 认证（`Authorization: Bearer <token>`）
-- Access Token 有效期：24 小时（可配置）
-- Refresh Token 有效期：30 天（可配置）
-- 密码使用 bcrypt（加盐哈希）加密存储
-- 密码复杂度要求：大写字母、小写字母、数字、特殊字符中至少 3 种
+<details>
+<summary>展开目录树</summary>
 
-### 权限控制
-- **管理员 (admin)**: 可访问全部功能，包括用户管理、系统配置、提示词管理、知识库管理等
-- **普通用户 (client)**: 仅可访问自己的项目/报告/对话/通知，无法访问管理端（403）
-
-### CORS 配置
-在 `.env` 中配置允许的源：
-```env
-ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://localhost:8000
 ```
+AI_Grade/
+├── backend/
+│   ├── agents/
+│   │   ├── performance_agent.py      # 14 步工作流（LangGraph 编排）
+│   │   ├── states/performance_state.py
+│   │   ├── tools/
+│   │   │   ├── structured_output.py   # JSON 形状校验 + 一次修复 + 缩水闸门
+│   │   │   ├── content_indexer.py     # 内容索引
+│   │   │   ├── score_validator.py     # 四维校验
+│   │   │   └── export_service.py      # Word / PDF 导出
+│   │   └── prompts/                   # 提示词（DB 优先，内置兜底）
+│   ├── routes/                        # agent / auth / client / admin（135 个端点）
+│   ├── services/
+│   │   ├── evidence_anchor.py         # 六类引用锚点
+│   │   ├── retrieval.py               # BM25 + 中文二元组
+│   │   ├── doc_coverage.py            # 长文档覆盖度
+│   │   ├── consistency.py             # 步骤间一致性
+│   │   ├── progress_bus.py            # 进程内进度总线
+│   │   └── export_cache.py            # 导出幂等缓存
+│   ├── middleware/                    # 认证 / request_id / 限流
+│   ├── models/  utils/  config.py  database.py  main.py
+├── frontend/                          # 零构建：原生 HTML/CSS/JS
+│   ├── shared/                        # config / api / store / ui / workflow-controller
+│   ├── client/  admin/  workflow/  report/  questionnaire/  login/
+├── tests/                             # pytest + node:test，268 项
+│   └── rag_eval/                      # 检索评估基线（语料 + 样本 + 阈值）
+├── docs/API.md                        # 完整接口参考
+├── Dockerfile  docker-entrypoint.sh
+├── requirements.txt  start_backend.bat  start_backend.ps1
+└── wf_e2e.py  frontend_e2e_check.py   # 端到端验证脚本
+```
+
+</details>
 
 ---
 
-## 数据保留策略
+## 🧪 测试
 
-- 上传文件自上传之日起保留 **90 天**，到期自动清理
-- 系统每日凌晨 3 点自动执行过期数据清理
-- 管理员可在管理端预览待清理数据并手动执行清理（90 天 / 30 天）
-- 工作流状态实时写入磁盘备份（`state_backups/`），服务器重启后可恢复历史报告
+```bash
+# Python 单测 + 回归（无需服务器、无需 LLM）
+.venv/Scripts/python -m pytest tests/ -q --ignore=tests/rag_eval    # 268 passed
+
+# 前端共享层 / SSE 协议（node:test，无需服务器）
+node --test tests/test_shared_frontend.cjs tests/test_workflow_sse.cjs \
+            tests/test_client_modules.cjs tests/test_error_routing.cjs \
+            tests/test_score_disposition_badge.cjs
+
+# 检索效果基线（无需服务器、无需 LLM）
+.venv/Scripts/python -m tests.rag_eval.run --check    # 低于 baseline.json 则退出码 1
+```
+
+需要真实模型的验证：
+
+```bash
+.venv/Scripts/python frontend_e2e_check.py   # 前端联通性（72 项）
+.venv/Scripts/python wf_e2e.py               # 真实 14 步端到端（47 项，约 4~5 分钟）
+.venv/Scripts/python verify_coverage_live.py # 4.2 万字长文档覆盖度验证
+```
+
+检索基线现状：Recall@3 = **0.448**、MRR = **0.391**、精确率 = **0.161**
+（语料 7 份 / 271 块 / 9,925 字，样本 29 条）。改检索前后各跑一次，用数字说话。
+
+> 本机若配置了 HTTP 代理，调用本地服务的脚本需加 `NO_PROXY=127.0.0.1,localhost`。
 
 ---
 
-## 测试与验证
+## 🐳 部署注意
 
-> 测试前请确保后端已启动（`http://127.0.0.1:8000`）。
-
-### 1. API 全功能测试（无需 LLM 密钥）
-```bash
-python test_all_apis.py
-```
-覆盖认证、客户端、管理端、文件上传、页面加载等核心端点。
-
-### 2. 前端联通性检查（65 项，无需 LLM 密钥）
-```bash
-python frontend_e2e_check.py
-```
-逐一验证前端各页面实际调用的 API 端点：可访问性、认证、响应结构。
-
-### 3. 工作流端到端测试（需要有效的 LLM 密钥，耗时约 5-8 分钟）
-```bash
-python wf_e2e.py
-```
-真实执行 14 步工作流（SSE 流式），并验证报告获取/保存、Word/PDF 导出、问卷生成与提交、评分汇总、逻辑校对、章节排序、报告组装、格式校对、自定义模块、工作流落库与监控等 35 项。
-
-### 4. SSE 实时流探测
-```bash
-python sse_stream_probe.py
-```
-验证工作流步骤事件是否实时推送（约 1-2 分钟，观察前 3 步完成事件）。
-
-### 数据库迁移
-```bash
-python migrate_db.py
-```
+- **单 worker**：进度总线与检查点都在进程内，`uvicorn --workers N` 会拆散状态，
+  N>1 前请先把 `progress_bus` 与 `MemorySaver` 换成 Redis / Postgres 实现；
+- **反向代理**：SSE 需要 `proxy_buffering off;` 与较长的 `proxy_read_timeout`，
+  服务端已设置 `X-Accel-Buffering: no`；
+- **数据保留**：上传文件默认保留 90 天，每日 03:00 自动清理，可在管理端预览与手动执行；
+- **备份**：除 MySQL 外，`state_backups/*.json` 是重启恢复报告的唯一来源，务必一并备份。
 
 ---
 
-## 常见问题排查
+## 🗺 Roadmap
 
-### 1. 工作流提示「AI服务配额已用完 / 403 AllocationQuota.FreeTierOnly」
-通义千问（DashScope）免费额度已耗尽。解决：
-- 在 `.env` 中将 `DEFAULT_MODEL` 改为密钥有效的模型（如 `deepseek-chat`）
-- 或为 DashScope 账户充值后恢复使用
-
-### 2. 模型列表中看不到某个模型
-`/api/client/ai/models` 仅展示已配置有效密钥（非 `your_*` 占位）的模型。检查 `.env` 中对应 `*_API_KEY` 是否填写正确。
-
-### 3. 启动失败：MySQL 连接错误
-- 确认 MySQL 服务已启动
-- 确认 `.env` 中 `MYSQL_HOST/PORT/USER/PASSWORD/DATABASE` 正确
-- 确认已创建数据库 `ai_grade_db`（utf8mb4）
-
-### 4. 端口被占用
-```bash
-netstat -ano | findstr :8000
-```
-找到占用进程后结束它，或修改 `.env` 中 `PORT` 并重启。
-
-### 5. PDF 导出报错
-PDF 导出依赖 `reportlab`。如未安装：
-```bash
-pip install reportlab
-```
-
-### 6. 部署在 Nginx 后 SSE 进度不实时
-已在响应头设置 `X-Accel-Buffering: no`，若仍缓冲请确认 Nginx 配置：
-```nginx
-proxy_buffering off;
-proxy_cache off;
-```
-
-### 7. 服务器重启后报告还能看到吗？
-可以。工作流会话、最终报告保存到 MySQL，同时写入 `state_backups/` 磁盘备份；重启后「我的报告」仍可查看、导出、编辑历史报告。
-
-### 8. 修改模型/提示词后不生效
-- 提示词：管理端编辑后保存即可生效（DB 优先，未修改步骤使用系统默认模板）
-- 模型：`.env` 修改后需重启后端
+- [ ] 分块 map-reduce，支持超长材料的真正全覆盖
+- [ ] Redis 发布订阅 + 可插拔 checkpointer，支持多 worker 与真续跑
+- [ ] `critique-revise` 双模型互评，多模型对比从「并列展示」升级为「择优」
+- [ ] `issue_id → suggestion_ids` 的强制覆盖闸门
+- [ ] `/metrics` 与结构化日志，补齐可观测性
+- [ ] CI（lint + pytest + node:test）与依赖锁定
 
 ---
 
-## 许可证
+## 🤝 参与贡献
 
-本项目采用 MIT 许可证。
+欢迎提 Issue 与 PR。开始之前请先读 [CONTRIBUTING.md](./CONTRIBUTING.md)，
+参与本项目即表示同意遵守 [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)。
+
+安全漏洞请勿公开提 Issue，按 [SECURITY.md](./SECURITY.md) 的方式私下报告。
+
+## 📄 许可证
+
+本项目采用 [MIT License](./LICENSE)。
 
 ---
 
-**最后更新**: 2026年8月14日
+<div align="center">
+<sub>如果这个项目对你有帮助，欢迎点一个 ⭐</sub>
+</div>
