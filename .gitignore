@@ -63,3 +63,4 @@ _api_test_sample.txt
 
 # 本机个人资料（非项目内容）
 /*.docx
+/gen_interview_doc.py
