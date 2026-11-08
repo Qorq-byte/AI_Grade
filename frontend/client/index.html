@@ -105,6 +105,28 @@
         .wf-upload-card .wf-file-list{max-height:120px;overflow-y:auto}
         .wf-upload-card .wf-file-tag{font-size:11px;padding:2px 8px}
         .edit-mode-bar{display:flex;align-items:center;gap:12px;padding:8px 12px;background:#f8f9fa;border-radius:8px;margin-bottom:12px;flex-wrap:wrap}
+        .wb-coverage{display:inline-flex;align-items:center;gap:6px;margin:0 0 12px;padding:6px 12px;border-radius:999px;font-size:12px;line-height:1.4;cursor:help;border:1px solid transparent}
+        .wb-coverage.ok{background:#f0fff4;color:#276749;border-color:#c6f6d5}
+        .wb-coverage.warn{background:#fffaf0;color:#975a16;border-color:#feebc8}
+        .wb-consistency{display:block;margin:0 0 12px;padding:10px 12px;border-radius:8px;font-size:12px;line-height:1.5;border:1px solid transparent}
+        .wb-consistency.ok{background:#f0fff4;color:#276749;border-color:#c6f6d5}
+        .wb-consistency.warn{background:#fffaf0;color:#975a16;border-color:#feebc8}
+        .wb-consistency.err{background:#fff5f5;color:#c53030;border-color:#fed7d7}
+        .wb-consistency ul{margin:6px 0 0;padding-left:18px}
+        .wb-consistency li{margin:2px 0}
+        .wb-consistency .wb-code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;opacity:.75;margin-right:6px}
+        .wb-dispo{display:block;margin:0 0 12px;padding:10px 12px;border-radius:8px;font-size:12px;line-height:1.6;border:1px solid transparent}
+        .wb-dispo.ok{background:#f0fff4;color:#276749;border-color:#c6f6d5}
+        .wb-dispo.warn{background:#fffaf0;color:#975a16;border-color:#feebc8}
+        .wb-dispo.err{background:#fff5f5;color:#c53030;border-color:#fed7d7}
+        .wb-dispo-chip{display:inline-block;margin:4px 6px 0 0;padding:1px 8px;border-radius:10px;background:rgba(0,0,0,.06);font-size:11px;white-space:nowrap}
+        .wb-dispo-chip.bad{background:rgba(197,48,48,.14);color:#c53030;font-weight:600}
+        .wb-dispo details{margin-top:6px}
+        .wb-dispo summary{cursor:pointer;font-size:11px;opacity:.8}
+        .wb-dispo table{margin-top:6px;width:100%;border-collapse:collapse;font-size:11px}
+        .wb-dispo th,.wb-dispo td{padding:3px 6px;text-align:left;border-bottom:1px solid rgba(0,0,0,.08);vertical-align:top}
+        .wb-dispo th{font-weight:600;opacity:.75}
+        .wb-dispo td.ev{font-family:ui-monospace,Menlo,Consolas,monospace;word-break:break-all}
         .edit-mode-bar .mode-label{font-size:13px;color:#4a5568;font-weight:500}
         .edit-mode-switch{display:flex;gap:2px;background:#e2e8f0;border-radius:6px;padding:2px}
         .edit-mode-switch button{padding:4px 14px;border-radius:5px;border:none;font-size:12px;cursor:pointer;background:transparent;color:#4a5568;transition:all .15s}
@@ -186,7 +208,6 @@
     </style>
 </head>
 <body>
-    <div id="jsErrorBanner" style="display:none;background:#fff5f5;border-bottom:2px solid #e53e3e;color:#c53030;padding:8px 20px;font-size:12px;font-family:monospace;text-align:center"></div>
     <button class="mobile-toggle" onclick="toggleMobileSidebar()"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
     <div class="mobile-overlay" id="mobileOverlay" onclick="toggleMobileSidebar()"></div>
     <div class="app-container">
@@ -384,29 +405,26 @@
     <input type="file" id="avatarUpload" accept="image/*" style="display:none" onchange="handleAvatarUpload(event)">
     <input type="file" id="fileUpload" accept="image/*" style="display:none" onchange="handleFileUpload(event)">
 
-    <script src="/static/workflow/sse.js"></script>
+    <script src="/static/shared/config.js"></script>
+    <script src="/static/shared/store.js"></script>
+    <script src="/static/shared/ui.js"></script>
+    <script src="/static/shared/api.js"></script>
+    <script src="/static/shared/workflow-controller.js"></script>
     <script>
-        // 全局JS错误捕获 - 在页面上显示错误帮助调试
-        var _jsErrors=[];window.addEventListener('error',function(e){var m=(e.message||'') + ' at ' + (e.filename||'') + ':' + (e.lineno||''); _jsErrors.push(m); console.error('[JS Error]',m); var er=document.getElementById('jsErrorBanner'); if(er){ er.textContent='JS错误: '+m+' (共'+_jsErrors.length+'个)'; er.style.display='block'; } });
-        var C={STEP_NAMES:["初始化","整理所需资料清单","提取核心有效信息","构建绩效评价指标体系","生成各指标分值","生成各指标评分标准","生成评价指标体系表","生成指标得分及分析","总结主要经验做法","分析存在问题及原因","提出改进建议","综合评价分析及结论","生成基本情况","生成评价工作简介","组装最终报告",],APPROVAL_STEPS:[3,6,11]}
+        // 全局错误提示：统一走可见错误组件，不再写调试角标
+        var _jsErrors=[];
+        window.addEventListener('error',function(e){
+            var m=(e.message||'')+' at '+(e.filename||'')+':'+(e.lineno||'');
+            _jsErrors.push(m);
+            console.error('[JS Error]',m);
+        });
+        var C={STEP_NAMES:APP_CONFIG.steps.names,APPROVAL_STEPS:APP_CONFIG.steps.approvalSteps};
         function getToken(){return sessionStorage.getItem('token')||localStorage.getItem('token')||''}
         function getUser(){var u=sessionStorage.getItem('user')||localStorage.getItem('user');if(u)try{return JSON.parse(u)}catch(e){}return null}
-        function api(m,u,b){var h={'Content-Type':'application/json'},t=getToken();if(t)h['Authorization']='Bearer '+t;var o={method:m,headers:h};if(b)o.body=JSON.stringify(b);return fetch(u,o).then(function(r){
-            // 仅根据HTTP状态码判断认证失败，不依赖错误消息内容
-            if(r.status===401||r.status===403){
-                sessionStorage.removeItem('token');localStorage.removeItem('token');localStorage.removeItem('user');sessionStorage.removeItem('user');localStorage.removeItem('auth_token');
-                window.location.href='/login?redirect=/client';return Promise.reject(new Error('认证失败'));
-            }
-            return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||('请求失败:'+r.status));return d})
-        }).catch(function(e){
-            if(e instanceof TypeError)throw new Error('网络连接失败，请检查网络');
-            throw e
-        })}
+        /* 统一请求层：超时/重试/去重/401 自动刷新，签名保持 api(method,url,body) 兼容旧调用 */
+        function api(m,u,b,o){return WBApi.request(m,u,b,o)}
         async function downloadExport(fileName) {
-            const response = await fetch('/api/agent/download/' + encodeURIComponent(fileName), {
-                headers: { Authorization: 'Bearer ' + getToken() },
-            });
-            if (!response.ok) throw new Error('下载失败（HTTP ' + response.status + '）');
+            const response = await WBApi.blob('/api/agent/download/' + encodeURIComponent(fileName));
             const url = URL.createObjectURL(await response.blob());
             const link = document.createElement('a');
             link.href = url;
@@ -414,14 +432,16 @@
             link.click();
             setTimeout(() => URL.revokeObjectURL(url), 1000);
         }
-        function uploadApi(u,f){var h={},t=getToken();if(t)h['Authorization']='Bearer '+t;return fetch(u,{method:'POST',headers:h,body:f}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'上传失败');return d})})}
-        function showToast(msg,tp){var el=document.createElement('div');el.className='toast '+(tp||'success');el.textContent=msg;document.body.appendChild(el);setTimeout(function(){el.remove()},3000)}
-        function esc(t){var d=document.createElement('div');d.textContent=t;return d.innerHTML}
+        function uploadApi(u,f){return WBApi.upload(u,f)}
+        function showToast(msg,tp){return WBUI.showToast(msg,tp)}
+        /* 错误分流：可重试 / 终态 / 取消 / 登录失效 各有不同提示，并带上请求号 */
+        function showApiError(e,opts){return WBUI.showApiError(e,opts)}
+        function esc(t){return WBUI.esc(t)}
 
         var currentUserData=null,isChatEnabled=true,isCollapsed=false,isMobileOpen=false,currentConversationId=null,conversations=[],isRecording=false,recordingTimer=null,recordingSeconds=0,currentMode='',speechRecognition=null,chatStatusPollTimer=null,notificationPollTimer=null;
 
         // ====== WF State ======
-        var wfSessionId=null,wfRunning=false,wfCurrentStep=0,wfStatus="",wfStatusController=null,wfVersions={},wfEvidence={},wfReviewSteps=[],wfCompletedSteps=[],wfStepContents={},wfApprovalStep=null,wfUploadedFiles=[],wfAbortController=null
+        var wfSessionId=null,wfRunning=false,wfCurrentStep=0,wfStatus="",wfStatusController=null,wfCoverage=null,wfConsistency=null,wfDispo=null,wfVersions={},wfEvidence={},wfReviewSteps=[],wfCompletedSteps=[],wfStepContents={},wfApprovalStep=null,wfUploadedFiles=[],wfAbortController=null
 
         function initWfStepper(){var l=document.getElementById('wfStepperList');if(!l)return;l.innerHTML='';for(var i=1;i<=14;i++){(function(sn){var div=document.createElement('div');div.className='wf-step';div.id='wfStep'+sn;div.innerHTML='<div class="wf-step-dot">'+sn+'</div><span class="wf-step-name">'+C.STEP_NAMES[sn]+'</span>';div.onclick=function(){selectWfStep(sn)};l.appendChild(div)})(i)}}
 
@@ -432,6 +452,9 @@
     var txt=wfStepContents[sn]||'',st=wfStepStatus(sn);
     var inner='<div class="wf-content-body">';
     inner+=buildEditModeBar(sn);
+    inner+=buildCoverageBadge();
+    if(sn===14)inner+=buildConsistencyBadge();
+    if(sn===7)inner+=buildScoreDispositionBadge();
     if(!txt&&st!=='done'){
         inner+='<div class="wf-empty"><h3>'+C.STEP_NAMES[sn]+'</h3><p>'+(st==='done'?'该步骤已完成，但内容尚未加载。':'该步骤尚未执行或内容生成中。')+'</p></div>';
     }else{
@@ -456,6 +479,136 @@
     inner+=buildStepChat(sn);
     inner+=buildStepFooter(sn,st,txt);
     c.innerHTML=inner;
+}
+
+/* 资料覆盖度徽标：告诉用户这一步的提示词到底看完了多少资料 */
+function buildCoverageBadge(){
+    var c=wfCoverage;
+    if(!c||!c.total_chars)return '';
+    var total=Number(c.total_chars||0),omitted=Number(c.omitted_chars||0);
+    var pct=(Number(c.used_ratio||0)*100).toFixed(1);
+    var ok=omitted<=0;
+    var text=ok
+        ? '资料已全部纳入分析（共 '+total.toLocaleString()+' 字）'
+        : '资料覆盖 '+pct+'%（未直接引用 '+omitted.toLocaleString()+' 字'+(c.has_digest?'，已压缩为要点':'')+'）';
+    var detail=c.statement||text;
+    return '<div class="wb-coverage '+(ok?'ok':'warn')+'" role="status" title="'+esc(detail)+'" aria-label="'+esc(detail)+'">📄 '+esc(text)+'</div>';
+}
+
+/* 步骤间一致性徽标：报告里的数字是否互相说得通（纯程序检查，不涉及模型） */
+function buildConsistencyBadge(){
+    var r=wfConsistency;
+    if(!r||!r.checked)return '';
+    var errs=Number(r.error_count||0),warns=Number(r.warning_count||0);
+    var issues=(r.issues||[]).filter(function(i){return i&&i.message});
+    var btn='<button class="btn-sm" style="margin-top:8px" onclick="rerunConsistencyCheck()">重新检查</button>';
+    if(!errs&&!warns){
+        return '<div class="wb-consistency ok" role="status" aria-label="步骤间一致性检查通过">✅ 步骤间一致性检查通过（分值加总、得分与等级、报告取数未发现矛盾）'+btn+'</div>';
+    }
+    var head=errs?('❌ '+errs+' 项数字对不上'+(warns?'，另有 '+warns+' 项提示':''))
+                  :('⚠️ '+warns+' 项需要留意');
+    var html='<div class="wb-consistency '+(errs?'err':'warn')+'" role="status" aria-label="'+esc(head)+'"><strong>'+esc(head)+'</strong><ul>';
+    for(var i=0;i<issues.length;i++){
+        var it=issues[i];
+        html+='<li><span class="wb-code">'+esc(it.code||'')+'</span>'+esc(it.message)+(it.steps&&it.steps.length?'（步骤 '+it.steps.join('、')+'）':'')+'</li>';
+    }
+    html+='</ul>'+btn+'</div>';
+    return html;
+}
+
+/* 步骤7评分落地台账：区分「模型看过资料说没法评」与「系统把评分丢了」 */
+function buildScoreDispositionBadge(){
+    var d=wfDispo;
+    if(!d||!d.total)return '';
+    var c=d.counts||{};
+    var total=Number(d.total||0),accepted=Number(c.accepted||0);
+    /* 系统侧问题：引用定位不到、分值不合法、缺理由——这三种才是需要人去查的 */
+    var systemSide=Number(c.anchor_unresolved||0)+Number(c.score_invalid||0)+Number(c.reason_missing||0);
+    var cls=systemSide?'err':(accepted>=total&&!(d.unmatched||[]).length?'ok':'warn');
+    var pendingN=Number(c.model_pending||0),missingN=Number(c.not_mentioned||0);
+    /* 弱定位：引用落到了原文真实存在的行号，但那一行没进本步骤检索证据。
+       它不是系统故障（引用是真的、行号是真的），也不该算落地（没验证内容相关性），
+       所以单独一段文案 + 单独一种 chip 样式。 */
+    var weakN=Number(c.anchor_weak||0);
+    /* 除「已落地」外的其它分项合计。标题只有在「剩下的确实只有这一类」时才敢说
+       「其余 N 项都是 X」——否则 15 项未提及 + 2 项弱定位 会被说成「其余 15 项未提及」，
+       读者会以为另外 2 项已经落地了。 */
+    var otherN=systemSide+weakN;
+    var head;
+    if(systemSide){
+        head='❌ '+systemSide+' 项评分因系统侧原因未落地（引用无法定位 / 分值不合法 / 缺评分理由）';
+    }else if(accepted>=total&&!(d.unmatched||[]).length){
+        head='✅ 全部 '+total+' 项指标已落地评分';
+    }else if(pendingN&&!missingN&&!otherN){
+        head='⚠️ '+accepted+'/'+total+' 项已落地评分，其余为模型判定资料不足（待核实）';
+    }else if(missingN&&!pendingN&&!otherN){
+        head='⚠️ '+accepted+'/'+total+' 项已落地评分，其余 '+missingN+' 项模型未提及（模型输出不完整）';
+    }else if(weakN&&!pendingN&&!missingN&&!systemSide){
+        head='⚠️ '+accepted+'/'+total+' 项已落地评分，另有 '+weakN+' 项引用只定位到原文行号（该行未进入检索证据，不计入总分）';
+    }else{
+        head='⚠️ '+accepted+'/'+total+' 项已落地评分，其余未落地（分项见下）';
+    }
+    var chips='';
+    var order=[['accepted','已落地'],['model_pending','模型判定资料不足（待核实）'],['anchor_weak','引用可定位到原文行、但该行未进入检索证据'],['anchor_unresolved','引用无法定位'],['score_invalid','分值不合法'],['reason_missing','缺少评分理由'],['not_mentioned','模型未提及']];
+    for(var i=0;i<order.length;i++){
+        var key=order[i][0],n=Number(c[key]||0);
+        if(!n)continue;
+        chips+='<span class="wb-dispo-chip'+(key==='anchor_unresolved'||key==='score_invalid'||key==='reason_missing'?' bad':'')+'">'+esc(order[i][1])+' '+n+' 项</span>';
+    }
+    if(typeof d.accepted_score==='number')chips+='<span class="wb-dispo-chip">已落地分值合计 '+esc(String(d.accepted_score))+' 分</span>';
+    var unmatched=d.unmatched||[];
+    if(unmatched.length)chips+='<span class="wb-dispo-chip bad">模型写了体系外指标 ID '+unmatched.length+' 条</span>';
+
+    var items=d.items||{},rows='';
+    var pendingRows=[];
+    for(var id in items){
+        if(!Object.prototype.hasOwnProperty.call(items,id))continue;
+        if(items[id]&&items[id].status!=='accepted')pendingRows.push([id,items[id]]);
+    }
+    for(var j=0;j<pendingRows.length;j++){
+        var lid=pendingRows[j][0],it=pendingRows[j][1]||{};
+        var label='';
+        for(var k=0;k<order.length;k++){if(order[k][0]===it.status)label=order[k][1];}
+        var ev=it.evidence?String(it.evidence):(it.cited_ids&&it.cited_ids.length?it.cited_ids.join('、'):'—');
+        var raw=it.actual_score===undefined||it.actual_score===null?'—':String(it.actual_score);
+        rows+='<tr><td>'+esc(lid)+'</td><td>'+esc(label||it.status||'')+'</td><td>'+esc(raw)+'</td><td class="ev">'+esc(ev)+'</td></tr>';
+    }
+    var detail=rows
+        ? '<details><summary>查看 '+pendingRows.length+' 项未落地明细</summary><table><thead><tr><th>指标</th><th>原因</th><th>模型给的分值</th><th>模型写的引用</th></tr></thead><tbody>'+rows+'</tbody></table></details>'
+        : '';
+    if(unmatched.length){
+        var urows='';
+        for(var u=0;u<unmatched.length;u++){
+            var it2=unmatched[u]||{};
+            urows+='<tr><td>'+esc(String(it2.indicator_id||''))+'</td><td>'+esc(it2.actual_score===undefined||it2.actual_score===null?'—':String(it2.actual_score))+'</td><td class="ev">'+esc(it2.evidence?String(it2.evidence):'—')+'</td></tr>';
+        }
+        detail+='<details><summary>查看 '+unmatched.length+' 条体系外指标 ID 的评分（这些分没有被采用）</summary><table><thead><tr><th>模型写的指标 ID</th><th>分值</th><th>引用</th></tr></thead><tbody>'+urows+'</tbody></table></details>';
+    }
+    var note='';
+    if(!systemSide&&pendingN){
+        note+='<div style="margin-top:6px;font-size:11px;opacity:.8">「模型判定资料不足（待核实）」是模型按提示词要求作出的合法拒绝，不是系统丢数据；这类指标需要补充资料或人工补评分。</div>';
+    }
+    if(!systemSide&&missingN){
+        note+='<div style="margin-top:6px;font-size:11px;opacity:.8">「模型未提及」表示模型这次输出里没有这些指标——属于模型输出不完整，建议重跑步骤 7 或人工补评分。</div>';
+    }
+    if(weakN){
+        note+='<div style="margin-top:6px;font-size:11px;opacity:.8">「引用可定位到原文行、但该行未进入检索证据」：模型写的是「文件名 + 第 N 行」，行号在原文里确实存在，但那一行没有被本步骤检索到，所以只能确认引用存在、无法确认它支持该评分。<strong>这些分值不计入总分</strong>，请对照原文第 N 行确认后人工补评分。</div>';
+    }
+    return '<div class="wb-dispo '+cls+'" role="status" aria-label="'+esc(head)+'"><strong>'+esc(head)+'</strong><div>'+chips+'</div>'+note+detail+'</div>';
+}
+
+
+/* 手改过分值或章节后，重新对一遍报告里的数字（纯程序，秒回，不消耗模型额度） */
+function rerunConsistencyCheck(){
+    if(!wfSessionId)return;
+    showToast('正在核对报告内数字…','info');
+    api('POST','/api/agent/workflow/'+encodeURIComponent(wfSessionId)+'/consistency-check').then(function(res){
+        if(res&&res.data&&res.data.consistency){
+            wfConsistency=res.data.consistency;
+            if(wfCurrentStep===14)selectWfStep(14);
+            showToast(res.data.summary||'一致性检查通过','success');
+        }
+    }).catch(function(e){showApiError(e,{op:'一致性检查'})});
 }
 
 function buildEditModeBar(sn){
@@ -681,7 +834,7 @@ function selectPerspective(el,persp){
             showToast(name+'分析完成','success');
         }
     }).catch(function(e){
-        showToast(name+'分析失败: '+e.message,'error');
+        showApiError(e,{action:name+'视角分析'});
         if(resultDiv){resultDiv.innerHTML='<p style="color:#e53e3e">分析失败，请确保步骤7和步骤9已完成</p>'}
     });
 }
@@ -732,7 +885,7 @@ function generateQuestionnaireFromStep(){
             if(window.innerWidth<768&&isMobileOpen)toggleMobileSidebar();
             renderQuestionnaireDirect(r.data.questionnaire, wfSessionId, pn||'当前项目');
         }else{showToast('问卷生成失败：指标体系尚未完成（请确保Step3已完成）','error')}
-    }).catch(function(e){showToast('问卷生成失败: '+e.message,'error')});
+    }).catch(function(e){showApiError(e,{action:'问卷生成'})});
 }
 
 // 直接在问卷填写Tab渲染问卷（不重新调API生成）
@@ -770,7 +923,7 @@ async function saveManualStep(step) {
         wfReviewSteps = result.data.review_steps;
         selectWfStep(step);
         showToast(wfReviewSteps.length ? '修改已保存，下游待复核' : '修改已保存');
-    } catch(error) { showToast(error.message, 'error'); }
+    } catch(error) { showApiError(error); }
 }
 
 async function confirmStepReview(step) {
@@ -778,7 +931,7 @@ async function confirmStepReview(step) {
         const result = await api('POST', '/api/agent/workflow/'+encodeURIComponent(wfSessionId)+'/steps/'+step+'/review');
         wfReviewSteps = result.data.review_steps;
         selectWfStep(step);
-    } catch(error) { showToast(error.message, 'error'); }
+    } catch(error) { showApiError(error); }
 }
 
 var wfIndicatorType='项目支出指标体系',wfPerspective='management',wfTemplate='standard',wfEditMode='ai',wfLanguageStyle='neutral',wfAssemblyOrder=[1,2,3,4,5,6,7,8];
@@ -832,7 +985,7 @@ function handleWfFilesByType(e,type){
         uploadApi('/api/agent/upload',fd).then(function(r){if(r.success){
             wfUploadedFiles.push({name:r.data.original_name,path:r.data.file_path,size:r.data.file_size,type:ft});
             renderWfFilesByType(ft);
-        }}).catch(function(e){var em=e.message||'';if(em.indexOf('413')>=0||em.indexOf('too large')>=0){showToast('文件过大，请压缩后重试（限制50MB）','error')}else if(em.indexOf('415')>=0){showToast('文件格式不支持，请上传JPG/PNG/PDF/DOC等格式','error')}else{showToast('上传失败: '+em,'error')}})
+        }}).catch(function(e){var em=e.message||'';if(em.indexOf('413')>=0||em.indexOf('too large')>=0){showToast('文件过大，请压缩后重试（限制50MB）','error')}else if(em.indexOf('415')>=0){showToast('文件格式不支持，请上传JPG/PNG/PDF/DOC等格式','error')}else{showApiError(e,{action:'上传'})}})
     })(fs[i],type)}e.target.value='';
 }
 
@@ -949,7 +1102,7 @@ function exportStep(sn,fmt){
     api('POST','/api/agent/workflow/export',body).then(function(r){
         if(r.data&&r.data.file_path){showToast('步骤'+sn+' '+(fmt==='word'?'Word':'PDF')+'导出成功','success');return downloadExport(r.data.file_name)}
         else{showToast('导出失败：未获取到文件','error')}
-    }).catch(function(e){showToast('导出失败: '+e.message,'error')})
+    }).catch(function(e){showApiError(e,{action:'导出'})})
     .finally(function(){if(btn){btn.disabled=false;if(btn.dataset.origText)btn.textContent=btn.dataset.origText}})
 }
 function refineStepContent(stepNum, msgText, isApprovalReject){
@@ -1019,7 +1172,7 @@ function refineStepContent(stepNum, msgText, isApprovalReject){
             // 重置状态，准备新评价
             wfStatusController?.abort();
             wfSessionId=newWorkflowSession();sessionStorage.setItem(workflowSessionKey,wfSessionId);
-            wfCompletedSteps=[];wfStepContents={};wfVersions={};wfEvidence={};wfReviewSteps=[];wfApprovalStep=null;wfCurrentStep=0;wfStatus='running';
+            wfCompletedSteps=[];wfStepContents={};wfVersions={};wfEvidence={};wfReviewSteps=[];wfApprovalStep=null;wfCurrentStep=0;wfStatus='running';wfCoverage=null;wfConsistency=null;wfDispo=null;
             document.getElementById('wfRetryBtn').hidden=true;
             window._currentQuestionData=null;  // 清空问卷缓存，确保下次切换Tab重新加载
             initWfStepper();document.getElementById('wfLayout').style.display='flex';
@@ -1034,19 +1187,37 @@ var md=document.getElementById('wfModel').value,mo=document.getElementById('wfMo
 var tp=document.getElementById('wfTemperature').value,topP=parseFloat(document.getElementById('wfTopP').value);
 var body={session_id:wfSessionId,use_rag:document.getElementById("wfUseRag").checked,require_approval:document.getElementById("wfRequireApproval").checked,project_name:pn,file_paths:paths,model_name:md,comparison_mode:mo,temperature_profile:tp,top_p:topP,indicator_type:wfIndicatorType,perspective:wfPerspective,template:wfTemplate,edit_mode:wfEditMode};
             wfAbortController=new AbortController();
+            window.WF_STREAM_ACTIVE=true;
 
             fetch('/api/agent/workflow/start-stream',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+t},body:JSON.stringify(body),signal:wfAbortController.signal})
             .then(function(r){return readWorkflowEvents(r, handleSSEEvent)
-            }).catch(function(e){if(e.name!=='AbortError'){showToast(e.message,'error');restoreWorkflow()}})
+            }).catch(function(e){window.WF_STREAM_ACTIVE=false;{showApiError(e);restoreWorkflow()}})
         }
+
+        /* token 增量渲染：50ms 合并一次，避免逐字触发布局 */
+        var wfDeltaRenderer=WorkflowController.createDeltaRenderer(function(step,text){
+            if(step!==wfCurrentStep)return;
+            var c=document.getElementById('wfContent');if(!c)return;
+            var body=c.querySelector('.wf-stream-body');
+            if(!body){
+                c.innerHTML='<div class="wf-content-body"><div class="wf-stream-body" style="white-space:pre-wrap;line-height:1.8;font-size:14px;color:#2d3748"></div></div>';
+                body=c.querySelector('.wf-stream-body');
+            }
+            body.textContent+=text;
+            c.scrollTop=c.scrollHeight;
+        });
 
         function handleSSEEvent(d){
             if(!wfRunning)return;
+            if(d.event==='token_delta'){wfDeltaRenderer.push(d.step_number,d.delta);return}
             if(d.event==='step_start'){
+                wfDeltaRenderer.reset();
                 wfSessionId=d.session_id;
                 var sn=d.step_number;wfCurrentStep=sn;wfStatus="running";updateWfStepper();
                 var c=document.getElementById('wfContent');c&&(c.innerHTML='<div class="wf-empty"><h3>'+C.STEP_NAMES[sn]+'</h3><p>AI正在生成中...</p></div>')
             }if(d.event==='token_update'){if(currentUserData){currentUserData.tokens_used=d.tokens_used||0}var stEl=document.getElementById('settingsTokens');if(stEl)stEl.textContent=currentUserData?currentUserData.tokens_used:0;var sbEl=document.getElementById('sidebarTokenCount');if(sbEl)sbEl.textContent=currentUserData?currentUserData.tokens_used:0;return}else if(d.event==='step_complete'){
+                wfDeltaRenderer.flushNow();
+                WBUI.announce('步骤'+d.step_number+'已完成');
                 var sn=d.step_number;if(wfCompletedSteps.indexOf(sn)<0)wfCompletedSteps.push(sn);wfStepContents[sn]=d.content||d.content_preview||'';wfEvidence[sn]=d.evidence||[];updateWfStepper();selectWfStep(sn)
             }else if(d.event==='approval_required'){
                 var sn=d.step_number;wfApprovalStep=sn;updateWfStepper();
@@ -1057,10 +1228,12 @@ var body={session_id:wfSessionId,use_rag:document.getElementById("wfUseRag").che
             }else if(d.event==='warning'){
                 showToast('步骤'+d.step_number+': '+d.message,'error')
             }else if(d.event==='error'){
+                window.WF_STREAM_ACTIVE=false;
                 var stepLabel=d.step_number>0?('步骤'+d.step_number+' '+(d.step_name||'')+' - '):'';
                 showToast(stepLabel + d.message, 'error');
                 restoreWorkflow();
             }else if(d.event==='waiting_approval'){
+                window.WF_STREAM_ACTIVE=false;
                 wfSessionId=d.session_id;
                 var asn=d.approval_step;wfCurrentStep=asn;wfStatus='awaiting_approval';updateWfStepper();
                 if(!wfApprovalStep){wfApprovalStep=asn;updateWfStepper();
@@ -1072,10 +1245,12 @@ var body={session_id:wfSessionId,use_rag:document.getElementById("wfUseRag").che
                 document.getElementById('wfStartBtn').style.display='none';document.getElementById('wfStopBtn').style.display='';document.getElementById('wfProgress').style.display='';
                 showToast('工作流暂停于步骤'+asn+'，请审核并确认','warn')
             }else if(d.event==='complete'){
+                window.WF_STREAM_ACTIVE=false;
                 wfSessionId=d.session_id;wfRunning=false;wfStatus='completed';updateWfStepper();
                 var ex=document.getElementById('wfExports');if(ex)ex.style.display='flex';
                 document.getElementById('wfStartBtn').style.display='';document.getElementById('wfStopBtn').style.display='none';
                 showToast('工作流执行完成！','success');
+                WBStore.invalidate('reports');WBStore.invalidate('dashboard');WBStore.invalidate('activity');
                 handleWfComplete()
             }
         }
@@ -1129,6 +1304,9 @@ var body={session_id:wfSessionId,use_rag:document.getElementById("wfUseRag").che
                     if (step.evidence) wfEvidence[step.step_number] = step.evidence;
                 }
                 wfReviewSteps = data.review_steps;
+                if (data.document_coverage && data.document_coverage.total_chars) wfCoverage = data.document_coverage;
+                wfConsistency = (data.consistency && data.consistency.checked) ? data.consistency : null;
+                wfDispo = (data.score_disposition && data.score_disposition.total) ? data.score_disposition : null;
                 wfApprovalStep = null;
                 if (data.requires_approval) {
                     handleSSEEvent({event:'waiting_approval', session_id:wfSessionId, approval_step:data.approval_step});
@@ -1162,7 +1340,7 @@ var body={session_id:wfSessionId,use_rag:document.getElementById("wfUseRag").che
             api('POST','/api/agent/workflow/export',body).then(function(r){
                 if(r.data&&r.data.file_path){showToast('报告导出成功','success');return downloadExport(r.data.file_name)}
                 else{showToast('导出失败：未获取到文件','error')}
-            }).catch(function(e){showToast('导出失败: '+e.message,'error')})
+            }).catch(function(e){showApiError(e,{action:'导出'})})
             .finally(function(){btns.forEach(function(b){b.disabled=false;if(b.dataset.origText)b.textContent=b.dataset.origText})})
         }
 
@@ -1174,33 +1352,70 @@ var body={session_id:wfSessionId,use_rag:document.getElementById("wfUseRag").che
         function handleSendOrRecord(){if(isRecording){stopRecording();return}var t=document.getElementById('promptTextarea').value.trim();if(t){sendChatMessage();return}if(!window.SpeechRecognition&&!window.webkitSpeechRecognition){showToast('浏览器不支持语音输入','error');return}startRecording()}
 
         // ===== DASHBOARD =====
-function loadDashboardData(){api('GET','/api/client/dashboard').then(function(r){if(r&&r.success&&r.data){var d=r.data;document.getElementById('statProjects').textContent=d.completed_workflows||0;document.getElementById('statCompleted').textContent=d.total_reports||0;document.getElementById('statDialogs').textContent=d.ai_dialog_count||0;var tel=document.getElementById('settingsTokens');if(tel&&d.tokens_used!==undefined)tel.textContent=d.tokens_used;if(currentUserData&&d.tokens_used!==undefined)currentUserData.tokens_used=d.tokens_used}}).catch(function(){console.log('Dashboard data load failed')})}
-function loadRecentActivity(){
-    api('GET','/api/client/activity').then(function(r){
-        var el=document.getElementById('recentActivity');if(!el)return;
-        if(!r.success||!r.data||!r.data.length){el.innerHTML='<p style="color:#a0aec0">暂无活动记录</p>';return}
+function renderDashboard(d){
+    if(!d)return;
+    document.getElementById('statProjects').textContent=d.completed_workflows||0;
+    document.getElementById('statCompleted').textContent=d.total_reports||0;
+    document.getElementById('statDialogs').textContent=d.ai_dialog_count||0;
+    var tel=document.getElementById('settingsTokens');
+    if(tel&&d.tokens_used!==undefined)tel.textContent=d.tokens_used;
+    var tc=document.getElementById('sidebarTokenCount');
+    if(tc&&d.tokens_used!==undefined)tc.textContent=d.tokens_used;
+    if(currentUserData&&d.tokens_used!==undefined)currentUserData.tokens_used=d.tokens_used;
+}
+function loadDashboardData(force){
+    WBStore.remember('dashboard',function(){
+        return api('GET','/api/client/dashboard',null,{signal:tabSignal('dashboard')}).then(function(r){
+            return (r&&r.success&&r.data)||null;
+        });
+    },APP_CONFIG.cache.defaultTTL)
+    .then(renderDashboard)
+    .catch(function(e){if(!isAbort(e))console.warn('Dashboard data load failed:',e.message)});
+}
+function loadRecentActivity(force){
+    var el=document.getElementById('recentActivity');if(!el)return;
+    if(!force&&!WBStore.has('activity'))WBUI.renderSkeleton(el,{rows:4});
+    WBStore.remember('activity',function(){
+        return api('GET','/api/client/activity',null,{signal:tabSignal('dashboard')}).then(function(r){
+            return (r&&r.success&&r.data)||[];
+        });
+    },APP_CONFIG.cache.defaultTTL)
+    .then(function(data){
+        if(!data.length){el.innerHTML='<p style="color:#a0aec0">暂无活动记录</p>';return}
         var h='<div style="display:flex;flex-direction:column;gap:12px">';
-        for(var i=0;i<Math.min(r.data.length,8);i++){var a=r.data[i],act='',icon='';
+        for(var i=0;i<Math.min(data.length,8);i++){var a=data[i],act='',icon='';
             if(a.action==='workflow_start'){act='启动绩效评价工作流';icon='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#667eea" stroke-width="2"><path d="M5 12h14"/><polyline points="12 5 19 12 12 19"/></svg>'}
             else if(a.action==='workflow_complete'){act='完成工作流';icon='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#48bb78" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>'}
             else if(a.action==='ai_chat'){act='AI对话';icon='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9f7aea" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'}
             else if(a.action==='report_export'){act='导出报告';icon='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ed8936" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>'}
             else{act=a.action;icon='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#a0aec0" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>'}
             h+='<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #f0f0f0">'+icon+'<div style="flex:1"><div style="font-size:13px;color:#1a202c">'+esc(a.description||act)+'</div><div style="font-size:12px;color:#a0aec0">'+esc(a.time||'')+'</div></div></div>'}
-        el.innerHTML=h+'</div>'
-    }).catch(function(){var el=document.getElementById('recentActivity');if(el)el.innerHTML='<p style="color:#a0aec0">加载失败</p>'})
+        el.innerHTML=h+'</div>';
+    })
+    .catch(function(e){
+        if(isAbort(e))return;
+        el.innerHTML='<p style="color:#a0aec0">加载失败</p>';
+    });
 }
 
-function loadReports(){
+function loadReports(force){
     var grid=document.getElementById('reportsGrid');if(!grid)return;
-    grid.innerHTML='<p class="loading-hint">加载中...</p>';
-    api('GET','/api/client/reports').then(function(r){
-        window._reportData=r.data||[];
+    var cached=force?undefined:WBStore.get('reports');
+    if(cached===undefined)WBUI.renderSkeleton(grid,{rows:3});
+    WBStore.remember('reports',function(){
+        return api('GET','/api/client/reports',null,{signal:tabSignal('reports')}).then(function(r){
+            return (r&&r.data)||[];
+        });
+    },APP_CONFIG.cache.defaultTTL)
+    .then(function(data){
+        window._reportData=data||[];
         updateReportStats(window._reportData);
         renderReportList(window._reportData);
-    }).catch(function(e){
-        grid.innerHTML='<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#a0aec0" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><h3>加载失败</h3><p>'+esc(e.message||'网络不可达')+'</p></div>';
     })
+    .catch(function(e){
+        if(isAbort(e))return;
+        grid.innerHTML='<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#a0aec0" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><h3>加载失败</h3><p>'+esc(e.message||'网络不可达')+'</p></div>';
+    });
 }
 function updateReportStats(data){
     var total=data?data.length:0;
@@ -1267,32 +1482,36 @@ function updateBatchDeleteState(type){
     if(btn){btn.disabled=count===0;btn.textContent='删除选中'+(count>0?' ('+count+')':'')}
     if(selAll){var all=grid.querySelectorAll('.batch-check');selAll.checked=all.length>0&&count===all.length;selAll.indeterminate=count>0&&count<all.length}
 }
-function batchDeleteReports(){
+async function batchDeleteReports(){
     var cbs=document.getElementById('reportsGrid').querySelectorAll('.batch-check:checked');
     if(!cbs.length){showToast('请先勾选要删除的报告','warn');return}
     var ids=[];cbs.forEach(function(cb){ids.push(cb.getAttribute('data-sid'))});
-    if(!confirm('确定要删除选中的 '+ids.length+' 条报告吗？\n删除后数据将永久移除，不可恢复。'))return;
+    var ok=await WBUI.confirmDialog({title:'删除报告',message:'确定要删除选中的 '+ids.length+' 条报告吗？\n删除后数据将永久移除，不可恢复。',okText:'删除'});
+    if(!ok)return;
     api('POST','/api/client/reports/batch-delete',{session_ids:ids}).then(function(r){
         if(r.success){
             showToast('成功删除 '+r.data.deleted+' 条报告','success');
-            // 从本地数据移除
             window._reportData=(window._reportData||[]).filter(function(d){return ids.indexOf(d.session_id)<0});
             updateReportStats(window._reportData);
             renderReportList(window._reportData);
+            WBStore.invalidate('reports');
+            WBStore.invalidate('dashboard');
         }
-    }).catch(function(e){showToast('批量删除失败: '+e.message,'error')})
+    }).catch(function(e){showApiError(e,{action:'批量删除'})})
 }
-function deleteReport(sid,pn){
-    if(!confirm('确定要删除报告「'+esc(pn)+'」吗？\n删除后相关数据将被永久移除，不可恢复。'))return;
+async function deleteReport(sid,pn){
+    var ok=await WBUI.confirmDialog({title:'删除报告',message:'确定要删除报告「'+pn+'」吗？\n删除后相关数据将被永久移除，不可恢复。',okText:'删除'});
+    if(!ok)return;
     api('DELETE','/api/client/reports/'+encodeURIComponent(sid)).then(function(r){
         if(r.success){
             showToast('报告已删除','success');
-            // 直接从本地移除再刷新
             window._reportData=(window._reportData||[]).filter(function(d){return d.session_id!==sid});
             updateReportStats(window._reportData);
             renderReportList(window._reportData);
+            WBStore.invalidate('reports');
+            WBStore.invalidate('dashboard');
         }
-    }).catch(function(e){showToast('删除失败: '+e.message,'error')})
+    }).catch(function(e){showApiError(e,{action:'删除'})})
 }
 function exportExistingReport(sid,fmt,pn){
     var btn=event&&event.target;
@@ -1300,7 +1519,7 @@ function exportExistingReport(sid,fmt,pn){
     api('POST','/api/agent/workflow/export',{session_id:sid,format:fmt,project_name:pn}).then(function(r){
         if(r.success&&r.data&&r.data.file_name){showToast('报告导出成功','success');return downloadExport(r.data.file_name)}
         else{showToast('导出失败：未获取到文件','error')}
-    }).catch(function(e){showToast('导出失败: '+e.message,'error')})
+    }).catch(function(e){showApiError(e,{action:'导出'})})
     .finally(function(){if(btn){btn.disabled=false;if(btn.dataset.origText)btn.textContent=btn.dataset.origText}})
 }
 function filterReportList(){
@@ -1316,17 +1535,25 @@ function filterReportList(){
     renderReportList(filtered);
 }
 
-function loadQuestionnaireList(){
+function loadQuestionnaireList(force){
     var grid=document.getElementById('questionnaireGrid');if(!grid)return;
     if(window._currentQuestionData&&window._currentQuestionData.length)return;
-    grid.innerHTML='<p class="loading-hint">加载中...</p>';
-    api('GET','/api/agent/workflow/questionnaire/list').then(function(r){
-        window._questionnaireData=r.data||[];
+    if(force)WBStore.invalidate('questionnaires');
+    if(WBStore.get('questionnaires')===undefined)WBUI.renderSkeleton(grid,{rows:3});
+    WBStore.remember('questionnaires',function(){
+        return api('GET','/api/agent/workflow/questionnaire/list',null,{signal:tabSignal('questionnaire')}).then(function(r){
+            return (r&&r.data)||[];
+        });
+    },APP_CONFIG.cache.defaultTTL)
+    .then(function(data){
+        window._questionnaireData=data||[];
         updateQuestionnaireStats(window._questionnaireData);
         renderQuestionnaireGrid(window._questionnaireData);
-    }).catch(function(e){
-        grid.innerHTML='<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#a0aec0" stroke-width="1.5"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg><h3>加载失败</h3><p>'+esc(e.message||'网络不可达')+'</p></div>';
     })
+    .catch(function(e){
+        if(isAbort(e))return;
+        grid.innerHTML='<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#a0aec0" stroke-width="1.5"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg><h3>加载失败</h3><p>'+esc(e.message||'网络不可达')+'</p></div>';
+    });
 }
 function updateQuestionnaireStats(data){
     var total=data?data.length:0;
@@ -1368,30 +1595,34 @@ function renderQuestionnaireGrid(data){
     grid.innerHTML=h;
     updateBatchDeleteState('questionnaire');
 }
-function batchDeleteQuestionnaires(){
+async function batchDeleteQuestionnaires(){
     var cbs=document.getElementById('questionnaireGrid').querySelectorAll('.batch-check:checked');
     if(!cbs.length){showToast('请先勾选要删除的问卷','warn');return}
     var ids=[];cbs.forEach(function(cb){ids.push(cb.getAttribute('data-sid'))});
-    if(!confirm('确定要删除选中的 '+ids.length+' 条问卷吗？\n删除后相关数据将被移除。'))return;
+    var ok=await WBUI.confirmDialog({title:'删除问卷',message:'确定要删除选中的 '+ids.length+' 条问卷吗？\n删除后相关数据将被移除。',okText:'删除'});
+    if(!ok)return;
     api('POST','/api/agent/workflow/questionnaire/batch-delete',{session_ids:ids}).then(function(r){
         if(r.success){
             showToast('成功删除 '+r.data.deleted+' 条问卷','success');
             window._questionnaireData=(window._questionnaireData||[]).filter(function(d){return ids.indexOf(d.session_id)<0});
             updateQuestionnaireStats(window._questionnaireData);
             renderQuestionnaireGrid(window._questionnaireData);
+            WBStore.invalidate('questionnaires');
         }
-    }).catch(function(e){showToast('批量删除失败: '+e.message,'error')})
+    }).catch(function(e){showApiError(e,{action:'批量删除'})})
 }
-function deleteQuestionnaire(sid,pn){
-    if(!confirm('确定要删除问卷「'+esc(pn)+'」吗？\n删除后相关问卷数据将被移除。'))return;
+async function deleteQuestionnaire(sid,pn){
+    var ok=await WBUI.confirmDialog({title:'删除问卷',message:'确定要删除问卷「'+pn+'」吗？\n删除后相关问卷数据将被移除。',okText:'删除'});
+    if(!ok)return;
     api('DELETE','/api/agent/workflow/questionnaire/'+encodeURIComponent(sid)).then(function(r){
         if(r.success){
             showToast('问卷已删除','success');
             window._questionnaireData=(window._questionnaireData||[]).filter(function(d){return d.session_id!==sid});
             updateQuestionnaireStats(window._questionnaireData);
             renderQuestionnaireGrid(window._questionnaireData);
+            WBStore.invalidate('questionnaires');
         }
-    }).catch(function(e){showToast('删除失败: '+e.message,'error')})
+    }).catch(function(e){showApiError(e,{action:'删除'})})
 }
 function filterQuestionnaireList(){
     var raw=window._questionnaireData||[];
@@ -1431,7 +1662,7 @@ function openQuestionnaire(sid,pn){
             h+='</div></div></div>'}
         h+='<div style="padding:20px;display:flex;gap:12px;justify-content:center"><button class="btn-export" onclick="backToQuestionnaireList()">返回列表</button><button class="btn-primary" style="padding:10px 32px" onclick="submitQuestionnaire(\''+esc(sid)+'\','+qs.length+')">提交问卷</button></div></div>';
         document.getElementById('questionnaire').innerHTML=h
-    }).catch(function(e){showToast('问卷生成失败: '+e.message,'error')})
+    }).catch(function(e){showApiError(e,{action:'问卷生成'})})
 }
 function markAnswered(rb){
     var label=rb.parentElement;
@@ -1451,7 +1682,7 @@ function submitQuestionnaire(sid,total){
     }
     api('POST','/api/agent/workflow/questionnaire/submit',{session_id:sid,answers:answers}).then(function(r){
         if(r.success){showToast('问卷提交成功！共 '+r.data.saved+' 条','success');backToQuestionnaireList()}
-    }).catch(function(e){showToast('提交失败: '+e.message,'error')})
+    }).catch(function(e){showApiError(e,{action:'提交问卷'})})
 }
 function backToQuestionnaireList(){
     window._currentQuestionData=null;
@@ -1464,39 +1695,32 @@ function backToQuestionnaireList(){
 // ===== INIT =====
 document.addEventListener('DOMContentLoaded',function(){
     try{
-        // 可见状态标记 — 确认JS已执行
-        var vtag=document.createElement('div');
-        vtag.id='jsStatusTag';
-        vtag.style.cssText='position:fixed;bottom:8px;right:8px;background:#48bb78;color:white;padding:3px 10px;border-radius:12px;font-size:10px;z-index:99999;opacity:0.7';
-        vtag.textContent='JS v250523.1 OK';
-        document.body.appendChild(vtag);
-
         var u=getUser();if(!u){window.location.href='/login?redirect=/client';return}
+        registerTabs();bindNavTabs();
         initSpeechRecognition();initWfStepper();
         wfSessionId=new URLSearchParams(location.search).get('session') || sessionStorage.getItem(workflowSessionKey);
         if(wfSessionId) restoreWorkflow();
-        loadUserData();checkAiChatStatus();loadConversations();loadDashboardData();loadRecentActivity();startNotificationPoll();loadAiModels();chatStatusPollTimer=setInterval(checkAiChatStatus,30000);
-
-        setTimeout(function(){
-            var tag=document.getElementById('jsStatusTag');
-            if(tag)tag.textContent='JS v250523.1 READY';
-        },1000);
+        loadUserData();loadAiModels();
+        /* 首次进入按 hash 恢复模块，只拉当前模块的数据 */
+        switchTab(restoreTabFromHash(),null,{fromHash:true});
+        startNotificationPoll();
     }catch(e){
-        var er=document.getElementById('jsErrorBanner');
-        if(er){er.textContent='INIT ERROR: '+e.message;er.style.display='block'}
+        console.error('初始化失败:',e);
+        WBUI.showToast('页面初始化失败：'+e.message+'，请刷新重试','error',{timeout:8000});
     }
 })
-        function loadUserData(){var tel=document.getElementById('settingsTokens');if(tel)tel.textContent='加载中...';api('GET','/api/client/me').then(function(r){if(r&&r.success&&r.data){currentUserData=r.data;updateAllUI();refreshTokenDisplay();startTokenPolling()}}).catch(function(e){var em=e.message||'';if(em.indexOf('401')>=0||em.indexOf('403')>=0||em.indexOf('login')>=0){sessionStorage.removeItem('token');localStorage.removeItem('token');localStorage.removeItem('user');sessionStorage.removeItem('user');window.location.href='/login?redirect=/client'}else{console.error('加载用户数据失败:',em)}})}
+        function loadUserData(){var tel=document.getElementById('settingsTokens');if(tel)tel.textContent='加载中...';api('GET','/api/client/me').then(function(r){if(r&&r.success&&r.data){currentUserData=r.data;updateAllUI();refreshTokenDisplay()}}).catch(function(e){if(isAbort(e))return;console.error('加载用户数据失败:',e.message||e)})}
         var _tokenPollTimer=null;
-        function startTokenPolling(){stopTokenPolling();_tokenPollTimer=setInterval(refreshTokenDisplay,30000)}
+        /* token 刷新已并入统一调度器，保留函数名兼容既有调用 */
+        function startTokenPolling(){stopTokenPolling();PollScheduler.register('token',refreshTokenDisplay,APP_CONFIG.poll.token);PollScheduler.start()}
         function stopTokenPolling(){if(_tokenPollTimer){clearInterval(_tokenPollTimer);_tokenPollTimer=null}}
         function refreshTokenDisplay(){api('GET','/api/client/token-stats').then(function(r){if(r&&r.success&&r.data){var t=r.data.total_tokens||0;document.getElementById('sidebarTokenCount').textContent=t;document.getElementById('settingsTokens').textContent=t;if(currentUserData)currentUserData.tokens_used=t}}).catch(function(){})}
         function checkAiChatStatus(){api('GET','/api/client/ai/chat-status').then(function(r){if(!r||!r.data)return;isChatEnabled=r.data.enabled;var d=document.getElementById('chatDisabled'),b=document.getElementById('sendButton'),p=document.getElementById('promptTextarea');if(!isChatEnabled){if(d)d.style.display='block';if(b)b.disabled=true;if(p)p.disabled=true;if(p)p.placeholder='AI聊天已被管理员禁用'}else{if(d)d.style.display='none';if(b)b.disabled=false;if(p)p.disabled=false;if(p)p.placeholder='输入您的问题...'}}).catch(function(e){console.warn('AI聊天状态查询失败:',e)})}
         function updateAllUI(){if(!currentUserData){setTimeout(function(){loadUserData()},2000);return}var n=currentUserData.username,i=n.charAt(0).toUpperCase(),r=currentUserData.role==='admin'?'管理员':'普通用户';document.getElementById('sidebarUserName').textContent=n;document.getElementById('sidebarUserRole').textContent=r;[document.getElementById('userAvatar'),document.getElementById('settingsAvatar')].forEach(function(e){if(!e)return;if(currentUserData.avatar_url)e.innerHTML='<img src="'+currentUserData.avatar_url+'" alt="头像">';else{var s=e.querySelector('span');if(s)s.textContent=i}});var sa=document.getElementById('settingsAvatarInitial');if(sa&&!currentUserData.avatar_url)sa.textContent=i;document.getElementById('settingsRole').textContent=r;document.getElementById('settingsCreatedAt').textContent=currentUserData.created_at?new Date(currentUserData.created_at).toLocaleDateString('zh-CN'):'--';document.getElementById('settingsTokens').textContent=currentUserData.tokens_used||0;
             document.getElementById('sidebarTokenCount').textContent=currentUserData.tokens_used||0;
             document.getElementById('editUsername').value=n}
-        function handleAvatarUpload(e){var f=e.target.files[0];if(!f)return;if(!f.type.startsWith('image/')){showToast('仅支持图片','error');return}if(f.size>5242880){showToast('图片不能超过5MB','error');return}var fd=new FormData();fd.append('file',f);uploadApi('/api/client/avatar',fd).then(function(r){if(r.success){currentUserData.avatar_url=r.data.avatar_url;updateAllUI();showToast('头像更新成功')}}).catch(function(e){showToast(e.message,'error')});e.target.value=''}
-        function saveUsername(){var n=document.getElementById('editUsername').value.trim();if(!n){showToast('用户名不能为空','error');return}if(n.length<2){showToast('用户名至少2个字符','error');return}if(n===currentUserData.username){showToast('用户名未变化','success');return}var b=document.querySelector('#settings button.btn-primary');b.disabled=true;b.textContent='保存中...';api('PUT','/api/client/profile',{username:n}).then(function(r){if(r.success){currentUserData.username=r.data.username;currentUserData.avatar_url=r.data.avatar_url;currentUserData.role=r.data.role;updateAllUI();var u=getUser();if(u){u.username=r.data.username;var s=JSON.stringify(u);sessionStorage.setItem('user',s);if(localStorage.getItem('user'))localStorage.setItem('user',s)}showToast('用户名修改成功')}}).catch(function(e){showToast(e.message,'error')}).finally(function(){b.disabled=false;b.textContent='保存'})}
+        function handleAvatarUpload(e){var f=e.target.files[0];if(!f)return;if(!f.type.startsWith('image/')){showToast('仅支持图片','error');return}if(f.size>5242880){showToast('图片不能超过5MB','error');return}var fd=new FormData();fd.append('file',f);uploadApi('/api/client/avatar',fd).then(function(r){if(r.success){currentUserData.avatar_url=r.data.avatar_url;updateAllUI();showToast('头像更新成功')}}).catch(function(e){showApiError(e)});e.target.value=''}
+        function saveUsername(){var n=document.getElementById('editUsername').value.trim();if(!n){showToast('用户名不能为空','error');return}if(n.length<2){showToast('用户名至少2个字符','error');return}if(n===currentUserData.username){showToast('用户名未变化','success');return}var b=document.querySelector('#settings button.btn-primary');b.disabled=true;b.textContent='保存中...';api('PUT','/api/client/profile',{username:n}).then(function(r){if(r.success){currentUserData.username=r.data.username;currentUserData.avatar_url=r.data.avatar_url;currentUserData.role=r.data.role;updateAllUI();var u=getUser();if(u){u.username=r.data.username;var s=JSON.stringify(u);sessionStorage.setItem('user',s);if(localStorage.getItem('user'))localStorage.setItem('user',s)}showToast('用户名修改成功')}}).catch(function(e){showApiError(e)}).finally(function(){b.disabled=false;b.textContent='保存'})}
         function handleLogout(){if(!confirm('确定退出？'))return;sessionStorage.clear();localStorage.clear();showToast('已退出登录');setTimeout(function(){window.location.href='/login'},500)}
         function handleDeleteAccount(){if(!confirm('警告：此操作将永久删除您的账号和所有数据！\n\n确定要注销吗？'))return;var i=prompt('请输入"确认注销"以继续：');if(i!=='确认注销'){showToast('操作已取消','error');return}var b=document.getElementById('deleteAccountBtn');b.disabled=true;b.textContent='注销中...';api('DELETE','/api/client/account').then(function(r){if(r.success){sessionStorage.clear();localStorage.clear();alert('账号已成功注销。');window.location.href='/'}}).catch(function(e){showToast(e.message,'error');b.disabled=false;b.textContent='注销账号'})}
         function changeClientPassword(){var o=document.getElementById('oldPassword').value.trim(),n=document.getElementById('newPassword').value,cn=document.getElementById('confirmNewPassword').value,err=document.getElementById('pwdError'),ok=document.getElementById('pwdSuccess'),btn=document.getElementById('pwdSaveBtn');err.style.display='none';ok.style.display='none';if(!o||!n||!cn){err.textContent='请填写所有密码字段';err.style.display='block';return}if(n.length<6){err.textContent='新密码长度不能少于6位';err.style.display='block';return}if(n!==cn){err.textContent='两次输入的新密码不一致';err.style.display='block';return}btn.disabled=true;btn.textContent='修改中...';api('PUT','/api/client/password',{old_password:o,new_password:n}).then(function(r){ok.style.display='block';document.getElementById('oldPassword').value='';document.getElementById('newPassword').value='';document.getElementById('confirmNewPassword').value='';showToast('密码修改成功')}).catch(function(e){err.textContent=e.message||'修改失败';err.style.display='block'}).finally(function(){btn.disabled=false;btn.textContent='修改密码'})}
@@ -1526,7 +1750,7 @@ document.addEventListener('DOMContentLoaded',function(){
         function loadConversations(){api('GET','/api/client/ai/conversations').then(function(r){conversations=r.data||[];renderConvList()}).catch(function(){})}
         function renderConvList(){var l=document.getElementById('convList');if(!l)return;if(!conversations||!conversations.length){l.innerHTML='<li class="no-conv">暂无对话记录</li>';return}l.innerHTML='';for(var i=0;i<conversations.length;i++){(function(idx){var c=conversations[idx],li=document.createElement('li');li.className='conv-item'+(c.id===currentConversationId?' active':'');li.innerHTML='<span class="conv-title" title="'+esc(c.title||'')+'">'+esc(c.title||'')+'</span><button class="conv-delete" title="删除" onclick="event.stopPropagation();deleteConv('+c.id+')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>';li.onclick=function(){switchToConv(c.id)};l.appendChild(li)})(i)}}
         function switchToConv(cid){if(!cid){currentConversationId=null;renderChatMessages([]);renderConvList();return}currentConversationId=cid;api('GET','/api/client/ai/conversations/'+cid).then(function(r){if(r.success){renderChatMessages(r.data.messages);switchTab('ai-chat',document.querySelector('[onclick*=\"ai-chat\"]'));renderConvList()}}).catch(function(){})}
-        function deleteConv(cid){if(!confirm('确定删除此对话？'))return;api('DELETE','/api/client/ai/conversations/'+cid).then(function(r){showToast(r.message||'已删除');if(currentConversationId===cid){currentConversationId=null;renderChatMessages([])}loadConversations()}).catch(function(e){showToast(e.message,'error')})}
+        function deleteConv(cid){if(!confirm('确定删除此对话？'))return;api('DELETE','/api/client/ai/conversations/'+cid).then(function(r){showToast(r.message||'已删除');if(currentConversationId===cid){currentConversationId=null;renderChatMessages([])}loadConversations()}).catch(function(e){showApiError(e)})}
 
         function toggleMode(md){currentMode=currentMode===md?'':md;var s=document.getElementById('toggleSearch'),t=document.getElementById('toggleThink'),c=document.getElementById('toggleCanvas');if(s)s.className='toggle-btn'+(currentMode==='search'?' on':'');if(t)t.className='toggle-btn think'+(currentMode==='think'?' on':'');if(c)c.className='toggle-btn canvas'+(currentMode==='canvas'?' on':'');var ph='输入您的问题...';if(currentMode==='search')ph='搜索网络...';else if(currentMode==='think')ph='深度思考...';else if(currentMode==='canvas')ph='创建画布...';document.getElementById('promptTextarea').placeholder=ph}
         function handleFileUpload(e){showToast('图片已选择，输入文本后发送');e.target.value=''}
@@ -1535,27 +1759,151 @@ document.addEventListener('DOMContentLoaded',function(){
 
         function toggleCollapse(){var s=document.getElementById('sidebar'),ic=document.getElementById('collapseIcon');isCollapsed=!isCollapsed;if(isCollapsed){s.classList.remove('expanded');s.classList.add('collapsed');ic.innerHTML='<polyline points="9 18 15 12 9 6"/>'}else{s.classList.remove('collapsed');s.classList.add('expanded');ic.innerHTML='<polyline points="15 18 9 12 15 6"/>'}}
         function toggleMobileSidebar(){var s=document.getElementById('sidebar'),o=document.getElementById('mobileOverlay');isMobileOpen=!isMobileOpen;if(isMobileOpen){s.classList.add('open');o.classList.add('show')}else{s.classList.remove('open');o.classList.remove('show')}}
-        function switchTab(tid,el){
-    try{
-    var all=document.querySelectorAll('.nav-link');for(var i=0;i<all.length;i++)all[i].classList.remove('active');
-    if(el&&el.classList)el.classList.add('active');
-    // 同时使用 class 和 inline style 确保可见性
-    document.querySelectorAll('.content-section').forEach(function(s){s.classList.remove('active');s.style.display='none'});
-    var t=document.getElementById(tid);
-    if(t){t.classList.add('active');t.style.display='block'}
-    if(tid==='ai-chat'){checkAiChatStatus();var ta=document.getElementById('promptTextarea');if(ta)ta.focus()}
-    if(tid==='settings'&&currentUserData){document.getElementById('editUsername').value=currentUserData.username;updateAllUI()}
-    if(tid==='dashboard'){loadDashboardData();loadRecentActivity();}
-    if(tid==='performance')initWfStepper();
-    if(tid==='reports')loadReports();
-    if(tid==='questionnaire')loadQuestionnaireList();
-    if(window.innerWidth<768&&isMobileOpen)toggleMobileSidebar()
-    }catch(e){console.error('switchTab error:',e)}
-}
-        window.addEventListener('resize',function(){if(window.innerWidth>=768&&isMobileOpen)toggleMobileSidebar()})
+        /* ===== 模块生命周期 =====
+         * 单一可见性机制：只用 .active class 控制，禁止同时写 style.display。
+         * 进入时才拉数据，TTL 内不重复拉；离开时 abort 该模块在途请求。
+         */
+        var TAB_MODULES={};
+        var _tabSignals={};
 
-        // ===== 通知 =====
-        var notificationPollTimer=null,notifCollapsed=true,NOTIF_COLLAPSE_LIMIT=5;
+        function tabSignal(name){
+            if(!_tabSignals[name])_tabSignals[name]=new AbortController();
+            return _tabSignals[name].signal;
+        }
+        function abortTabRequests(name){
+            var c=_tabSignals[name];
+            if(c){try{c.abort()}catch(e){};delete _tabSignals[name]}
+        }
+        function isAbort(e){return !!e&&(e.code==='abort'||e.name==='AbortError')}
+
+        function registerTabs(){
+            TAB_MODULES={
+                dashboard:{
+                    mount:function(){loadDashboardData();loadRecentActivity()},
+                    unmount:function(){abortTabRequests('dashboard')}
+                },
+                performance:{
+                    mount:function(){initWfStepper()},
+                    unmount:function(){}
+                },
+                reports:{
+                    mount:function(){loadReports()},
+                    unmount:function(){abortTabRequests('reports')}
+                },
+                questionnaire:{
+                    mount:function(){loadQuestionnaireList()},
+                    unmount:function(){abortTabRequests('questionnaire')}
+                },
+                'ai-chat':{
+                    mount:function(){checkAiChatStatus();loadConversations();var ta=document.getElementById('promptTextarea');if(ta)ta.focus()},
+                    unmount:function(){}
+                },
+                settings:{
+                    mount:function(){if(currentUserData){document.getElementById('editUsername').value=currentUserData.username;updateAllUI()}},
+                    unmount:function(){}
+                },
+                help:{mount:function(){},unmount:function(){}}
+            };
+        }
+
+        function navLinkFor(tid){
+            return document.querySelector('.nav-link[data-tab="'+tid+'"]');
+        }
+
+        function bindNavTabs(){
+            document.querySelectorAll('.nav-link').forEach(function(link){
+                var m=/switchTab\('([^']+)'/.exec(link.getAttribute('onclick')||'');
+                if(m){
+                    link.setAttribute('data-tab',m[1]);
+                    link.setAttribute('role','tab');
+                    link.addEventListener('keydown',function(e){
+                        if(e.key==='Enter'||e.key===' '){e.preventDefault();switchTab(m[1],link)}
+                    });
+                }
+            });
+        }
+
+        var _currentTab=null;
+
+        function switchTab(tid,el,opts){
+            opts=opts||{};
+            try{
+                if(!TAB_MODULES[tid])TAB_MODULES.help;
+                var target=document.getElementById(tid);
+                if(!target)return;
+                if(_currentTab&&_currentTab!==tid){
+                    var prev=TAB_MODULES[_currentTab];
+                    if(prev&&prev.unmount)prev.unmount();
+                }
+                document.querySelectorAll('.nav-link').forEach(function(l){l.classList.remove('active');l.setAttribute('aria-selected','false')});
+                var active=el||navLinkFor(tid);
+                if(active&&active.classList){active.classList.add('active');active.setAttribute('aria-selected','true')}
+                document.querySelectorAll('.content-section').forEach(function(s){s.classList.remove('active')});
+                target.classList.add('active');
+                _currentTab=tid;
+
+                /* hash 同步：可直达、可刷新恢复、支持前进后退 */
+                if(!opts.fromHash){
+                    var hash='#'+tid;
+                    if(location.hash!==hash)history.pushState({tab:tid},'',hash);
+                }
+
+                var mod=TAB_MODULES[tid];
+                if(mod&&mod.mount)mod.mount();
+
+                if(window.innerWidth<768&&isMobileOpen)toggleMobileSidebar();
+            }catch(e){console.error('switchTab error:',e)}
+        }
+
+        function restoreTabFromHash(){
+            var tid=(location.hash||'').replace('#','');
+            if(tid&&document.getElementById(tid)&&TAB_MODULES[tid])return tid;
+            return 'dashboard';
+        }
+
+        window.addEventListener('popstate',function(){
+            switchTab(restoreTabFromHash(),null,{fromHash:true});
+        });
+        window.addEventListener('hashchange',function(){
+            var tid=(location.hash||'').replace('#','');
+            if(tid&&tid!==_currentTab)switchTab(tid,null,{fromHash:true});
+        });
+
+        /* ===== 统一轮询调度器 =====
+         * 一次只跑一个定时器；document.hidden 时暂停，恢复可见立即补跑一次。
+         */
+        var PollScheduler=(function(){
+            var tasks={},timer=null;
+            function tick(force){
+                var now=Date.now();
+                Object.keys(tasks).forEach(function(name){
+                    var t=tasks[name];
+                    if(t.paused)return;
+                    if(force||now-t.last>=t.interval){
+                        t.last=now;
+                        try{var r=t.fn();if(r&&r.catch)r.catch(function(){})}catch(e){console.warn('[poll]',name,e)}
+                    }
+                });
+            }
+            document.addEventListener('visibilitychange',function(){
+                if(!document.hidden)tick(true);
+            });
+            return {
+                register:function(name,fn,interval){tasks[name]={fn:fn,interval:interval,last:0}},
+                pause:function(name){if(tasks[name])tasks[name].paused=true},
+                resume:function(name){if(tasks[name])tasks[name].paused=false},
+                start:function(){
+                    if(timer)return;
+                    tick(true);
+                    timer=setInterval(function(){if(!document.hidden)tick(false)},5000);
+                },
+                stop:function(){if(timer){clearInterval(timer);timer=null}},
+                runNow:function(){tick(true)}
+            };
+        })();
+
+        /* ===== 通知 ===== */
+        var notifCollapsed=true,NOTIF_COLLAPSE_LIMIT=5;
         function toggleNotificationPanel(){
             var p=document.getElementById('notificationPanel'),o=document.getElementById('notificationOverlay');
             if(p.classList.contains('show')){closeNotificationPanel()}else{p.classList.add('show');o.classList.add('show');fetchNotifications()}
@@ -1605,7 +1953,7 @@ document.addEventListener('DOMContentLoaded',function(){
             }
         }
         function markAllNotificationsRead(){
-            api('PUT','/api/client/notifications/read-all').then(function(r){if(r&&r.success){showToast('已全部标记为已读');fetchNotifications()}}).catch(function(e){showToast(e.message,'error')})
+            api('PUT','/api/client/notifications/read-all').then(function(r){if(r&&r.success){showToast('已全部标记为已读');fetchNotifications()}}).catch(function(e){showApiError(e)})
         }
         function deleteNotification(id){
             if(!confirm('确认删除此通知？'))return;
@@ -1616,10 +1964,18 @@ document.addEventListener('DOMContentLoaded',function(){
             api('DELETE','/api/client/notifications').then(function(r){if(r&&r.success){showToast(r.message);fetchNotifications()}}).catch(function(e){showToast('清空失败','error')})
         }
         function formatTimeStr(iso){if(!iso)return'';try{var d=new Date(iso),now=new Date(),diff=now-d;if(diff<60000)return'刚刚';if(diff<3600000)return Math.floor(diff/60000)+'分钟前';if(diff<86400000)return Math.floor(diff/3600000)+'小时前';if(diff<604800000)return Math.floor(diff/86400000)+'天前';return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')}catch(e){return iso}}
-        function startNotificationPoll(){stopNotificationPoll();fetchNotifications();notificationPollTimer=setInterval(fetchNotifications,30000)}
-        function stopNotificationPoll(){if(notificationPollTimer){clearInterval(notificationPollTimer);notificationPollTimer=null}};
-        // 页面关闭时停止轮询
-        window.addEventListener('beforeunload',function(){stopNotificationPoll();if(chatStatusPollTimer){clearInterval(chatStatusPollTimer);chatStatusPollTimer=null}});
+        function startNotificationPoll(){
+            PollScheduler.register('notifications',function(){
+                /* 有 SSE 连接时不轮询，避免与流式事件重复 */
+                if(window.WF_STREAM_ACTIVE)return;
+                return fetchNotifications();
+            },APP_CONFIG.poll.notifications);
+            PollScheduler.register('token',refreshTokenDisplay,APP_CONFIG.poll.token);
+            PollScheduler.register('chatStatus',checkAiChatStatus,APP_CONFIG.poll.chatStatus);
+            PollScheduler.start();
+        }
+        function stopNotificationPoll(){PollScheduler.stop()}
+        window.addEventListener('beforeunload',function(){stopNotificationPoll()});
         
     </script>
 </body>
