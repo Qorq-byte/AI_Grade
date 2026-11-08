@@ -236,8 +236,8 @@ def _match_chunk_locator""",
     (
         "步骤7 回显上限退回 6000（看不见全部条目）",
         "struct",
-        """MAX_ECHO_CHARS_BY_STEP = {7: 24000}""",
-        """MAX_ECHO_CHARS_BY_STEP = {}""",
+        """MAX_ECHO_CHARS_BY_STEP = {3: 24000, 4: 12000, 7: 24000}""",
+        """MAX_ECHO_CHARS_BY_STEP = {3: 24000, 4: 12000}""",
         "tests/test_structured_output.py",
     ),
     (
@@ -247,7 +247,7 @@ def _match_chunk_locator""",
     blob = extract_json(raw)
     if blob:
         try:
-            from_json = coverage_of_payload(json.loads(blob))
+            from_json = coverage_of_payload(json.loads(blob), step)
         except ValueError:
             from_json = _EMPTY_COVERAGE
         if from_json.entries:
@@ -271,7 +271,7 @@ def _match_chunk_locator""",
         "struct",
         """        return ShrinkReport(
             step, False, True,
-            "原输出里既没有可解析的 scores，也没有识别到指标编号，无法核验是否缩水",
+            "原输出里既没有可解析的 JSON 条目，也没有识别到指标编号，无法核验是否缩水",
             before, after,
         )""",
         """        return ShrinkReport(step, False, False, "", before, after)""",
