@@ -24,9 +24,15 @@ MUTATIONS = [
     ("等级正则改用字符类（「不合格」会被截成「合格」）", "backend/services/consistency.py",
      '(?:评价等级|综合等级|评定等级)[：:\\s]*(不合格|待核实|优秀|良好|合格)',
      '(?:评价等级|综合等级|评定等级)[：:\\s]*([不待优良好合]+)'),
+    # 注意：`if line not in warnings` 在步骤 7 里也出现一次。只写这两行会被
+    # replace(...,1) 命中最前面的步骤 7，而本脚本只跑一致性用例 → 假「漏掉」。
+    # 把后面的 logger 行一起写进锚点，确保改的是步骤 14 这处。
     ("warnings 不去重", "backend/agents/performance_agent.py",
      """            if line not in warnings:
-                warnings.append(line)""", "            warnings.append(line)"),
+                warnings.append(line)
+            logger.warning(f"[Step 14] {line}")""",
+     """            warnings.append(line)
+            logger.warning(f"[Step 14] {line}")"""),
     ("Step14 不写 warnings", "backend/agents/performance_agent.py",
      "        if line:\n", "        if False:\n"),
 ]
