@@ -51,14 +51,14 @@ MUTATIONS = [
     (
         "锚点解析永不拒绝（等于把闸门放开）",
         "anchor",
-        """    return _fail(raw, ids)
+        """    return _fail(raw, ids, _failure_reason(text, ids, material, chunks, raw_texts, line_counts))
 
 
-def _match_chunk_locator""",
+def _known_files""",
         """    return Anchor(True, "heading", (), ids, raw)
 
 
-def _match_chunk_locator""",
+def _known_files""",
         "tests/test_evidence_anchor.py tests/test_step7_scoring.py",
     ),
     (

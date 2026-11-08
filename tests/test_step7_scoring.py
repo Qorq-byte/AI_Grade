@@ -454,7 +454,12 @@ def test_ordinal_section_citation_lands_as_section_ordinal(monkeypatch):
 
 
 def test_filename_without_line_number_is_still_rejected(monkeypatch):
-    """只给文件名落不到具体位置，不能因为「宽容」就放行。"""
+    """只给文件名落不到具体位置，不能因为「宽容」就放行。
+
+    Batch 19 起，这一类的状态从「引用无法定位」改记为 `anchor_too_coarse`：
+    它和「编造编号」不是同一件事——前者是材料里没有更细的东西可引（覆盖问题），
+    后者是模型编的。**拒绝的结论没变**，变的只是台账怎么称呼它。
+    """
     payload = {"scores": {"L3_01_01_01": {
         "actual_score": 4.0, "evidence_id": "fe_wf_sample.txt",
         "reason": "资料齐全"}}}
@@ -464,7 +469,8 @@ def test_filename_without_line_number_is_still_rejected(monkeypatch):
     agent._node_step7(state)
 
     assert state["indicator_score_map"] == {}
-    assert state["score_disposition"]["counts"]["anchor_unresolved"] == 1
+    assert state["score_disposition"]["counts"]["anchor_too_coarse"] == 1
+    assert state["score_disposition"]["counts"]["anchor_unresolved"] == 0
 
 
 def test_locator_with_unknown_filename_is_still_rejected(monkeypatch):
