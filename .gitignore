@@ -60,6 +60,7 @@ wf_e2e_log.txt
 wf_e2e_result.json
 fe_wf_sample.txt
 _api_test_sample.txt
+fe_sample_upload.txt
 
 # 本机个人资料（非项目内容）
 /*.docx
