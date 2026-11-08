@@ -19,7 +19,7 @@ resumable, human-supervised pipeline.
 
 [Quick start](#quick-start) · [Runtime flow](#runtime-flow) · [API reference](./docs/API.md) · [Contributing](./CONTRIBUTING.md) · [Security](./SECURITY.md)
 
-<img src="docs/assets/workflow.svg" alt="Animated runtime flow: materials are uploaded, FastAPI streams a LangGraph state graph of 15 nodes, three steps pause for human confirmation, pure-program guardrails check the output, and the report is exported to Word or PDF" width="760">
+![Animated runtime flow: materials are uploaded, FastAPI streams a 15-node LangGraph state graph, three steps pause for human confirmation, pure-program guardrails check the output, and the report is exported to Word or PDF](docs/assets/workflow.svg)
 
 <sub>The sweep above is the real execution order — 15 nodes, 3 human gates, and a guardrail layer that never calls a model.</sub>
 

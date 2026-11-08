@@ -18,7 +18,7 @@
 
 [快速开始](#快速开始) · [运行流程](#运行流程) · [API 参考](./docs/API.md) · [贡献指南](./CONTRIBUTING.md) · [安全策略](./SECURITY.md)
 
-<img src="docs/assets/workflow.svg" alt="动态运行流程图：上传资料 → FastAPI → LangGraph 15 节点状态图 → 人工闸门 → 纯程序校验 → Word/PDF 导出" width="760">
+![动态运行流程图：上传资料 → FastAPI → LangGraph 15 节点状态图 → 人工闸门 → 纯程序校验 → Word/PDF 导出](docs/assets/workflow.svg)
 
 <sub>上图扫过的顺序就是真实执行顺序——15 个节点、3 个人工闸门，以及一层从不调用模型的校验。</sub>
 
