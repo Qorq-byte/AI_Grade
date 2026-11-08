@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="760" height="384" viewBox="0 0 760 384"
      role="img" aria-labelledby="ttl dsc">
   <title id="ttl">AI_Grade runtime flow</title>
-  <desc id="dsc">Animated diagram: materials are uploaded, FastAPI streams a LangGraph 14-step state
+  <desc id="dsc">Animated diagram: materials are uploaded, FastAPI streams a 15-node LangGraph state
   graph, three steps pause for human confirmation, pure-program guardrails check the output, and the
   report is exported to Word or PDF.</desc>
   <defs>
@@ -61,7 +61,7 @@
 
     <rect class="box" x="520" y="14" width="220" height="56" rx="8"/>
     <text class="t1" x="534" y="38">LangGraph</text>
-    <text class="t2" x="534" y="56">StateGraph · 14 nodes · checkpoint</text>
+    <text class="t2" x="534" y="56">StateGraph · 15 nodes · checkpoint</text>
   </g>
 
   <path class="lnk march" d="M240,42 H266" marker-end="url(#arw)"/>
@@ -69,7 +69,7 @@
 
   <!-- 状态图：14 步（0~14） -->
   <path class="lnk march" d="M630,70 V100 H88 V132" marker-end="url(#arw)"/>
-  <text class="t3" x="380" y="93" text-anchor="middle">drives the 14-step state graph</text>
+  <text class="t3" x="380" y="93" text-anchor="middle">drives the 15-node state graph</text>
 
     <g>
       <rect class="chip" x="20" y="136" width="136" height="44" rx="7"
