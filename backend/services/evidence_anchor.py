@@ -149,13 +149,20 @@ def material_headings(material: str) -> Tuple[str, ...]:
 
 @dataclass(frozen=True)
 class Anchor:
-    """一次引用解析的结果。`ok=False` 时 `kind="none"`，`matched` 为空。"""
+    """一次引用解析的结果。`ok=False` 时 `kind="none"`，`matched` 为空。
+
+    `reason` 只在失败时有值，用来把「引用无法定位」拆成可操作的几类：
+    没写引用（empty）／只写到文件名（too_coarse）／编号编造（unknown_id）／
+    引了别的文件（unknown_file）／行号越界或无法核验（line_out_of_range /
+    line_unverifiable）／其余（no_match）。
+    """
 
     ok: bool
     kind: str
     matched: Tuple[str, ...]
     ids: Tuple[str, ...]
     raw: str
+    reason: str = ""
 
     def as_dict(self) -> Dict[str, Any]:
         return {"ok": self.ok, "kind": self.kind, "matched": list(self.matched), "ids": list(self.ids)}
@@ -164,8 +171,8 @@ class Anchor:
 _FAILED_KIND = "none"
 
 
-def _fail(raw: str, ids: Sequence[str]) -> Anchor:
-    return Anchor(False, _FAILED_KIND, (), tuple(ids), raw)
+def _fail(raw: str, ids: Sequence[str], reason: str = "no_match") -> Anchor:
+    return Anchor(False, _FAILED_KIND, (), tuple(ids), raw, reason)
 
 
 def resolve(evidence_text: Any, *, evidence_ids: Iterable[str], material: str,
@@ -187,7 +194,7 @@ def resolve(evidence_text: Any, *, evidence_ids: Iterable[str], material: str,
     raw = evidence_text if isinstance(evidence_text, str) else ""
     text = raw.strip()
     if not text:
-        return _fail(raw, ())
+        return _fail(raw, (), "empty")
 
     ids = tuple(dict.fromkeys(_ID_PATTERN.findall(text)))
     pool = {str(item) for item in evidence_ids}
@@ -226,7 +233,80 @@ def resolve(evidence_text: Any, *, evidence_ids: Iterable[str], material: str,
                 if normalized in title or title in normalized:
                     return Anchor(True, "heading", (title,), ids, raw)
 
-    return _fail(raw, ids)
+    return _fail(raw, ids, _failure_reason(text, ids, material, chunks, raw_texts, line_counts))
+
+
+def _known_files(chunks: Optional[Sequence[Any]], raw_texts: Optional[Dict[str, str]],
+                 line_counts: Optional[Dict[str, int]]) -> set:
+    """本次真实下发/校验过的文件名集合（小写、去上传前缀）。"""
+    names = set()
+    for chunk in chunks or ():
+        if isinstance(chunk, dict):
+            label = doc_label(chunk.get("source") or "")
+            if label:
+                names.add(label.casefold())
+    for source in (raw_texts or {}, line_counts or {}):
+        for name in source:
+            label = doc_label(name)
+            if label:
+                names.add(label.casefold())
+    return names
+
+
+def _cited_file(text: str, known: set) -> Optional[str]:
+    """引用里点名的文件（只认已知文件）；没点名返回 None。"""
+    normalized = _ALNUM_CJK.sub("", text).lower()
+    for label in known:
+        if label and _ALNUM_CJK.sub("", label).lower() in normalized:
+            return label
+    return None
+
+
+def _mentions_other_file(text: str, known: set) -> bool:
+    """引用里写了文件扩展名，但那个文件不在本次材料里。"""
+    return bool(_FILE_EXT.search(text)) and _cited_file(text, known) is None
+
+
+def _failure_reason(text: str, ids: Sequence[str], material: str,
+                    chunks: Optional[Sequence[Any]],
+                    raw_texts: Optional[Dict[str, str]],
+                    line_counts: Optional[Dict[str, int]]) -> str:
+    """失败时给出可操作的原因，供台账分桶（不改判定，只解释判定）。
+
+    为什么值得分：台账把这些全记成「引用无法定位」时，用户看到的是「系统定位不了」；
+    而真实情况差别很大——「只写了文件名」要去补提示词，「引了别的文件」是模型读错了材料，
+    「编号编造」是两个不同的问题。混成一个数，就没法判断下一步该修哪里。
+    """
+    known = _known_files(chunks, raw_texts, line_counts)
+    if ids and material:
+        # 编号写了，但既不在下发池里也不在材料里：编造或串号
+        if not any(identifier in material for identifier in ids):
+            return "unknown_id"
+    has_number = bool(_LINE_NO.search(text))
+    if has_number:
+        if _mentions_other_file(text, known):
+            return "unknown_file"
+        wanted = int(_LINE_NO.search(text).group(1))
+        label = _cited_file(text, known)
+        if label:
+            total = (line_counts or {}).get(label)
+            if total is None:
+                for name, value in (line_counts or {}).items():
+                    if doc_label(name).casefold() == label:
+                        total = value
+                        break
+            if total is not None:
+                try:
+                    return "line_out_of_range" if wanted > int(total) else "line_unverifiable"
+                except (TypeError, ValueError):
+                    return "line_unverifiable"
+        return "line_unverifiable"
+    if _mentions_other_file(text, known):
+        return "unknown_file"
+    if _cited_file(text, known):
+        # 只写了文件名：落不到行，也无法说明支持哪一句
+        return "too_coarse"
+    return "no_match"
 
 
 def _match_chunk_locator(segment: str, chunks: Optional[Sequence[Any]]) -> Optional[str]:
