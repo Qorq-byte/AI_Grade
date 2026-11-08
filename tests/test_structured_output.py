@@ -373,10 +373,25 @@ def test_echo_limit_is_enough_for_step7_long_outputs():
     assert "【末尾标记】" in human, "12,000 字的正文必须完整回喂"
 
 
-def test_echo_limit_for_other_steps_stays_small():
-    """其它步骤不必放大：修复提示词越长越容易干扰输出，只放大确有需要的步骤。"""
-    assert so.mention_limit(3) == so.MAX_ECHO_CHARS
-    assert so.mention_limit(4) == so.MAX_ECHO_CHARS
+def test_echo_limit_covers_each_steps_observed_length():
+    """回喂上限要按该步骤**实测正文长度**定，不能一刀切 6,000。
+
+    Batch 17 扩闸门到步骤 3/4 时量了 26 份备份：步骤 3 的正文 7,939–15,431 字、
+    步骤 4 最长 5,841 字。6,000 字的上限会把步骤 3 的尾部指标整段截掉，
+    修复只能「看着半截写」—— 与 B14 给步骤 7 放大上限是同一个机械原因。
+    """
+    assert so.mention_limit(3) >= 16000
+    assert so.mention_limit(4) >= 6000
+    body = "x" * 12000 + "\n【末尾标记】"
+    human = so.repair_messages(3, body, ["level1_indicators 为空"])[1]
+    human = human.content if hasattr(human, "content") else human["content"]
+    assert "【末尾标记】" in human, "12,000 字的步骤 3 正文必须完整回喂"
+
+
+def test_echo_limit_stays_small_for_prose_steps():
+    """不产出条目型长正文的步骤保持小预算：修复提示词越长越容易干扰输出。"""
+    for step in (5, 6, 8, 9, 10, 11):
+        assert so.mention_limit(step) == so.MAX_ECHO_CHARS
 
 
 # ═══════════════════════════════════════════════════════
@@ -505,7 +520,11 @@ def test_coverage_reads_dict_list_and_flat_shapes():
         assert coverage.numeric == 3, f"{name} 形态应数出 3 个数值分，实得 {coverage.numeric}"
 
 
-def test_repair_shrunk_keeps_working_for_other_steps():
-    """旧接口保持语义：非步骤 7 一律不判缩水（结构不同，无法无损对比）。"""
-    assert so.repair_shrunk(3, json.dumps({"level1_indicators": []}), so.parse(3, "{}")) is False
-    assert so.repair_shrunk(4, json.dumps({"scores": {"L1_01": 1}}), so.parse(4, "{}")) is False
+def test_repair_shrunk_keeps_working_for_unchecked_steps():
+    """不产出条目型结构的步骤仍然一律不判缩水（结构不同，无法无损对比）。
+
+    Batch 17 把步骤 3 / 4 纳入闸门后，这条只对**真正无法对比**的步骤成立；
+    3 / 4 的新口径见 `tests/test_structured_output_steps34.py`。
+    """
+    assert so.repair_shrunk(9, "很长的问题分析", so.parse(9, "短结论")) is False
+    assert so.repair_shrunk(12, "很长的情况介绍", so.parse(12, "短介绍")) is False

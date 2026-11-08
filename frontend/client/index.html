@@ -523,7 +523,10 @@ function buildScoreDispositionBadge(){
     var c=d.counts||{};
     var total=Number(d.total||0),accepted=Number(c.accepted||0);
     /* 系统侧问题：引用定位不到、分值不合法、缺理由——这三种才是需要人去查的 */
-    var systemSide=Number(c.anchor_unresolved||0)+Number(c.score_invalid||0)+Number(c.reason_missing||0);
+    /* 引用只到文件名（anchor_too_coarse）也算系统侧：它不是模型偷懒，
+       是材料里没有更细的东西可引，得靠补覆盖来解决 */
+    var systemSide=Number(c.anchor_unresolved||0)+Number(c.anchor_too_coarse||0)
+        +Number(c.score_invalid||0)+Number(c.reason_missing||0);
     var cls=systemSide?'err':(accepted>=total&&!(d.unmatched||[]).length?'ok':'warn');
     var pendingN=Number(c.model_pending||0),missingN=Number(c.not_mentioned||0);
     /* 弱定位：引用落到了原文真实存在的行号，但那一行没进本步骤检索证据。
@@ -536,7 +539,7 @@ function buildScoreDispositionBadge(){
     var otherN=systemSide+weakN;
     var head;
     if(systemSide){
-        head='❌ '+systemSide+' 项评分因系统侧原因未落地（引用无法定位 / 分值不合法 / 缺评分理由）';
+        head='❌ '+systemSide+' 项评分因系统侧原因未落地（引用无法定位或只到文件 / 分值不合法 / 缺评分理由）';
     }else if(accepted>=total&&!(d.unmatched||[]).length){
         head='✅ 全部 '+total+' 项指标已落地评分';
     }else if(pendingN&&!missingN&&!otherN){
@@ -549,11 +552,11 @@ function buildScoreDispositionBadge(){
         head='⚠️ '+accepted+'/'+total+' 项已落地评分，其余未落地（分项见下）';
     }
     var chips='';
-    var order=[['accepted','已落地'],['model_pending','模型判定资料不足（待核实）'],['anchor_weak','引用可定位到原文行、但该行未进入检索证据'],['anchor_unresolved','引用无法定位'],['score_invalid','分值不合法'],['reason_missing','缺少评分理由'],['not_mentioned','模型未提及']];
+    var order=[['accepted','已落地'],['model_pending','模型判定资料不足（待核实）'],['anchor_weak','引用可定位到原文行、但该行未进入检索证据'],['anchor_unresolved','引用无法定位'],['anchor_too_coarse','引用只到文件（没到行）'],['score_invalid','分值不合法'],['reason_missing','缺少评分理由'],['not_mentioned','模型未提及']];
     for(var i=0;i<order.length;i++){
         var key=order[i][0],n=Number(c[key]||0);
         if(!n)continue;
-        chips+='<span class="wb-dispo-chip'+(key==='anchor_unresolved'||key==='score_invalid'||key==='reason_missing'?' bad':'')+'">'+esc(order[i][1])+' '+n+' 项</span>';
+        chips+='<span class="wb-dispo-chip'+(key==='anchor_unresolved'||key==='anchor_too_coarse'||key==='score_invalid'||key==='reason_missing'?' bad':'')+'">'+esc(order[i][1])+' '+n+' 项</span>';
     }
     if(typeof d.accepted_score==='number')chips+='<span class="wb-dispo-chip">已落地分值合计 '+esc(String(d.accepted_score))+' 分</span>';
     var unmatched=d.unmatched||[];

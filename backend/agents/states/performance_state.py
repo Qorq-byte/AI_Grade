@@ -218,6 +218,8 @@ class PerformanceState(TypedDict, total=False):
     content_index: Dict[str, str]          # Step2: 内容索引 {核心内容片段: 原文出处}
 
     indicator_system: IndicatorSystem      # Step3: 完整指标体系
+    # Step3: scoring_standard 里夹带资料核对结论的审计计数（只记账，不改原文）
+    standard_purity: Dict[str, Any]
 
     indicator_scores: Dict[str, float]     # Step4: 分值分配 {indicator_id: score}
     score_validation: ScoreValidationResult  # Step4: 分值校验结果

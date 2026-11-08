@@ -160,10 +160,49 @@ DISPOSITION_LABELS = {
     "model_pending": "模型判定资料不足（待核实）",
     "anchor_weak": "引用可定位到原文行、但该行未进入检索证据",
     "anchor_unresolved": "引用无法定位",
+    "anchor_too_coarse": "引用只到文件（没到行）",
     "score_invalid": "分值不合法",
     "reason_missing": "缺少评分理由",
     "not_mentioned": "模型未提及",
 }
+
+# 解析失败的原因 → 对外状态。默认仍是「引用无法定位」：编造编号、引了别的文件、
+# 行号越界这几类，对用户来说是同一件事（引不到），不必再拆。
+# 只有「只写到文件名」值得单列：它不是模型偷懒，而是材料里没有更细的东西可引
+# （详见 workflow_evidence 的 PROJECT_CHAR_BUDGET）。
+#
+# 曾经想做 `anchor_missing`（根本没写引用），最后没收：实测只有 2 条，而且
+# `evidence_id` 为空时会回退去读 `reason`，所以「没写引用」在台账里通常表现为
+# `no_match` 而不是 `empty`——再加一个几乎不进人的状态只会增加口径。
+ANCHOR_STATUS_BY_REASON = {
+    "too_coarse": "anchor_too_coarse",
+}
+
+# 模型按「未取得佐证」计分时，理由必须以这个前缀开头（提示词第 3 条要求）。
+# 作用只有一个：把这批分值和「实测表现得分」分开计数，好在报告里如实披露。
+NO_EVIDENCE_MARKER = "未提供佐证"
+
+# 步骤 3 的 `scoring_standard` 是「尺子」，不该写本项目的资料核对结论。
+# 实测 27 份备份里 400/543（74%）的叶子把结论写进了这一栏，报告因此自相矛盾：
+# 标准栏写着「无法判断」，同行的分值却已经落地。这里只做计数，不改原文。
+STANDARD_VERDICT_MARKERS = ("待核实", "无法判断", "资料不足", "现有资料未", "本项资料未")
+
+
+def audit_standard_purity(system: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """数一数有多少条叶子指标的 `scoring_standard` 夹带了资料核对结论。
+
+    只计数、不改写：把命中数暴露出来，好判断提示词的约束到底有没有生效；
+    若在这里顺手删掉那些话，模型行为就被掩盖了，报告里的矛盾也只是从
+    「看得见」变成「看不见」。
+    """
+    from backend.agents.tools.questionnaire_gen import indicator_leaves
+
+    leaves = list(indicator_leaves((system or {}).get("level1_indicators") or []))
+    hits = [leaf.get("id") for leaf in leaves
+            if any(marker in str(leaf.get("scoring_standard") or "")
+                   for marker in STANDARD_VERDICT_MARKERS)]
+    return {"leaves": len(leaves), "with_verdict": len(hits), "ids": hits}
+
 
 
 def summarize_disposition(items: Dict[str, Dict[str, Any]],
@@ -179,6 +218,7 @@ def summarize_disposition(items: Dict[str, Dict[str, Any]],
         return {}
     counts = {key: 0 for key in DISPOSITION_LABELS}
     accepted_score = 0.0
+    no_evidence_scored = 0
     for item in items.values():
         status = item.get("status")
         counts[status] = counts.get(status, 0) + 1
@@ -186,6 +226,8 @@ def summarize_disposition(items: Dict[str, Dict[str, Any]],
             value = score_number(item.get("actual_score"))
             if value is not None:
                 accepted_score += value
+            if item.get("no_evidence"):
+                no_evidence_scored += 1
     total = len(items)
     accepted = counts.get("accepted", 0)
     reasons = [
@@ -197,6 +239,9 @@ def summarize_disposition(items: Dict[str, Dict[str, Any]],
             f"（已落地分值合计 {round(accepted_score, 2)} 分）")
     if reasons:
         line += "：" + "、".join(reasons)
+    if no_evidence_scored:
+        line += (f"；其中 {no_evidence_scored} 项按「未取得佐证」计分"
+                 f"（非实测结果，须在评价局限中说明）")
     if unmatched:
         keys = [str(item.get("indicator_id") or "") for item in unmatched]
         shown = "、".join(keys[:5]) + ("等" if len(keys) > 5 else "")
@@ -206,6 +251,7 @@ def summarize_disposition(items: Dict[str, Dict[str, Any]],
         "total": total,
         "counts": counts,
         "accepted_score": round(accepted_score, 2),
+        "no_evidence_scored": no_evidence_scored,
         "summary_line": line,
         "items": items,
         "unmatched": unmatched,
@@ -448,18 +494,31 @@ class PerformanceAgent:
             )
         if step_number == 7:
             full_human_prompt += (
-                "\n正文后可附 JSON 对象，字段 scores 按指标 ID 映射到"
-                "{actual_score, evidence_id, reason}。仅为有项目资料及评分依据的指标赋分。"
-                "evidence_id 必须引用本步骤的项目资料编号。没有依据的指标写待核实，不输出分值。"
+                "\n正文后可附 JSON 对象，字段 scores **必须是以指标 ID 为键的对象**"
+                "（形如 {\"L3_01_01_01\": {\"actual_score\": 4, \"evidence_id\": \"P1-12-1\", "
+                "\"reason\": \"……\"}}），不是数组。每个三级指标都要有一条；"
+                "仅为有项目资料及评分依据的指标赋分，evidence_id 必须引用本步骤的项目资料编号。"
+                "没有依据时按评分规则第 3 条「未取得佐证」计分并在理由中写明缺什么，"
+                "只有评分规则第 4 条的两种情形才写「待核实」、不输出数值。"
             )
         if step_number == 11:
             full_human_prompt += "\n程序评分结果：" + json.dumps(state.get("score_summary", {}), ensure_ascii=False)
-        full_human_prompt += (
-            "\n引用关键项目事实、金额、时间和扣分依据时保留对应证据编号。"
-            "知识库条目只用于评价规则，不能证明项目实际发生的事实。"
-            "不能核实的内容写「待核实」或「资料不足」。建议须对应已核实问题、责任主体和验收方式。"
-            "保持项目名称与输入一致；对相互冲突的金额、时间列出两处来源并标注待核实。"
-        )
+        if step_number == 7:
+            # 通用口径里的「不能核实就写待核实」与本步的举证责任规则直接冲突，单列覆盖
+            full_human_prompt += (
+                "\n引用关键项目事实、金额、时间和扣分依据时保留对应证据编号。"
+                "知识库条目只用于评价规则，不能证明项目实际发生的事实。"
+                "本步骤的「不能核实」按评分规则第 3、4 条处置：未取得佐证按标准计分，"
+                "只有评分规则第 4 条的两种情形才写「待核实」。"
+                "保持项目名称与输入一致；对相互冲突的金额、时间列出两处来源并标注待核实。"
+            )
+        else:
+            full_human_prompt += (
+                "\n引用关键项目事实、金额、时间和扣分依据时保留对应证据编号。"
+                "知识库条目只用于评价规则，不能证明项目实际发生的事实。"
+                "不能核实的内容写「待核实」或「资料不足」。建议须对应已核实问题、责任主体和验收方式。"
+                "保持项目名称与输入一致；对相互冲突的金额、时间列出两处来源并标注待核实。"
+            )
 
         # 步骤3：注入用户选择的指标体系类型（6种类型之一，真正影响生成结果）
         if step_number == 3:
@@ -1146,6 +1205,14 @@ class PerformanceAgent:
         else:
             isys["indicator_type"] = itype
             state["indicator_system"] = isys
+            # 只记账、不拦树：命中不代表这份体系错了，只代表标准字段里混进了结论。
+            purity = audit_standard_purity(isys)
+            state["standard_purity"] = purity
+            if purity["with_verdict"]:
+                logger.warning(
+                    f"[Step 3] {purity['with_verdict']}/{purity['leaves']} 条叶子指标的"
+                    f"scoring_standard 夹带了资料核对结论：{purity['ids'][:5]}"
+                )
         self._record_step_result(state, 3, content, structured=outcome)
         return state
 
@@ -1311,9 +1378,10 @@ class PerformanceAgent:
                                              chunks=chunks, ordinals=ordinals,
                                              raw_texts=raw_texts, line_counts=line_counts)
             if not anchor.ok:
-                items[key] = {"status": "anchor_unresolved",
+                items[key] = {"status": ANCHOR_STATUS_BY_REASON.get(anchor.reason, "anchor_unresolved"),
                               "evidence": evidence if isinstance(evidence, str) else None,
                               "anchor_from": anchor_from,
+                              "anchor_reason": anchor.reason,
                               "cited_ids": list(anchor.ids)}
                 continue
             if not reason_text.strip():
@@ -1339,6 +1407,10 @@ class PerformanceAgent:
             items[key] = {"status": "accepted", "actual_score": value,
                           "evidence": evidence, "anchor_kind": anchor.kind,
                           "anchor_from": anchor_from,
+                          # 「按未取得佐证计分」和「实测表现得分」在分数上长得一样，
+                          # 但对报告结论的含义完全相反：前者必须写进评价局限。
+                          # 靠模型在 reason 里的固定前缀识别，不改任何既有字段语义。
+                          "no_evidence": reason_text.startswith(NO_EVIDENCE_MARKER),
                           # 与 refresh_disposition 写入的字段同名同形：否则人工补分前后
                           # 台账字段集合不同，前端读 matched 会时有时无
                           "evidence_anchor": {**anchor.as_dict(), "from": anchor_from}}

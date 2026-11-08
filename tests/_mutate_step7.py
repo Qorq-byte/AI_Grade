@@ -51,14 +51,14 @@ MUTATIONS = [
     (
         "锚点解析永不拒绝（等于把闸门放开）",
         "anchor",
-        """    return _fail(raw, ids)
+        """    return _fail(raw, ids, _failure_reason(text, ids, material, chunks, raw_texts, line_counts))
 
 
-def _match_chunk_locator""",
+def _known_files""",
         """    return Anchor(True, "heading", (), ids, raw)
 
 
-def _match_chunk_locator""",
+def _known_files""",
         "tests/test_evidence_anchor.py tests/test_step7_scoring.py",
     ),
     (
@@ -171,10 +171,15 @@ def _match_chunk_locator""",
         "台账 accepted 不再带 evidence_anchor",
         "agent",
         """                          "anchor_from": anchor_from,
+                          # 「按未取得佐证计分」和「实测表现得分」在分数上长得一样，
+                          # 但对报告结论的含义完全相反：前者必须写进评价局限。
+                          # 靠模型在 reason 里的固定前缀识别，不改任何既有字段语义。
+                          "no_evidence": reason_text.startswith(NO_EVIDENCE_MARKER),
                           # 与 refresh_disposition 写入的字段同名同形：否则人工补分前后
                           # 台账字段集合不同，前端读 matched 会时有时无
                           "evidence_anchor": {**anchor.as_dict(), "from": anchor_from}}""",
-        """                          "anchor_from": anchor_from}""",
+        """                          "anchor_from": anchor_from,
+                          "no_evidence": reason_text.startswith(NO_EVIDENCE_MARKER)}""",
         "tests/test_step7_scoring.py",
     ),
     (
@@ -231,8 +236,8 @@ def _match_chunk_locator""",
     (
         "步骤7 回显上限退回 6000（看不见全部条目）",
         "struct",
-        """MAX_ECHO_CHARS_BY_STEP = {7: 24000}""",
-        """MAX_ECHO_CHARS_BY_STEP = {}""",
+        """MAX_ECHO_CHARS_BY_STEP = {3: 24000, 4: 12000, 7: 24000}""",
+        """MAX_ECHO_CHARS_BY_STEP = {3: 24000, 4: 12000}""",
         "tests/test_structured_output.py",
     ),
     (
@@ -242,7 +247,7 @@ def _match_chunk_locator""",
     blob = extract_json(raw)
     if blob:
         try:
-            from_json = coverage_of_payload(json.loads(blob))
+            from_json = coverage_of_payload(json.loads(blob), step)
         except ValueError:
             from_json = _EMPTY_COVERAGE
         if from_json.entries:
@@ -266,7 +271,7 @@ def _match_chunk_locator""",
         "struct",
         """        return ShrinkReport(
             step, False, True,
-            "原输出里既没有可解析的 scores，也没有识别到指标编号，无法核验是否缩水",
+            "原输出里既没有可解析的 JSON 条目，也没有识别到指标编号，无法核验是否缩水",
             before, after,
         )""",
         """        return ShrinkReport(step, False, False, "", before, after)""",

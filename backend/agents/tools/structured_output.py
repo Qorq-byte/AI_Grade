@@ -31,8 +31,11 @@ from loguru import logger
 MAX_REPORTED_ERRORS = 5
 # 回喂的原始输出上限。太小会让模型「看不到全部条目 → 只能写看得到的」，
 # 步骤 7 的正文实测可达 8,000+ 字，用 6000 必然截断，所以按步骤给不同上限。
+# Batch 17 量了 26 份备份：步骤 3 的正文 7,939–15,431 字、步骤 4 最长 5,841 字。
+# 这两步一旦扩了缩水闸门，截断就会变成「机械缩水」——修复看着半截写，闸门必然拒收，
+# 用户拿到的是「待人工复核」而不是「修好了」。同一个理由，同一套做法。
 MAX_ECHO_CHARS = 6000
-MAX_ECHO_CHARS_BY_STEP = {7: 24000}
+MAX_ECHO_CHARS_BY_STEP = {3: 24000, 4: 12000, 7: 24000}
 
 # 三级指标 id：L3_01_01_01。前后不能紧邻字母数字，避免从长串里截半截。
 _INDICATOR_ID = re.compile(r"(?<![0-9A-Za-z])(L\d_\d{2}_\d{2}_\d{2})(?![0-9])")
@@ -309,20 +312,55 @@ def mentioned_indicator_ids(text: str) -> set:
 
 @dataclass(frozen=True)
 class Coverage:
-    """一次输出「覆盖了几个指标、其中几个真的给了分」。"""
+    """一次输出「覆盖了几个条目、其中几个真的带了可计分数值」。
+
+    两种形状的「条目」不同，这是本批（Batch 17）必须写清的口径：
+      * `scores`（步骤 4 / 7）：`scores` 映射的键数；
+      * `tree`（步骤 3）：**叶子指标数**——叶子 = 没有 children 的节点，
+        按结构判定而不是按 `level == 3`，因为模型偶尔把层级标错（实测有 level=2 的叶子）。
+    """
 
     entries: int
     numeric: int
     source: str  # json / mention / none
+    shape: str = "scores"  # scores / tree / mention / none
 
 
-_EMPTY_COVERAGE = Coverage(0, 0, "none")
+_EMPTY_COVERAGE = Coverage(0, 0, "none", "none")
 _SOURCE_LABEL = {
     "json": "原输出里的 JSON 条目",
     "mention": "正文里提到的编号（原输出没有可用 JSON）",
     "none": "（无基准）",
 }
+_ENTRY_LABEL = {"tree": "叶子指标", "scores": "条目"}
 _INDICATOR_KEY_ALIASES = ("indicator_id", "id", "key")
+_TREE_KEY = "level1_indicators"
+
+
+def _iter_leaves(nodes):
+    """深度优先取叶子：没有 children 的节点（空列表也算叶子）。"""
+    for node in nodes or []:
+        if not isinstance(node, dict):
+            continue
+        children = _as_children(node)
+        if children:
+            yield from _iter_leaves(children)
+        else:
+            yield node
+
+
+def _tree_coverage(payload) -> Optional[Coverage]:
+    """步骤 3 的形状：按叶子指标计数；没有指标树时返回 None（交给调用方判空）。"""
+    if not isinstance(payload, dict):
+        return None
+    nodes = payload.get(_TREE_KEY)
+    if not isinstance(nodes, list) or not nodes:
+        return None
+    leaves = list(_iter_leaves(nodes))
+    if not leaves:
+        return None
+    scored = sum(1 for leaf in leaves if _coerce_number(leaf.get("score")) is not None)
+    return Coverage(len(leaves), scored, "json", "tree")
 
 
 def _score_items(scores):
@@ -347,19 +385,43 @@ def _score_items(scores):
     return []
 
 
-def _count_numeric(items) -> int:
+def _count_numeric(items, aliases=("actual_score",)) -> int:
+    """数「带可计分数值」的条目。
+
+    `aliases` 按步骤给：步骤 7 用 `actual_score`；步骤 4 的数组形态里模型写的是
+    `score`（实测真实输出如此），只认 `actual_score` 会把它当成「没有数值」——
+    于是「键数没变、分值被清零」这条盲区在步骤 4 上永远判不出来。
+    """
     total = 0
     for _, item in items:
-        value = item.get("actual_score") if isinstance(item, dict) else item
+        if isinstance(item, dict):
+            value = None
+            for alias in aliases:
+                if item.get(alias) is not None:
+                    value = item[alias]
+                    break
+        else:
+            value = item
         if _coerce_number(value) is not None:
             total += 1
     return total
 
 
-def coverage_of_payload(payload) -> Coverage:
-    """从已解析的 payload 里数条目；形态不认时返回空 Coverage（不抛异常）。"""
+def coverage_of_payload(payload, step: Optional[int] = None) -> Coverage:
+    """从已解析的 payload 里数条目；形态不认时返回空 Coverage（不抛异常）。
+
+    `step` 用来消歧：
+      * 3    → 只走指标树口径。这一步的 payload 顶层可能混着 `warning/legal_basis/
+               total_score`（实测 `3c6070b9`），落到扁平分值映射分支会数出 5 条假条目；
+      * 4/7  → 只走 `scores` 口径（含模型偶尔给的数组/扁平形态）；
+      * None → 先认指标树（有 `level1_indicators` 就是树），否则回到 `scores`，
+               保持旧调用方的行为。
+    """
     if not isinstance(payload, dict):
         return _EMPTY_COVERAGE
+    if step == 3 or (step is None and isinstance(payload.get(_TREE_KEY), list)):
+        return _tree_coverage(payload) or _EMPTY_COVERAGE
+
     scores = payload.get("scores")
     if scores is None:
         # 允许直接给映射 {"L1_01": 20, ...}
@@ -372,10 +434,11 @@ def coverage_of_payload(payload) -> Coverage:
     items = _score_items(scores)
     if not items:
         return _EMPTY_COVERAGE
-    return Coverage(len(items), _count_numeric(items), "json")
+    aliases = ("actual_score", "score") if step == 4 else ("actual_score",)
+    return Coverage(len(items), _count_numeric(items, aliases), "json", "scores")
 
 
-def coverage_of_text(text: str) -> Coverage:
+def coverage_of_text(text: str, step: Optional[int] = None) -> Coverage:
     """以原文里的 JSON 为基准；解析不出来才退回「正文提到的编号」。
 
     退回时 `source="mention"`、`numeric=0`——因为没有可信的分值基准，
@@ -385,14 +448,14 @@ def coverage_of_text(text: str) -> Coverage:
     blob = extract_json(raw)
     if blob:
         try:
-            from_json = coverage_of_payload(json.loads(blob))
+            from_json = coverage_of_payload(json.loads(blob), step)
         except ValueError:
             from_json = _EMPTY_COVERAGE
         if from_json.entries:
             return from_json
     mentions = mentioned_indicator_ids(raw)
     if mentions:
-        return Coverage(len(mentions), 0, "mention")
+        return Coverage(len(mentions), 0, "mention", "mention")
     return _EMPTY_COVERAGE
 
 
@@ -408,29 +471,39 @@ class ShrinkReport:
     after: Coverage
 
 
+SHRINK_CHECKED_STEPS = (3, 4, 7)
+
+
 def shrink_report(step: int, original_text: str, repaired) -> ShrinkReport:
     """核查修复有没有偷偷少给东西：条目数不得减少，可计分数值分也不得减少。
 
-    只对步骤 7 生效（结构是 `{"scores": {指标 id: {...}}}`，条目数可无损对比）。
-    判不了（原输出既没有 JSON 也没有可识别编号）时置 `unverifiable`，
+    Batch 17 起覆盖三个条目型步骤：
+      * 3（指标体系，树）——按叶子指标计数；
+      * 4（分值分配，扁平映射）与 7（评分明细，对象）——按 `scores` 键与数值计数。
+    其余步骤不产出可无损对比的条目结构，返回**明确的不适用**（不是「没问题」）。
+    判不了（原输出既没有可解析的 JSON 也没有可识别编号）时置 `unverifiable`，
     由调用方**明说**「无法核验」——静默放行是 Batch 13 的遗留缺陷。
     """
     payload = getattr(repaired, "payload", None) or {}
-    after = coverage_of_payload(payload)
-    if step != 7:
-        return ShrinkReport(step, False, False, "只对步骤 7 校验缩水", _EMPTY_COVERAGE, after)
+    after = coverage_of_payload(payload, step)
+    if step not in SHRINK_CHECKED_STEPS:
+        return ShrinkReport(
+            step, False, False,
+            f"步骤 {step} 不产出条目型结构，不做缩水校验", _EMPTY_COVERAGE, after,
+        )
 
-    before = coverage_of_text(original_text)
+    before = coverage_of_text(original_text, step)
     if before.entries == 0:
         return ShrinkReport(
             step, False, True,
-            "原输出里既没有可解析的 scores，也没有识别到指标编号，无法核验是否缩水",
+            "原输出里既没有可解析的 JSON 条目，也没有识别到指标编号，无法核验是否缩水",
             before, after,
         )
 
+    label = _ENTRY_LABEL.get(before.shape, "条目")
     problems = []
     if after.entries < before.entries:
-        problems.append(f"条目 {before.entries}→{after.entries}")
+        problems.append(f"{label} {before.entries}→{after.entries}")
     if before.numeric and after.numeric < before.numeric:
         problems.append(f"可计分数值分 {before.numeric}→{after.numeric}")
     if problems:
