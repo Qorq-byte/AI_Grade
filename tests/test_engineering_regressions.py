@@ -1,5 +1,6 @@
 """Route regressions using only temporary SQLite data and signed test tokens."""
 import asyncio
+import os
 import sys
 from threading import Event
 from types import SimpleNamespace
@@ -41,7 +42,11 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(agent, "UPLOAD_DIR", tmp_path)
     monkeypatch.setattr(agent, "active_workflows", {})
     monkeypatch.setattr(agent, "active_workflow_configs", {})
-    monkeypatch.setattr(agent, "_WORKFLOW_PROGRESS", {})
+    from backend.services import progress_bus
+    monkeypatch.setattr(agent, "_WORKFLOW_PROGRESS", progress_bus.PROXY)
+    progress_bus.PROGRESS.clear()
+    from backend.services import export_cache
+    export_cache.clear()
     with factory.begin() as db:
         for uid, role in ((1, UserRole.USER), (2, UserRole.USER), (3, UserRole.ADMIN)):
             db.add(User(id=uid, username=f"user{uid}", password_hash="unused", role=role, is_active=True))
@@ -57,6 +62,7 @@ def isolated(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize(("method", "url", "body"), [
     ("GET", "/api/agent/workflow/owned/status", None),
+    ("POST", "/api/agent/workflow/owned/consistency-check", None),
     ("POST", "/api/agent/workflow/approve", {"session_id": "owned"}),
     ("GET", "/api/agent/workflow/owned/report", None),
     ("POST", "/api/agent/workflow/save-report", {"session_id": "owned", "content": "changed"}),
@@ -108,6 +114,40 @@ def test_legacy_admin_routes_require_admin(isolated):
     assert isolated.client.get(url).status_code in (401, 403)
     assert isolated.client.get(url, headers=isolated.headers[1]).status_code == 403
     assert isolated.client.get(url, headers=isolated.headers[3]).status_code == 200
+
+
+def test_admin_prompt_reset_restores_builtin_template(isolated):
+    """重置提示词曾经必 500（导入了不存在的 get_default_prompts），这里锁定修复后的行为。"""
+    from backend.models.user_models import PromptTemplate
+
+    with isolated.db.begin() as db:
+        db.add(PromptTemplate(id=1, step_number=2, step_name="旧步骤名",
+                              prompt_content="被改坏的提示词", is_system=False, version=3))
+        db.add(PromptTemplate(id=2, step_number=99, step_name="越界步骤",
+                              prompt_content="没有默认值的步骤", is_system=False, version=1))
+
+    url = "/api/admin/prompts/1/reset"
+    assert isolated.client.post(url).status_code in (401, 403)
+    assert isolated.client.post(url, headers=isolated.headers[1]).status_code == 403
+
+    response = isolated.client.post(url, headers=isolated.headers[3])
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["version"] == 4
+
+    with isolated.db() as db:
+        row = db.get(PromptTemplate, 1)
+        # 库内格式必须与 PromptManager.load_from_database 的拆分约定一致
+        assert "\n\n---\n\n" in row.prompt_content
+        system_part, human_part = row.prompt_content.split("\n\n---\n\n", 1)
+        assert system_part.strip() and human_part.strip()
+        assert "被改坏的提示词" not in row.prompt_content
+        assert row.change_log == "重置为系统默认"
+        assert row.step_name == "旧步骤名" or row.step_name  # 有默认名则覆盖
+
+    assert isolated.client.post("/api/admin/prompts/999/reset",
+                                headers=isolated.headers[3]).status_code == 404
+    assert isolated.client.post("/api/admin/prompts/2/reset",
+                                headers=isolated.headers[3]).status_code == 400
 
 
 def test_report_list_excludes_foreign_cache_and_disk(isolated):
@@ -303,6 +343,91 @@ def test_batch_report_delete_keeps_foreign_snapshot(isolated):
     assert agent.PerformanceAgent.load_state_backup("own-two") == {}
     with isolated.db() as db:
         assert db.query(WorkflowSession).one().session_id == "owned"
+
+
+def test_status_exposes_consistency_report(isolated):
+    """报告未生成时透传落库结果；报告已生成时按当前状态现算（手改后不会看到旧结论）。"""
+    agent.PerformanceAgent.update_state_backup("owned", {"consistency": {
+        "issues": [{"code": "GRADE_MISSING", "severity": "error", "message": "x", "steps": [11]}],
+        "error_count": 1, "warning_count": 0, "checked": ["score_summary"], "score": {}}})
+    data = isolated.client.get("/api/agent/workflow/owned/status",
+                               headers=isolated.headers[1]).json()["data"]
+    assert data["consistency"]["error_count"] == 1
+    assert data["consistency"]["issues"][0]["code"] == "GRADE_MISSING"
+
+    agent.PerformanceAgent.update_state_backup("owned", {
+        "consistency": {"issues": [], "error_count": 0, "warning_count": 0,
+                        "checked": ["stale"], "score": {}},
+        "final_report": "太短了。",
+        "project_name": "project",
+    })
+    fresh = isolated.client.get("/api/agent/workflow/owned/status",
+                                headers=isolated.headers[1]).json()["data"]["consistency"]
+    assert fresh["checked"] == ["indicator_allocation", "score_summary",
+                                "report_text", "steps_and_coverage"]
+    assert "REPORT_TOO_SHORT" in [item["code"] for item in fresh["issues"]]
+
+
+def test_consistency_check_endpoint_recomputes_and_persists(isolated):
+    agent.PerformanceAgent.update_state_backup("owned", {
+        "project_name": "project",
+        "score_summary": {"total_score": 0.0, "complete": False, "grade": "待核实",
+                          "scored_count": 0, "total_count": 0},
+        "final_report": "太短了。",
+        "completed_steps": [1, 2],
+    })
+    response = isolated.client.post("/api/agent/workflow/owned/consistency-check",
+                                    headers=isolated.headers[1])
+    assert response.status_code == 200
+    body = response.json()["data"]
+    codes = [item["code"] for item in body["consistency"]["issues"]]
+    assert "INDICATOR_MISSING" in codes
+    assert "REPORT_WITH_INCOMPLETE_STEPS" in codes
+    assert body["summary"].startswith("步骤间一致性检查：")
+    assert agent.PerformanceAgent.load_state_backup("owned")["consistency"] == body["consistency"]
+
+
+def test_status_exposes_score_disposition(isolated):
+    """步骤7的评分落地台账要能从 status 取到；老会话没有这项时给空对象，不报错。"""
+    data = isolated.client.get("/api/agent/workflow/owned/status",
+                               headers=isolated.headers[1]).json()["data"]
+    assert data["score_disposition"] == {}, "老会话没有台账字段，应返回空对象而不是 500"
+
+    ledger = {"step": 7, "total": 3, "counts": {"accepted": 1, "model_pending": 2},
+              "accepted_score": 4.0, "summary_line": "步骤 7 评分落地 1/3 项", "items": {}}
+    agent.PerformanceAgent.update_state_backup("owned", {"score_disposition": ledger})
+    data = isolated.client.get("/api/agent/workflow/owned/status",
+                               headers=isolated.headers[1]).json()["data"]
+    assert data["score_disposition"]["total"] == 3
+    assert data["score_disposition"]["counts"]["model_pending"] == 2
+
+
+def test_manual_score_save_refreshes_disposition(isolated):
+    """人工补分后台账必须跟着变，否则界面继续显示旧的「已落地」结论。"""
+    tree = {"level1_indicators": [{
+        "id": "L1_01", "name": "决策", "score": 10, "children": [{
+            "id": "L2_01_01", "name": "项目立项", "score": 10, "children": [{
+                "id": "L3_01_01_01", "name": "立项依据", "score": 10,
+                "children": []}]}]}]}
+    agent.PerformanceAgent.update_state_backup("owned", {
+        "indicator_system": tree,
+        "score_disposition": {"step": 7, "total": 1,
+                              "counts": {"accepted": 0, "not_mentioned": 1},
+                              "accepted_score": 0.0, "summary_line": "步骤 7 评分落地 0/1 项",
+                              "items": {"L3_01_01_01": {"status": "not_mentioned"}}},
+    })
+    response = isolated.client.post("/api/agent/workflow/save-indicator-scores",
+                                    headers=isolated.headers[1],
+                                    json={"session_id": "owned", "scores": [
+                                        {"indicator_id": "L3_01_01_01", "indicator_name": "立项依据",
+                                         "actual_score": 8, "full_score": 10,
+                                         "score_reason": "人工补分"}]})
+    assert response.status_code == 200, response.text
+    ledger = agent.PerformanceAgent.load_state_backup("owned")["score_disposition"]
+    assert ledger["counts"]["accepted"] == 1
+    assert ledger["accepted_score"] == 8.0
+    assert ledger["items"]["L3_01_01_01"]["note"] == "人工补分"
+    assert ledger["summary_line"].startswith("步骤 7 评分落地 1/1 项")
 
 
 def test_cleanup_expires_upload_without_expired_workflow(isolated, monkeypatch, tmp_path):
@@ -509,7 +634,8 @@ def test_real_graph_start_pause_retry_and_resume(isolated, monkeypatch):
             first = await anext(response.body_iterator)
             assert '"event": "step_start"' in first and '"step_number": 1' in first
             assert first_started.is_set()
-            assert (await anext(response.body_iterator)).startswith(": heartbeat")
+            heartbeat = await anext(response.body_iterator)
+            assert heartbeat.startswith(": ping ")
             with isolated.db() as db:
                 status = (await agent.get_workflow_status("new-graph", db)).data
             assert status["current_step"] == 1 and status["completed_steps"] == []
@@ -567,3 +693,155 @@ def test_score_extraction_uses_only_known_project_evidence(monkeypatch):
     assert list(state["indicator_score_map"]) == ["leaf-0"]
     assert state["indicator_score_map"]["leaf-0"]["actual_score"] == 0
     assert workflow._compute_score_summary(state)["grade"] == "待核实"
+
+
+def test_temperature_profile_reaches_llm_instance(isolated, monkeypatch):
+    """「严谨 / 发散」档位必须落到 LLM 实例参数上，而不只是写进提示词。"""
+    captured = {}
+
+    def fake_base_agent(**kwargs):
+        captured.update(kwargs)
+        return None
+
+    monkeypatch.setattr(performance_agent, "BaseAgent", fake_base_agent)
+    cases = {"严谨": (0.3, 0.5), "发散": (0.9, 0.95), "普通": (0.7, 0.9)}
+    for profile, (temp, top_p) in cases.items():
+        agent_instance = performance_agent.PerformanceAgent(
+            session_id="temp-" + str(abs(hash(profile))), temperature_profile=profile,
+        )
+        assert agent_instance.temperature == temp, profile
+        assert agent_instance.top_p == top_p, profile
+        assert captured["temperature"] == temp
+        assert captured["top_p"] == top_p
+
+
+# ═══════════════════════════════════════════════════════
+#  导出幂等（Batch 3）
+# ═══════════════════════════════════════════════════════
+
+def test_workflow_thread_inherits_request_id(isolated, monkeypatch):
+    """工作流在 executor 线程里跑，日志必须沿用发起请求的 request_id。"""
+    from backend.middleware.request_context import get_request_id
+
+    captured = []
+
+    def invoke(initial_state, config):
+        captured.append(get_request_id())
+        progress = agent._WORKFLOW_PROGRESS[initial_state["session_id"]]
+        progress["last_step"] = 14
+        progress["step_results"]["1"] = {"content": "step output"}
+        return {"completed_steps": list(range(1, 15)), "final_report": "done"}
+
+    monkeypatch.setattr(agent, "_get_or_create_workflow",
+                        lambda sid, params: (SimpleNamespace(app=SimpleNamespace(invoke=invoke)), sid))
+    request_id = "trace-thread-0001"
+    response = isolated.client.post(
+        "/api/agent/workflow/start-stream",
+        headers={**isolated.headers[1], "X-Request-ID": request_id},
+        json={"project_name": "thread-rid", "session_id": "thread-rid"},
+    )
+    assert response.status_code == 200, response.text
+    assert captured == [request_id]
+
+
+def _count_exports(monkeypatch, calls):
+    """把真正的渲染替换成计数桩，只验证「渲染了几次」，不验证 Word/PDF 内容。"""
+    from backend.agents.tools.export_service import ExportService
+
+    def make(fmt):
+        def fake(cls, content, file_name, style, base_dir=".", title=None, **kwargs):
+            calls.append((fmt, file_name))
+            ext = "pdf" if fmt == "pdf" else "docx"
+            path = os.path.join(base_dir, ExportService.EXPORT_DIR, f"{file_name}.{ext}")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as fh:
+                fh.write(b"%PDF" if fmt == "pdf" else b"PK")
+            return path
+        return classmethod(fake)
+
+    monkeypatch.setattr(ExportService, "export_to_word", make("word"))
+    monkeypatch.setattr(ExportService, "export_to_pdf", make("pdf"))
+
+
+def test_same_report_exports_once(isolated, monkeypatch):
+    """同一份报告连点三次导出，只应真正渲染一次。"""
+    calls = []
+    _count_exports(monkeypatch, calls)
+    url = "/api/agent/workflow/export"
+    headers = isolated.headers[1]
+    body = {"session_id": "owned", "format": "word"}
+
+    first = isolated.client.post(url, headers=headers, json=body)
+    assert first.status_code == 200, first.text
+    data = first.json()["data"]
+    assert data["reused"] is False
+    assert len(calls) == 1
+
+    for _ in range(2):
+        again = isolated.client.post(url, headers=headers, json=body)
+        assert again.status_code == 200, again.text
+        assert again.json()["data"] == {**data, "reused": True}
+    assert len(calls) == 1, "重复导出不应重新渲染"
+
+    # 内容变了必须重新渲染，且不能把旧文件当新结果返回
+    isolated.client.post("/api/agent/workflow/save-report", headers=headers,
+                         json={"session_id": "owned", "content": "# changed"})
+    changed = isolated.client.post(url, headers=headers, json=body)
+    assert changed.json()["data"]["reused"] is False
+    assert len(calls) == 2
+
+    # 文件被清理任务删掉后也必须重新渲染
+    os.remove(changed.json()["data"]["file_path"])
+    missing = isolated.client.post(url, headers=headers, json=body)
+    assert missing.json()["data"]["reused"] is False
+    assert len(calls) == 3
+
+
+def test_export_cache_separates_format(isolated, monkeypatch):
+    """word 与 pdf 是两份产物，各自独立命中，互不覆盖。"""
+    calls = []
+    _count_exports(monkeypatch, calls)
+    url = "/api/agent/workflow/export"
+    headers = isolated.headers[1]
+
+    word = isolated.client.post(url, headers=headers, json={"session_id": "owned", "format": "word"}).json()["data"]
+    pdf = isolated.client.post(url, headers=headers, json={"session_id": "owned", "format": "pdf"}).json()["data"]
+    assert len(calls) == 2
+    assert {fmt for fmt, _ in calls} == {"word", "pdf"}
+    assert word["file_name"].endswith(".docx") and pdf["file_name"].endswith(".pdf")
+    assert word["file_name"] != pdf["file_name"]
+
+    again = isolated.client.post(url, headers=headers, json={"session_id": "owned", "format": "word"}).json()["data"]
+    assert again["reused"] is True and again["file_name"] == word["file_name"]
+    assert len(calls) == 2
+
+
+def test_style_fingerprint_tracks_layout():
+    from backend.agents.tools.export_service import ExportStyle
+    from backend.services import export_cache
+
+    base = export_cache.style_fingerprint(ExportStyle.classic())
+    assert base == export_cache.style_fingerprint(ExportStyle())
+    assert base != export_cache.style_fingerprint(ExportStyle.from_dict({"body_font_size": 14}))
+
+
+def test_export_cache_expiry_content_and_file_loss(tmp_path):
+    from backend.services import export_cache
+
+    export_cache.clear()
+    path = tmp_path / "cache.docx"
+    path.write_bytes(b"PK")
+    key = export_cache.cache_key(1, "session", "report", "word", "stylehash")
+
+    export_cache.store(key, "content-v1", str(path), now=1000.0)
+    assert export_cache.lookup(key, "content-v1", now=1005.0) == str(path)
+    ttl = export_cache.DEFAULT_TTL_SECONDS
+    assert export_cache.lookup(key, "content-v1", now=1000.0 + ttl + 1) is None
+
+    export_cache.store(key, "content-v1", str(path), now=2000.0)
+    assert export_cache.lookup(key, "content-v2", now=2005.0) is None
+
+    export_cache.store(key, "content-v1", str(path), now=3000.0)
+    path.unlink()
+    assert export_cache.lookup(key, "content-v1", now=3005.0) is None
+    export_cache.clear()
