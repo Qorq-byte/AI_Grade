@@ -6,7 +6,7 @@
 **新对话开场白（直接粘贴）：**
 
 ```
-读 D:/python/AI_Grade/NEXT_STEPS.md，从「批次 17」开始实施。
+读 D:/python/AI_Grade/NEXT_STEPS.md，从「批次 18」开始实施。
 动手前先按第 5 节取基线，改完按第 5 节的五段式交付。
 ```
 
@@ -16,8 +16,8 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `main` / `e07fb1d` + 批次 16 提交，工作区干净 |
-| 已完成批次 | 第三轮 B1–B16（每批都有独立交付章节）+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
+| 分支 / HEAD | `main` / 批次 17 提交，工作区干净 |
+| 已完成批次 | 第三轮 B1–B17（每批都有独立交付章节）+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
 | 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），135 个端点 |
 | 前端 | 零构建，原生 HTML/CSS/JS + `frontend/shared/` |
 | 存储 | MySQL（库 `ai_grade_d`）+ `state_backups/*.json` 磁盘投影 |
@@ -26,12 +26,12 @@
 
 | 检查 | 命令 | 当前 |
 |---|---|---|
-| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **287 passed** |
+| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **306 passed** |
 | 前端共享层 / SSE | `node --test tests/test_*.cjs` | **42 pass**（5 个文件） |
 | 前端联通性 | `python frontend_e2e_check.py` | **72 通过 / 0 失败** |
 | 全接口 | `python test_all_apis.py` | **46/46** |
 | 真实工作流 | `python wf_e2e.py` | **47 项 / 0 失败**（约 4~5 分钟，要真实模型） |
-| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` | **28 / 7 / 4 / 6 全抓**（串行跑，别并发） |
+| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` | **28 / 7 / 4 / 6 / 8 全抓**（串行跑，别并发） |
 | 检索基线 | `python -m tests.rag_eval.run --check` | Recall@3 **0.448**、MRR 0.391、P 0.161 |
 
 ---
@@ -53,7 +53,7 @@
 | 编号 | 事项 | 现状 / 证据 | 判定标准 |
 |---|---|---|---|
 | ~~**A1**~~ | ~~步骤 7 下发提示词~~ | ✅ **批次 16 已完成**：放弃率 77% → 8%，落地 6 → 24/26，总分不变；根因是步骤 5 的标准自带「待核实」+ 三处授权语句；台账新增 `no_evidence_scored` 披露 | 见 `progress_round3.md` B16 |
-| **A2** | **结构化闸门扩到步骤 3 / 4** | `structured_output` 的缩水判定目前**只对步骤 7 生效**（B13.8 第 5 条、B14.9 第 5 条） | 步骤 3/4 也有条目/数值双判据；构造盲区用例能被拦，且不误伤现有备份 |
+| ~~**A2**~~ | ~~结构化闸门扩到步骤 3 / 4~~ | ✅ **批次 17 已完成**：步骤 3 按叶子计数（改前恒 0 条）、步骤 4 走 scores，`SHRINK_CHECKED_STEPS=(3,4,7)`；26 份备份回放 0 误判。**遗留**：非修复路径的「步骤 4 少给分」仍静默，见 B17.5 第 1 条 | 见 `progress_round3.md` B17 |
 | **A3** | **`main.py` 迁移到 `lifespan`** | `on_event` 仍有 2 处（`@app.on_event("startup"/"shutdown")`），测试里一直报 deprecation；后台任务未持引用、shutdown 不取消 | 启动/关闭日志与现有行为一致；清理定时器在 shutdown 时被取消（有测试） |
 | **A4** | **上传解析复用** | `agent_routes.py` 预览与 `performance_agent` 正式解析是两条独立路径，同一文件可能解析两次（阶段二第 4 项，❌ 未开始） | 先量：同一文件解析次数 / 耗时 / 文本一致性；达到同等结果再谈复用 |
 
@@ -112,11 +112,11 @@
 - **留给后续的两件事**：① 根因在步骤 5（22/26 条标准自带「待核实」），归 A2；
   ② 标注一致性靠模型自觉，`no_evidence` 有漏报方向，要可靠得让程序判定。
 
-### 批次 17 = A2 结构化闸门扩到步骤 3 / 4
-- **取证**：找出步骤 3/4 的 JSON 形状与「条目/可计分数值」定义（与步骤 7 不同）；
-- **改**：`structured_output.coverage_of_payload` 增加按步骤的形状适配；`shrink_report(step, ...)` 去掉「只对 7 生效」；
-- **判定**：历史备份回放判定变化逐条解释；构造「修复后条目变少」用例必须被拦；
-- **风险**：步骤 3 的「条目」是三级指标树，计数口径要先写清楚，否则误杀。
+### 批次 17 = A2 结构化闸门扩到步骤 3 / 4 ✅ 已完成
+- 交付见 `progress_round3.md` 的 B17。口径写死为「步骤 3 = 叶子指标（无 children 的节点）/
+  步骤 4、7 = scores 键」；`SHRINK_CHECKED_STEPS=(3,4,7)`；26 份备份回放 0 误判 0 盲区。
+- **留给后续**：① 非修复路径的静默少给分（`_node_step4` 只 apply 有值的键）没管，
+  归 B3 或单独一批；② 首次 JSON 不可读时没有数值基准，只能比条目数。
 
 ### 批次 18 = B2 `issue_id → suggestion_ids` 强制覆盖
 - **改**：步骤 9 产出带 `issue_id`；步骤 10 必须回填 `suggestion_ids`；一致性检查新增两类 issue；导出前阻断；
@@ -173,7 +173,8 @@ NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 72/0
 |---|---|
 | Windows `os.replace` 撞上读句柄 | 抛 `WinError 5`。B15 已用「退避重试 + 持锁读入口」修掉；**新代码不要裸 `open()` 备份文件** |
 | CSS `transform` 动画在 SVG `<g>` 上 | 实测不生效（停在 0% 帧）→ 用 SMIL `animateMotion` |
-| 变异脚本锚点 | 同一串代码在别处也出现时，`replace(...,1)` 会改错位置 → 锚点带上下一行上下文 |
+| 变异脚本锚点 | 同一串代码在别处也出现时，`replace(...,1)` 会改错位置 → 锚点带上下一行上下文。
+**重构改了被锚定的代码时**，脚本会以「锚点失效」计入存活（看起来像覆盖不足，其实是没跑到）→ 改完实现先 grep 一遍被锚定的片段（B16/B17 各踩一次） |
 | 变异体语法错误 | `SyntaxError` 会被当成「抓到」→ 每个变异体先离线 `compile()` |
 | **变异脚本并发** | 两个脚本都会临时改写 `performance_agent.py`，并发跑会互相覆盖，报出「漏抓」假象 → **必须串行**（B16 踩过） |
 | **8000 端口有旧进程** | 上一轮留下的 uvicorn 还占着 8000 时，新起的会绑失败，而 `test_all_apis` / `frontend_e2e_check` / `wf_e2e` 全是硬编码 8000 → 检查打在**旧代码**上。先 `netstat -ano \| grep :8000` 确认 PID，必要时重启 |
@@ -188,8 +189,9 @@ NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 72/0
 
 A1 已经做完（批次 16）。接下来的顺序变了：
 
-- **如果只做一件事：做 A2（结构化闸门扩到步骤 3/4）。** 步骤 7 现在能把分落下来了，
-  但上游步骤 3/4 的输出缩水仍然只有「事后人工看」一道防线，而步骤 7 的结论直接依赖它们。
+- **如果只做一件事：把步骤 4 的「静默少给分」堵掉。** 现在闸门只在修复路径生效，
+  而模型直接少给几百个键时，程序只 apply 有值的、缺的沿用上一版，什么都不说——
+  这是比「修复缩水」更容易发生、也更难发现的一类（B17.5 第 1 条）。
 - **如果要做「让报告更可信」而不是「更完整」：做 B3（质量门禁）**，把每步的字数/引用覆盖率/
   无依据断言数摆出来，比再加提示词更有用。
 - **C 类（拆文件、CI、安全）不要先做**：它们不会让任何一份报告变好，只是让后面更好维护。
