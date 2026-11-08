@@ -824,6 +824,7 @@
                     const u = data.data;
                     const userInfo = JSON.stringify({ id: u.user_id, username: u.username, role: u.role });
                     sessionStorage.setItem('token', u.access_token);
+                    sessionStorage.setItem('refresh_token', u.refresh_token);
                     sessionStorage.setItem('user', userInfo);
 
                     if (remember) {
