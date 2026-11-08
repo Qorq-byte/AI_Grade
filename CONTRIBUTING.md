@@ -118,7 +118,7 @@ node --test tests/*.cjs
 ## 提交 PR
 
 1. 确认 `pytest` 与 `node --test` 全绿；
-2. 更新受影响的文档（`README.md` 或 `docs/API.md`）；
+2. 更新受影响的文档（`README.md` / `README.zh-CN.md` 或 `docs/API.md`）；
 3. PR 描述里包含：**问题 → 做法 → 验证方式 → 剩余风险**；
 4. 涉及界面改动请附截图；涉及判定口径改动请附改前/改后对比；
 5. 一个 PR 只解决一个主题，便于 review 与回滚。
@@ -132,5 +132,6 @@ CI 目前尚未配置（见 Roadmap），因此**本地验证结果就是唯一�
 - 缺陷、功能建议：走 [Issues](https://github.com/Qorq-byte/AI_Grade/issues)，请附复现步骤与日志中的 `request_id`；
 - 安全漏洞：**不要**公开提 Issue，见 [SECURITY.md](./SECURITY.md)。
 
-提问前请先看 README 的「常见问题」与「能力边界」两节——很多「结果不对」属于已知的模型能力边界，
-而不是程序缺陷。
+提问前请先看 [README](./README.md) 的 **What the program guarantees — and what it does not**
+一节（中文见 [README.zh-CN.md](./README.zh-CN.md) 的「哪些是程序保证，哪些依赖模型」）——
+很多「结果不对」属于已知的模型能力边界，而不是程序缺陷。
