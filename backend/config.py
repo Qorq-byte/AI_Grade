@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:5173,http://localhost:8000"
     
     # Model Parameters
-    DEFAULT_MODEL: str = "qwen-long"
+    DEFAULT_MODEL: str = "deepseek-chat"  # 与 .env.example / README 保持一致
     TEMPERATURE: float = 0.7
     TOP_P: float = 0.9
     MAX_TOKENS: int = 4000
