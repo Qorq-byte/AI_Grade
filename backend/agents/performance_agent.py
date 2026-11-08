@@ -160,9 +160,22 @@ DISPOSITION_LABELS = {
     "model_pending": "模型判定资料不足（待核实）",
     "anchor_weak": "引用可定位到原文行、但该行未进入检索证据",
     "anchor_unresolved": "引用无法定位",
+    "anchor_too_coarse": "引用只到文件（没到行）",
     "score_invalid": "分值不合法",
     "reason_missing": "缺少评分理由",
     "not_mentioned": "模型未提及",
+}
+
+# 解析失败的原因 → 对外状态。默认仍是「引用无法定位」：编造编号、引了别的文件、
+# 行号越界这几类，对用户来说是同一件事（引不到），不必再拆。
+# 只有「只写到文件名」值得单列：它不是模型偷懒，而是材料里没有更细的东西可引
+# （详见 workflow_evidence 的 PROJECT_CHAR_BUDGET）。
+#
+# 曾经想做 `anchor_missing`（根本没写引用），最后没收：实测只有 2 条，而且
+# `evidence_id` 为空时会回退去读 `reason`，所以「没写引用」在台账里通常表现为
+# `no_match` 而不是 `empty`——再加一个几乎不进人的状态只会增加口径。
+ANCHOR_STATUS_BY_REASON = {
+    "too_coarse": "anchor_too_coarse",
 }
 
 # 模型按「未取得佐证」计分时，理由必须以这个前缀开头（提示词第 3 条要求）。
@@ -1365,9 +1378,10 @@ class PerformanceAgent:
                                              chunks=chunks, ordinals=ordinals,
                                              raw_texts=raw_texts, line_counts=line_counts)
             if not anchor.ok:
-                items[key] = {"status": "anchor_unresolved",
+                items[key] = {"status": ANCHOR_STATUS_BY_REASON.get(anchor.reason, "anchor_unresolved"),
                               "evidence": evidence if isinstance(evidence, str) else None,
                               "anchor_from": anchor_from,
+                              "anchor_reason": anchor.reason,
                               "cited_ids": list(anchor.ids)}
                 continue
             if not reason_text.strip():
