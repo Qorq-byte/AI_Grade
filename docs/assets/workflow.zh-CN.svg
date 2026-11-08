@@ -1,0 +1,188 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="384" viewBox="0 0 760 384"
+     role="img" aria-labelledby="ttl dsc">
+  <title id="ttl">AI_Grade 运行流程</title>
+  <desc id="dsc">动态示意图：上传资料后，FastAPI 以流的方式驱动 15 节点的 LangGraph 状态图，
+  其中三步会暂停等待人工确认，纯程序校验层检查产出，最终导出为 Word / PDF。</desc>
+  <defs>
+    <marker id="arw" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5"
+            orient="auto-start-reverse">
+      <path d="M0,1 L9,5 L0,9 z" fill="#58a6ff"/>
+    </marker>
+    <radialGradient id="glow">
+      <stop offset="0%" stop-color="#58a6ff" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#58a6ff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <style>
+    text { font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    .card { fill: #0d1117; stroke: #30363d; stroke-width: 1; }
+    .box  { fill: #161b22; stroke: #30363d; }
+    .t1   { font-size: 11.5px; fill: #e6edf3; }
+    .t2   { font-size: 9px; fill: #8b949e; }
+    .t3   { font-size: 9px; fill: #6e7681; letter-spacing: .3px; }
+    .lnk  { stroke: #58a6ff; stroke-width: 1.6; fill: none; }
+    .march { stroke-dasharray: 4 4; animation: march 1s linear infinite; }
+    @keyframes march { to { stroke-dashoffset: -8; } }
+    .chip { animation: lit 9s linear infinite; }
+    @keyframes lit {
+      0%    { fill: #10304f; stroke: #58a6ff; }
+      5%    { fill: #10304f; stroke: #58a6ff; }
+      6%    { fill: #161b22; stroke: #30363d; }
+      100%  { fill: #161b22; stroke: #30363d; }
+    }
+    .gate { opacity: .45; animation: gate 9s linear infinite; }
+    @keyframes gate {
+      0%   { opacity: 1; }
+      5%   { opacity: 1; }
+      7%   { opacity: .45; }
+      100% { opacity: .45; }
+    }
+    .live { animation: blink 1.6s ease-in-out infinite; }
+    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+    @media (prefers-reduced-motion: reduce) {
+      .chip, .gate, .live, .march { animation: none !important; }
+    }
+  </style>
+
+  <rect class="card" x="0.5" y="0.5" width="759" height="383" rx="12"/>
+
+  <!-- 入口层 -->
+  <g>
+    <rect class="box" x="20" y="14" width="220" height="56" rx="8"/>
+    <text class="t1" x="34" y="38">上传资料</text>
+    <text class="t2" x="34" y="56">PDF · Word · Excel · 图片</text>
+
+    <rect class="box" x="270" y="14" width="220" height="56" rx="8"/>
+    <text class="t1" x="284" y="38">FastAPI</text>
+    <circle class="live" cx="424" cy="34" r="3" fill="#3fb950"/>
+    <text class="t2" x="284" y="56">135 个端点 · SSE 流</text>
+
+    <rect class="box" x="520" y="14" width="220" height="56" rx="8"/>
+    <text class="t1" x="534" y="38">LangGraph</text>
+    <text class="t2" x="534" y="56">StateGraph · 15 节点 · 检查点</text>
+  </g>
+
+  <path class="lnk march" d="M240,42 H266" marker-end="url(#arw)"/>
+  <path class="lnk march" d="M490,42 H516" marker-end="url(#arw)"/>
+
+  <!-- 状态图：14 步（0~14） -->
+  <path class="lnk march" d="M630,70 V100 H88 V132" marker-end="url(#arw)"/>
+  <text class="t3" x="380" y="93" text-anchor="middle">驱动 15 节点状态图</text>
+
+    <g>
+      <rect class="chip" x="20" y="136" width="136" height="44" rx="7"
+            fill="#161b22" stroke="#30363d" style="animation-delay:0s"/>
+      <text x="30" y="152" font-size="9" fill="#7d8590">步骤 00</text>
+      <text x="30" y="169" font-size="11" fill="#c9d1d9">初始化 · 解析</text>
+    </g>
+    <g>
+      <rect class="chip" x="166" y="136" width="136" height="44" rx="7"
+            fill="#161b22" stroke="#30363d" style="animation-delay:0.5s"/>
+      <text x="176" y="152" font-size="9" fill="#7d8590">步骤 01</text>
+      <text x="176" y="169" font-size="11" fill="#c9d1d9">资料清单</text>
+    </g>
+    <g>
+      <rect class="chip" x="312" y="136" width="136" height="44" rx="7"
+            fill="#161b22" stroke="#30363d" style="animation-delay:1s"/>
+      <text x="322" y="152" font-size="9" fill="#7d8590">步骤 02</text>
+      <text x="322" y="169" font-size="11" fill="#c9d1d9">提取 + 索引</text>
+    </g>
+    <g>
+      <rect class="chip" x="458" y="136" width="136" height="44" rx="7"
+            fill="#161b22" stroke="#30363d" stroke-dasharray="3 3" style="animation-delay:1.5s"/>
+      <text x="468" y="152" font-size="9" fill="#7d8590">步骤 03</text>
+      <text x="468" y="169" font-size="11" fill="#c9d1d9">指标体系</text>
+      <text class="gate" x="578" y="152" font-size="9" fill="#d29922" style="animation-delay:1.5s">◆</text>
+    </g>
+    <g>
+      <rect class="chip" x="604" y="136" width="136" height="44" rx="7"
+            fill="#161b22" stroke="#30363d" style="animation-delay:2s"/>
+      <text x="614" y="152" font-size="9" fill="#7d8590">步骤 04</text>
+      <text x="614" y="169" font-size="11" fill="#c9d1d9">分值分配</text>
+    </g>
+    <g>
+      <rect class="chip" x="604" y="188" width="136" height="44" rx="7"
+            fill="#161b22" stroke="#30363d" style="animation-delay:2.5s"/>
+      <text x="614" y="204" font-size="9" fill="#7d8590">步骤 05</text>
+      <text x="614" y="221" font-size="11" fill="#c9d1d9">评分标准</text>
+    </g>
+    <g>
+      <rect class="chip" x="458" y="188" width="136" height="44" rx="7"
+            fill="#161b22" stroke="#30363d" stroke-dasharray="3 3" style="animation-delay:3s"/>
+      <text x="468" y="204" font-size="9" fill="#7d8590">步骤 06</text>
+      <text x="468" y="221" font-size="11" fill="#c9d1d9">指标表</text>
+      <text class="gate" x="578" y="204" font-size="9" fill="#d29922" style="animation-delay:3s">◆</text>
+    </g>
+    <g>
+      <rect class="chip" x="312" y="188" width="136" height="44" rx="7"
+            fill="#161b22" stroke="#30363d" style="animation-delay:3.5s"/>
+      <text x="322" y="204" font-size="9" fill="#7d8590">步骤 07</text>
+      <text x="322" y="221" font-size="11" fill="#c9d1d9">评分 + 理由</text>
+    </g>
+    <g>
+      <rect class="chip" x="166" y="188" width="136" height="44" rx="7"
+            fill="#161b22" stroke="#30363d" style="animation-delay:4s"/>
+      <text x="176" y="204" font-size="9" fill="#7d8590">步骤 08</text>
+      <text x="176" y="221" font-size="11" fill="#c9d1d9">经验做法</text>
+    </g>
+    <g>
+      <rect class="chip" x="20" y="188" width="136" height="44" rx="7"
+            fill="#161b22" stroke="#30363d" style="animation-delay:4.5s"/>
+      <text x="30" y="204" font-size="9" fill="#7d8590">步骤 09</text>
+      <text x="30" y="221" font-size="11" fill="#c9d1d9">问题 + 成因</text>
+    </g>
+    <g>
+      <rect class="chip" x="20" y="240" width="136" height="44" rx="7"
+            fill="#161b22" stroke="#30363d" style="animation-delay:5s"/>
+      <text x="30" y="256" font-size="9" fill="#7d8590">步骤 10</text>
+      <text x="30" y="273" font-size="11" fill="#c9d1d9">改进建议</text>
+    </g>
+    <g>
+      <rect class="chip" x="166" y="240" width="136" height="44" rx="7"
+            fill="#161b22" stroke="#30363d" stroke-dasharray="3 3" style="animation-delay:5.5s"/>
+      <text x="176" y="256" font-size="9" fill="#7d8590">步骤 11</text>
+      <text x="176" y="273" font-size="11" fill="#c9d1d9">综合评价</text>
+      <text class="gate" x="286" y="256" font-size="9" fill="#d29922" style="animation-delay:5.5s">◆</text>
+    </g>
+    <g>
+      <rect class="chip" x="312" y="240" width="136" height="44" rx="7"
+            fill="#161b22" stroke="#30363d" style="animation-delay:6s"/>
+      <text x="322" y="256" font-size="9" fill="#7d8590">步骤 12</text>
+      <text x="322" y="273" font-size="11" fill="#c9d1d9">基本情况</text>
+    </g>
+    <g>
+      <rect class="chip" x="458" y="240" width="136" height="44" rx="7"
+            fill="#161b22" stroke="#30363d" style="animation-delay:6.5s"/>
+      <text x="468" y="256" font-size="9" fill="#7d8590">步骤 13</text>
+      <text x="468" y="273" font-size="11" fill="#c9d1d9">工作简介</text>
+    </g>
+    <g>
+      <rect class="chip" x="604" y="240" width="136" height="44" rx="7"
+            fill="#161b22" stroke="#30363d" style="animation-delay:7s"/>
+      <text x="614" y="256" font-size="9" fill="#7d8590">步骤 14</text>
+      <text x="614" y="273" font-size="11" fill="#c9d1d9">最终报告</text>
+    </g>
+
+  <g id="dot">
+    <circle r="7" fill="url(#glow)"/>
+    <circle r="3" fill="#58a6ff"/>
+    <animateMotion dur="9s" repeatCount="indefinite" calcMode="linear"
+                   keyTimes="0.0000;0.0556;0.1111;0.1667;0.2222;0.2778;0.3333;0.3889;0.4444;0.5000;0.5556;0.6111;0.6667;0.7222;0.7778;1" keyPoints="0.0000;0.0787;0.1573;0.2360;0.3147;0.3427;0.4213;0.5000;0.5787;0.6573;0.6853;0.7640;0.8427;0.9213;1.0000;1"
+                   path="M88,158 L234,158 L380,158 L526,158 L672,158 L672,210 L526,210 L380,210 L234,210 L88,210 L88,262 L234,262 L380,262 L526,262 L672,262"/>
+  </g>
+
+  <!-- 纯程序能力与出口 -->
+  <path class="lnk march" d="M88,284 V298" marker-end="url(#arw)"/>
+  <path class="lnk march" d="M672,284 V298" marker-end="url(#arw)"/>
+
+  <rect class="box" x="20" y="302" width="470" height="54" rx="8"/>
+  <text class="t1" x="34" y="324">纯程序 · 零 token</text>
+  <text class="t2" x="34" y="342">BM25 检索 · 覆盖度计划 · 锚点解析 · 一致性</text>
+
+  <rect class="box" x="510" y="302" width="230" height="54" rx="8"/>
+  <text class="t1" x="524" y="324">导出</text>
+  <text class="t2" x="524" y="342">Word · PDF · 原生中文</text>
+
+  <text class="t3" x="380.0" y="374" text-anchor="middle">◆ 人工闸门（默认自动放行）· 每步可重跑 · 修复不了交人工复核</text>
+</svg>

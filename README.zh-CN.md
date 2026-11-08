@@ -18,7 +18,7 @@
 
 [快速开始](#快速开始) · [运行流程](#运行流程) · [API 参考](./docs/API.md) · [贡献指南](./CONTRIBUTING.md) · [安全策略](./SECURITY.md)
 
-![动态运行流程图：上传资料 → FastAPI → LangGraph 15 节点状态图 → 人工闸门 → 纯程序校验 → Word/PDF 导出](docs/assets/workflow.svg)
+![动态运行流程图：上传资料 → FastAPI → LangGraph 15 节点状态图 → 人工闸门 → 纯程序校验 → Word/PDF 导出](docs/assets/workflow.zh-CN.svg)
 
 <sub>上图扫过的顺序就是真实执行顺序——15 个节点、3 个人工闸门，以及一层从不调用模型的校验。</sub>
 
@@ -296,7 +296,9 @@ AI_Grade/
 │   └── rag_eval/                      # 检索评估基线（语料 + 样本 + 阈值）
 ├── docs/
 │   ├── API.md                         # 完整接口参考
-│   └── assets/workflow.svg            # 上面那张动态流程图
+│   └── assets/
+│       ├── workflow.zh-CN.svg         # 中文流程图（上面那张）
+│       └── workflow.svg               # 英文流程图（README.md 使用）
 ├── Dockerfile  docker-entrypoint.sh
 ├── requirements.txt  start_backend.bat  start_backend.ps1
 └── wf_e2e.py  frontend_e2e_check.py   # 端到端验证脚本
