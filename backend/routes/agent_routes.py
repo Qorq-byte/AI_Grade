@@ -6,7 +6,9 @@ import hashlib
 import re
 import json
 import asyncio
+import contextvars
 import os
+import time
 import uuid
 import shutil
 from datetime import datetime, timezone
@@ -28,6 +30,7 @@ from backend.agents.performance_agent import PerformanceAgent
 from backend.agents.tools.export_service import ExportService, ExportStyle, export_report
 from backend.agents.tools.score_validator import actual_indicator_score, indicator_tree_error, score_number
 from backend.services.workflow_evidence import report_evidence_index
+from backend.services import export_cache
 from backend.agents.tools.questionnaire_gen import QuestionnaireGenerator, generate_default_questionnaire, indicator_leaves
 from backend.agents.prompts.default_prompts import STEP_META
 from backend.utils.llm_helper import get_supported_models
@@ -600,8 +603,12 @@ async def upload_files_batch(
 # ═══════════════════════════════════════════════════════
 
 # 全局进度跟踪（用于SSE轮询模式）
-_WORKFLOW_PROGRESS: Dict[str, Dict] = {}
-SSE_HEARTBEAT_SECONDS = 10
+# 迁移到 progress_bus，agent 与 routes 共享同一字典，解除 agent → routes 反向依赖
+from backend.services import progress_bus
+
+_WORKFLOW_PROGRESS = progress_bus.PROXY
+SSE_HEARTBEAT_SECONDS = 15
+SSE_POLL_INTERVAL = 0.1
 
 # 问卷缓存（用于 list 端点和跨请求访问）
 _QUESTIONNAIRE_CACHE: Dict[str, Dict] = {}
@@ -617,10 +624,15 @@ _NODE_TO_STEP = {
 }
 
 
-def _make_sse_event(event_type: str, data: dict) -> str:
-    """构建SSE事件字符串"""
-    payload = {"event": event_type, **data, "timestamp": datetime.now().isoformat()}
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+def _make_sse_event(event_type: str, data: dict, seq: int = 0) -> str:
+    """构建SSE事件字符串
+
+    带 seq 时输出 `id: {seq}`，浏览器断线后可携带 Last-Event-ID 续传；
+    不带 seq 时保持原格式（兼容旧客户端与单元测试）。
+    """
+    payload = {"event": event_type, **data, "timestamp": datetime.now().isoformat(), "seq": seq or 0}
+    body = f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    return f"id: {seq}\n{body}" if seq else body
 
 
 def _get_or_create_workflow(session_id: str, params: dict) -> tuple:
@@ -742,7 +754,9 @@ def _launch_workflow(session_id, workflow, initial_state, retry_step=None):
             progress["status"] = status
             _WORKFLOW_PROGRESS.pop(session_id, None)
 
-    asyncio.get_running_loop().run_in_executor(None, _run_workflow)
+    # run_in_executor 不会复制 contextvars，手动带过去，否则工作流线程里的日志丢掉 request_id
+    _ctx = contextvars.copy_context()
+    asyncio.get_running_loop().run_in_executor(None, lambda: _ctx.run(_run_workflow))
 
     return progress
 
@@ -782,6 +796,7 @@ async def start_workflow_stream(request: WorkflowRequest, user: User = Depends(g
         "step_control": {"language_style": request.language_style or "中立"},
     }
 
+    progress_bus.begin(session_id)
     progress = _launch_workflow(session_id, workflow, initial_state)
 
     async def _event_generator():
@@ -792,12 +807,32 @@ async def start_workflow_stream(request: WorkflowRequest, user: User = Depends(g
         loop = asyncio.get_running_loop()
         heartbeat_at = loop.time()
         questionnaire_emitted = False
+        seq = 0
+
+        def emit(event_type: str, data: dict) -> str:
+            """统一出口：向总线申请序号并写入补发缓冲，保证与续传端点共用同一序列"""
+            nonlocal seq
+            seq = progress_bus.next_seq(session_id)
+            frame = _make_sse_event(event_type, data, seq)
+            progress_bus.record_frame(session_id, seq, frame)
+            return frame
+
         try:
             yield ": connected\n\n"
             while True:
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(SSE_POLL_INTERVAL)
                 p = progress
                 status = p["status"]
+                emitted_any = False
+
+                # 转发 LLM token 增量（真正的逐字流）
+                for step_no, delta in progress_bus.drain_deltas(session_id):
+                    emitted_any = True
+                    yield emit("token_delta", {
+                        "session_id": session_id,
+                        "step_number": step_no,
+                        "delta": delta,
+                    })
 
                 # 发射新完成的步骤
                 for sn in range(1, 15):
@@ -807,14 +842,16 @@ async def start_workflow_stream(request: WorkflowRequest, user: User = Depends(g
                     step_name = STEP_META.get(sn, {}).get("name", f"步骤{sn}")
                     if sn not in emitted_starts and (sn in p["started_steps"] or sr):
                         emitted_starts.add(sn)
-                        yield _make_sse_event("step_start", {
+                        emitted_any = True
+                        yield emit("step_start", {
                             "step_number": sn, "step_name": step_name,
                             "session_id": session_id, "status": "running",
                         })
                     if sr:
                         step_content = sr.get("content", "") or ""
                         preview = step_content[:300]
-                        yield _make_sse_event("step_complete", {
+                        emitted_any = True
+                        yield emit("step_complete", {
                             "step_number": sn, "step_name": step_name,
                             "session_id": session_id, "content_preview": preview,
                             "content": step_content, "evidence": sr.get("evidence", []),
@@ -822,7 +859,8 @@ async def start_workflow_stream(request: WorkflowRequest, user: User = Depends(g
                         emitted_steps.add(sn)
 
                         total_estimated_tokens += max(len(step_content) // 3, 1)
-                        yield _make_sse_event("token_update", {
+                        emitted_any = True
+                        yield emit("token_update", {
                             "tokens_used": total_estimated_tokens,
                             "step_number": sn,
                             "session_id": session_id,
@@ -830,7 +868,8 @@ async def start_workflow_stream(request: WorkflowRequest, user: User = Depends(g
 
                         # 步骤6完成后，发送问卷可生成事件
                         if sn == 6 and not questionnaire_emitted:
-                            yield _make_sse_event("questionnaire_ready", {
+                            emitted_any = True
+                            yield emit("questionnaire_ready", {
                                 "session_id": session_id,
                                 "message": "评价指标体系表已生成，可以创建调查问卷了",
                             })
@@ -839,7 +878,7 @@ async def start_workflow_stream(request: WorkflowRequest, user: User = Depends(g
                 # 完成或错误
                 if status == "completed":
                     final = p.get("final_report", "")
-                    yield _make_sse_event("complete", {
+                    yield emit("complete", {
                         "session_id": session_id,
                         "completed_steps": sorted(emitted_steps),
                         "has_error": p.get("has_error", False),
@@ -849,14 +888,14 @@ async def start_workflow_stream(request: WorkflowRequest, user: User = Depends(g
                     break
                 elif status == "paused":
                     step = p["approval_step"]
-                    yield _make_sse_event("waiting_approval", {
+                    yield emit("waiting_approval", {
                         "session_id": session_id, "approval_step": step,
                         "step_name": STEP_META.get(step, {}).get("name", ""),
                         "content_preview": p["step_results"].get(str(step), {}).get("content", "")[:500],
                     })
                     break
                 elif status == "failed":
-                    yield _make_sse_event("error", {
+                    yield emit("error", {
                         "step_number": p["current_step"] or -1,
                         "step_name": STEP_META.get(p["current_step"], {}).get("name", "系统错误"),
                         "message": p.get("error_message", "工作流执行失败"),
@@ -864,9 +903,13 @@ async def start_workflow_stream(request: WorkflowRequest, user: User = Depends(g
                     })
                     break
 
-                if loop.time() - heartbeat_at >= SSE_HEARTBEAT_SECONDS:
+                # 仅在本次循环没有产生任何事件时补心跳，避免与真实事件抢帧；
+                # 首个步骤启动前给 30s 宽限期，避免刚建连就涌入心跳。
+                started_any = bool(p.get("started_steps"))
+                idle_for = loop.time() - heartbeat_at
+                if not emitted_any and idle_for >= SSE_HEARTBEAT_SECONDS + (0 if started_any else 30):
                     heartbeat_at = loop.time()
-                    yield ": heartbeat\n\n"
+                    yield ": ping " + str(int(time.time() * 1000)) + "\n\n"
 
         except Exception as e:
             err_msg = str(e)[:500]
@@ -881,13 +924,133 @@ async def start_workflow_stream(request: WorkflowRequest, user: User = Depends(g
                 friendly = f"参数错误：{err_msg}"
             else:
                 friendly = f"系统异常：{err_msg}"
-            yield _make_sse_event("error", {
+            yield emit("error", {
                 "step_number": -1, "step_name": "系统错误",
                 "message": friendly, "session_id": session_id,
             })
+        finally:
+            progress_bus.detach_consumer(session_id)
 
+    # 在返回响应体之前登记消费者，确保工作流线程一开始就能判断「有人收听」并走流式
+    progress_bus.attach_consumer(session_id)
     return StreamingResponse(
         _event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
+        }
+    )
+
+
+@router.get("/workflow/{session_id}/stream")
+async def resume_workflow_stream(session_id: str, request: Request,
+                                 user: User = Depends(get_current_user),
+                                 db: Session = Depends(get_db)):
+    """断线续传：按 Last-Event-ID 补发最近未收到的帧，并继续观测执行状态。
+
+    仅补发内存中的最近 SSE_Replay 窗口（默认 400 帧），更早的历史以状态接口为准。
+    说明：续传连接不接收 token_delta（增量只推给首个消费者），步骤正文在
+    step_complete 事件与状态接口中都有完整内容。
+    """
+    _require_workflow(session_id, user, db)
+    last_event_id = 0
+    raw_header = request.headers.get("Last-Event-ID") or request.query_params.get("last_event_id")
+    if raw_header:
+        try:
+            last_event_id = int(raw_header)
+        except (TypeError, ValueError):
+            last_event_id = 0
+
+    async def _replay_generator():
+        seq_cursor = last_event_id
+        sent_steps = set()
+        terminal_seen = False
+
+        def _parse(frame: str):
+            try:
+                body = frame.split("data:", 1)[1].strip()
+                return json.loads(body)
+            except Exception:
+                return None
+
+        # 1) 补发内存缓冲中漏掉的帧
+        for seq, frame in progress_bus.frames_since(session_id, last_event_id):
+            seq_cursor = max(seq_cursor, seq)
+            event = _parse(frame)
+            if event:
+                if event.get("event") == "step_complete":
+                    sent_steps.add(event.get("step_number"))
+                if event.get("event") in {"complete", "error", "waiting_approval"}:
+                    terminal_seen = True
+            yield frame
+        if terminal_seen:
+            return
+
+        def emit(event_type: str, data: dict) -> str:
+            nonlocal seq_cursor
+            seq = progress_bus.next_seq(session_id)
+            seq_cursor = max(seq_cursor, seq)
+            frame = _make_sse_event(event_type, data, seq)
+            progress_bus.record_frame(session_id, seq, frame)
+            return frame
+
+        def emit_terminal(progress: dict):
+            status = progress.get("status")
+            if status == "completed":
+                return emit("complete", {
+                    "session_id": session_id,
+                    "completed_steps": sorted(int(s) for s in progress.get("step_results", {})),
+                    "has_error": progress.get("has_error", False),
+                    "final_report_preview": (progress.get("final_report") or "")[:2000],
+                    "resumed": True,
+                })
+            if status == "paused":
+                step = progress.get("approval_step")
+                return emit("waiting_approval", {
+                    "session_id": session_id, "approval_step": step,
+                    "step_name": STEP_META.get(step, {}).get("name", ""),
+                    "content_preview": progress.get("step_results", {}).get(str(step), {}).get("content", "")[:500],
+                    "resumed": True,
+                })
+            return emit("error", {
+                "step_number": -1, "step_name": "系统错误",
+                "message": progress.get("error_message", "工作流执行失败"),
+                "session_id": session_id, "resumed": True,
+            })
+
+        # 2) 从当前进度续接：补发断线期间完成的步骤
+        while True:
+            progress = progress_bus.get_progress(session_id)
+            if progress is None:
+                yield f": ping {int(time.time() * 1000)}\n\n"
+                return
+            for sn_key in sorted(progress.get("step_results", {}), key=lambda k: int(k)):
+                sn = int(sn_key)
+                if sn in sent_steps:
+                    continue
+                sent_steps.add(sn)
+                sr = progress["step_results"][sn_key]
+                content = sr.get("content", "") or ""
+                yield emit("step_complete", {
+                    "step_number": sn,
+                    "step_name": STEP_META.get(sn, {}).get("name", f"步骤{sn}"),
+                    "session_id": session_id,
+                    "content_preview": content[:300],
+                    "content": content,
+                    "evidence": sr.get("evidence", []),
+                    "resumed": True,
+                })
+            if progress.get("status") in {"completed", "failed", "paused"}:
+                yield emit_terminal(progress)
+                return
+            yield f": ping {int(time.time() * 1000)}\n\n"
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(
+        _replay_generator(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -987,6 +1150,11 @@ async def get_workflow_status(session_id: str, db: Session = Depends(get_db), af
             "step_number": step, "step_name": result.get("step_name") or STEP_META.get(step, {}).get("name", ""),
             "status": "completed", "content_preview": content[:200], "version": result.get("version", 1),
         }
+        # 结构化输出的判定（仅步骤 3/4/7 有）：manual_review 表示模型输出未通过 JSON 校验，需人工复核
+        if result.get("structured_status"):
+            summary["structured_status"] = result["structured_status"]
+        if result.get("structured_errors"):
+            summary["structured_errors"] = result["structured_errors"]
         if after_step is not None and step > after_step:
             summary["content"] = content
             summary["evidence"] = values.get("step_evidence", {}).get(str(step), [])
@@ -1000,7 +1168,67 @@ async def get_workflow_status(session_id: str, db: Session = Depends(get_db), af
         "retryable": status == "failed" and any(task.error for task in tasks),
         "review_steps": values.get("review_steps", []), "step_summaries": summaries,
         "errors": values.get("errors", []), "warnings": values.get("warnings", []),
+        # 提示词用到了多少资料：前端据此展示「资料覆盖度」徽标
+        "document_coverage": values.get("document_coverage", {}) or {},
+        # 步骤间一致性检查结果（纯程序，不调模型）：前端据此展示结论徽标与问题清单
+        "consistency": _consistency_report(values),
+        # 步骤 7 逐指标评分处置台账：区分「已落地 / 模型判定资料不足 / 引用无法定位 / 未提及」
+        # 老会话（本字段上线前跑的）没有这项，返回空对象，前端不展示徽标
+        "score_disposition": values.get("score_disposition", {}) or {},
     })
+
+
+def _raw_workflow_values(session_id: str) -> dict:
+    """与 status 接口同源的原始状态。
+
+    刻意**不**复用 `_get_workflow_values`：那个函数会给缺失 id 的指标补上「按名称拼」的
+    id，而 `indicator_score_map` 是按真实 id 存的；两套 id 混用会让一致性检查误报
+    「落库得分已过期」。
+    """
+    workflow = active_workflows.get(session_id)
+    snapshot = workflow.get_state({"configurable": {"thread_id": session_id}}) if workflow else None
+    values = dict(getattr(snapshot, "values", {}) or PerformanceAgent.load_state_backup(session_id))
+    if not values:
+        raise HTTPException(status_code=404, detail="工作流状态不存在")
+    return values
+
+
+def _consistency_report(values: dict) -> dict:
+    """报告已生成时按当前状态现算一致性（0.4ms 级，纯程序）。
+
+    不直接返回落库的 `consistency`：用户改过分值或重存过报告后，旧结论会与眼前这份报告
+    对不上——那正是这个功能要防的事。报告还没生成时没有可检查的对象，原样透传。
+    """
+    from backend.services import consistency
+
+    if not (values.get("final_report") or "").strip():
+        return values.get("consistency", {}) or {}
+    return consistency.check_consistency(values)
+
+
+@router.post("/workflow/{session_id}/consistency-check", dependencies=[Depends(_require_path_workflow)])
+async def rerun_consistency_check(session_id: str):
+    """按当前状态重跑步骤间一致性检查。
+
+    用在两类场景：工作流早于本功能上线（没有 consistency 字段）；或用户手改过
+    分值/章节后想确认报告里的数字还对不对。纯程序计算，不调用模型、不花 token，
+    结果会写回状态与备份，但不修改任何产出物内容。
+    """
+    from backend.services import consistency
+
+    try:
+        values = _raw_workflow_values(session_id)
+        report = consistency.check_consistency(values)
+        _persist_state(session_id, {"consistency": report})
+        return {"success": True, "data": {
+            "consistency": report,
+            "summary": consistency.summary_line(report),
+        }}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"一致性检查失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 class RetryWorkflowRequest(BaseModel):
@@ -1259,6 +1487,35 @@ def _export_base_dir(user: User) -> str:
     return os.path.join("backend", ExportService.EXPORT_DIR, str(user.id))
 
 
+def _export_with_cache(*, user: User, session_id: str, target: str, content: str,
+                       file_label: str, fmt: str, style: ExportStyle,
+                       title: str) -> tuple[str, bool]:
+    """带幂等的导出：同一内容 + 同一排版 + 同一格式在 10 分钟内只渲染一次。
+
+    返回 (文件路径, 是否复用已有文件)。幂等键不含时间戳，所以「连点三次导出」
+    只会真正渲染一次，后两次直接返回第一次的文件路径。
+    """
+    key = export_cache.cache_key(
+        user.id, session_id, target, fmt, export_cache.style_fingerprint(style)
+    )
+    content_hash = export_cache.content_fingerprint(content)
+    cached_path = export_cache.lookup(key, content_hash)
+    if cached_path:
+        logger.info(f"导出命中幂等缓存，复用文件: {os.path.basename(cached_path)}")
+        return cached_path, True
+
+    if fmt == "pdf":
+        file_path = ExportService.export_to_pdf(
+            content, file_label, style, base_dir=_export_base_dir(user), title=title
+        )
+    else:
+        file_path = ExportService.export_to_word(
+            content, file_label, style, base_dir=_export_base_dir(user), title=title
+        )
+    export_cache.store(key, content_hash, file_path)
+    return file_path, False
+
+
 @router.get("/download/{file_name}")
 async def download_export_file(file_name: str, user: User = Depends(get_current_user)):
     """
@@ -1310,21 +1567,18 @@ async def export_workflow_report(request: ExportRequest, user: User = Depends(ge
             file_label = f"{project_name}_步骤{request.step_number}_{step_name}"
             content = request.step_content
 
-            if fmt == "pdf":
-                file_path = ExportService.export_to_pdf(
-                    content, file_label, style, base_dir=_export_base_dir(user), title=f"{project_name} - {step_name}"
-                )
-            else:
-                file_path = ExportService.export_to_word(
-                    content, file_label, style, base_dir=_export_base_dir(user), title=f"{project_name} - {step_name}"
-                )
+            file_path, reused = _export_with_cache(
+                user=user, session_id=session_id, target=f"step:{request.step_number}",
+                content=content, file_label=file_label, fmt=fmt, style=style,
+                title=f"{project_name} - {step_name}",
+            )
 
             file_name = os.path.basename(file_path)
-            logger.info(f"步骤{request.step_number}导出成功: {file_name}")
+            logger.info(f"步骤{request.step_number}导出成功: {file_name}（reused={reused}）")
             return AgentResponse(success=True, data={
                 "session_id": session_id, "file_path": file_path,
                 "file_name": file_name, "format": fmt,
-                "step_number": request.step_number,
+                "step_number": request.step_number, "reused": reused,
             }, message=f"步骤{request.step_number}导出成功")
 
         if _report_review_steps(session_id):
@@ -1334,21 +1588,19 @@ async def export_workflow_report(request: ExportRequest, user: User = Depends(ge
         if not report_content:
             raise HTTPException(status_code=400, detail="报告内容为空，请确认工作流已完成")
 
-        if fmt == "pdf":
-            file_path = ExportService.export_to_pdf(
-                report_content, project_name, style, base_dir=_export_base_dir(user), title=project_name
-            )
-        else:
-            file_path = ExportService.export_to_word(
-                report_content, project_name, style, base_dir=_export_base_dir(user), title=project_name
-            )
+        file_path, reused = _export_with_cache(
+            user=user, session_id=session_id, target="report",
+            content=report_content, file_label=project_name, fmt=fmt, style=style,
+            title=project_name,
+        )
 
         file_name = os.path.basename(file_path)
-        logger.info(f"报告导出成功: {file_name}")
+        logger.info(f"报告导出成功: {file_name}（reused={reused}）")
         return AgentResponse(success=True, data={
             "session_id": session_id, "file_path": file_path,
-            "file_name": file_name, "format": fmt,
-        }, message="报告导出成功")
+            "file_name": file_name, "format": fmt, "reused": reused,
+        }, message="报告导出成功" if not reused else "已复用上次导出的文件")
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1415,25 +1667,21 @@ async def export_step_content(request: ExportStepRequest, user: User = Depends(g
         step_name = STEP_META.get(step_number, {}).get("name", f"步骤{step_number}")
         file_label = f"{project_name}_步骤{step_number}_{step_name}"
 
-        if fmt == "pdf":
-            file_path = ExportService.export_to_pdf(
-                step_content, file_label, style, base_dir=_export_base_dir(user),
-                title=f"{project_name} - {step_name}"
-            )
-        else:
-            file_path = ExportService.export_to_word(
-                step_content, file_label, style, base_dir=_export_base_dir(user),
-                title=f"{project_name} - {step_name}"
-            )
+        file_path, reused = _export_with_cache(
+            user=user, session_id=session_id, target=f"step:{step_number}",
+            content=step_content, file_label=file_label, fmt=fmt, style=style,
+            title=f"{project_name} - {step_name}",
+        )
 
         file_name = os.path.basename(file_path)
-        logger.info(f"步骤{step_number}导出成功: {file_name}")
+        logger.info(f"步骤{step_number}导出成功: {file_name}（reused={reused}）")
         return AgentResponse(success=True, data={
             "session_id": session_id,
             "file_path": file_path,
             "file_name": file_name,
             "format": fmt,
             "step_number": step_number,
+            "reused": reused,
         }, message=f"步骤{step_number} {step_name} 导出成功")
     except HTTPException:
         raise
@@ -2012,6 +2260,10 @@ async def save_indicator_scores(req: BatchIndicatorScoreRequest):
         _persist_state(req.session_id, {
             "indicator_score_map": score_map,
             "score_table": score_table,
+            # 人工改过分值后台账必须跟着变，否则界面继续显示旧的「7/23 已落地」
+            "score_disposition": performance_agent.refresh_disposition(
+                values.get("score_disposition") or {}, score_map, list(indicators)
+            ),
             "review_steps": _review_after(values, 7),
         })
 
@@ -2295,6 +2547,9 @@ async def get_score_summary(
             "score_100": score_100,
             "grade": grade,
             "missing_count": missing,
+            # 缺失原因的分项口径（新增字段，向后兼容）：只有 missing_count 无法回答
+            # 「是模型看过资料说没法评，还是系统把评分丢了」——实测这两种差 16 倍
+            "disposition": values.get("score_disposition", {}) or {},
             "thresholds": {"excellent": excellent, "good": good, "medium": medium},
             "level1_scores": level1_scores,
             "chart_data": chart_data,

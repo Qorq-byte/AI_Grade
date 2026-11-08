@@ -1,0 +1,284 @@
+{
+  "recorded_at": "2026-11-07",
+  "retriever": "workflow_evidence.retrieve_step_evidence（BM25 + 中文二元组，查询=步骤意图，项目≤3 条 + 知识≤2 条）",
+  "mode": {
+    "query": "step_intent",
+    "project_limit": 3
+  },
+  "corpus": {
+    "docs": 7,
+    "chunks": 271,
+    "chars": 9925
+  },
+  "metrics": {
+    "samples": 29,
+    "recall": {
+      "@1": 0.3448,
+      "@3": 0.4483,
+      "@5": 0.4483
+    },
+    "mrr": 0.3908,
+    "precision": 0.1609,
+    "empty_rate": 0.0,
+    "returned_avg": 3.0,
+    "evidence_chars_avg": 93.2,
+    "query_insensitivity": 1.0,
+    "citation_verbatim_rate": 1.0
+  },
+  "per_step": {
+    "1": {
+      "samples": 1,
+      "recall@3": 0.0,
+      "mrr": 0.0,
+      "empty": 0
+    },
+    "2": {
+      "samples": 10,
+      "recall@3": 0.2,
+      "mrr": 0.15,
+      "empty": 0
+    },
+    "3": {
+      "samples": 2,
+      "recall@3": 1.0,
+      "mrr": 0.6667,
+      "empty": 0
+    },
+    "4": {
+      "samples": 1,
+      "recall@3": 0.0,
+      "mrr": 0.0,
+      "empty": 0
+    },
+    "5": {
+      "samples": 2,
+      "recall@3": 0.5,
+      "mrr": 0.25,
+      "empty": 0
+    },
+    "6": {
+      "samples": 1,
+      "recall@3": 1.0,
+      "mrr": 1.0,
+      "empty": 0
+    },
+    "7": {
+      "samples": 3,
+      "recall@3": 0.3333,
+      "mrr": 0.3333,
+      "empty": 0
+    },
+    "8": {
+      "samples": 1,
+      "recall@3": 0.0,
+      "mrr": 0.0,
+      "empty": 0
+    },
+    "9": {
+      "samples": 2,
+      "recall@3": 0.5,
+      "mrr": 0.5,
+      "empty": 0
+    },
+    "10": {
+      "samples": 1,
+      "recall@3": 1.0,
+      "mrr": 1.0,
+      "empty": 0
+    },
+    "11": {
+      "samples": 1,
+      "recall@3": 1.0,
+      "mrr": 1.0,
+      "empty": 0
+    },
+    "12": {
+      "samples": 2,
+      "recall@3": 0.5,
+      "mrr": 0.5,
+      "empty": 0
+    },
+    "13": {
+      "samples": 1,
+      "recall@3": 1.0,
+      "mrr": 1.0,
+      "empty": 0
+    },
+    "14": {
+      "samples": 1,
+      "recall@3": 1.0,
+      "mrr": 1.0,
+      "empty": 0
+    }
+  },
+  "misses": [
+    {
+      "id": "S02",
+      "step": 2,
+      "question": "资金来源构成和分年度下达节奏是什么？",
+      "rank": 0
+    },
+    {
+      "id": "S03",
+      "step": 2,
+      "question": "合同价款是多少、采用什么计价方式？",
+      "rank": 0
+    },
+    {
+      "id": "S04",
+      "step": 2,
+      "question": "计划工期多少天，什么时候开工？",
+      "rank": 0
+    },
+    {
+      "id": "S05",
+      "step": 2,
+      "question": "截至 2025 年 6 月底累计支付了多少资金？",
+      "rank": 0
+    },
+    {
+      "id": "S07",
+      "step": 2,
+      "question": "实际完成的管网长度与目标差多少？",
+      "rank": 0
+    },
+    {
+      "id": "S08",
+      "step": 2,
+      "question": "满意度问卷回收情况和得分是多少？",
+      "rank": 0
+    },
+    {
+      "id": "S09",
+      "step": 2,
+      "question": "项目是否使用了专项债券资金？",
+      "rank": 0
+    },
+    {
+      "id": "S10",
+      "step": 2,
+      "question": "二标段征拆滞后了多久？",
+      "rank": 0
+    },
+    {
+      "id": "S11",
+      "step": 1,
+      "question": "项目是否提供了合同与验收材料？",
+      "rank": 0
+    },
+    {
+      "id": "S14",
+      "step": 4,
+      "question": "合同约定的进度款支付比例是多少？",
+      "rank": 0
+    },
+    {
+      "id": "S16",
+      "step": 5,
+      "question": "设计变更超过多少金额需要重新审批？",
+      "rank": 0
+    },
+    {
+      "id": "S19",
+      "step": 7,
+      "question": "汛期积水点消除目标完成了吗？",
+      "rank": 0
+    },
+    {
+      "id": "S20",
+      "step": 7,
+      "question": "支付凭证缺失涉及多少金额？",
+      "rank": 0
+    },
+    {
+      "id": "S21",
+      "step": 8,
+      "question": "项目在质量管控上有什么可复制的做法？",
+      "rank": 0
+    },
+    {
+      "id": "S23",
+      "step": 9,
+      "question": "进度滞后的直接原因是什么？",
+      "rank": 0
+    },
+    {
+      "id": "S26",
+      "step": 12,
+      "question": "项目基本情况和主要建设内容是什么？",
+      "rank": 0
+    }
+  ],
+  "previous": {
+    "recorded_at": "2026-11-07",
+    "retriever": "workflow_evidence.retrieve_step_evidence（BM25 + 中文二元组，查询=步骤意图，项目≤3 条 + 知识≤2 条）",
+    "metrics": {
+      "samples": 29,
+      "recall": {
+        "@1": 0.3103,
+        "@3": 0.4138,
+        "@5": 0.4138
+      },
+      "mrr": 0.3621,
+      "precision": 0.1494,
+      "empty_rate": 0.0,
+      "returned_avg": 3.0,
+      "evidence_chars_avg": 90.7,
+      "query_insensitivity": 1.0,
+      "citation_verbatim_rate": 1.0
+    },
+    "previous": {
+      "recorded_at": "2026-11-07",
+      "retriever": "workflow_evidence.retrieve_step_evidence（按步骤固定词表打分，项目≤3 条 + 知识≤2 条）",
+      "metrics": {
+        "samples": 29,
+        "recall": {
+          "@1": 0.0345,
+          "@3": 0.1724,
+          "@5": 0.1724
+        },
+        "mrr": 0.0862,
+        "precision": 0.0714,
+        "empty_rate": 0.0345,
+        "returned_avg": 2.83,
+        "evidence_chars_avg": 82.6,
+        "query_insensitivity": 1.0,
+        "citation_verbatim_rate": 1.0
+      }
+    }
+  },
+  "diagnostics": [
+    {
+      "query": "step_intent",
+      "project_limit": 3,
+      "recall@3": 0.4483,
+      "recall@5": 0.4483,
+      "mrr": 0.3908,
+      "precision": 0.1609
+    },
+    {
+      "query": "step_intent",
+      "project_limit": 10,
+      "recall@3": 0.4483,
+      "recall@5": 0.5172,
+      "mrr": 0.4219,
+      "precision": 0.069
+    },
+    {
+      "query": "question",
+      "project_limit": 3,
+      "recall@3": 0.8276,
+      "recall@5": 0.8276,
+      "mrr": 0.7241,
+      "precision": 0.3333
+    },
+    {
+      "query": "question",
+      "project_limit": 10,
+      "recall@3": 0.8276,
+      "recall@5": 0.8966,
+      "mrr": 0.7431,
+      "precision": 0.1475
+    }
+  ]
+}

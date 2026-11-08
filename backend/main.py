@@ -3,9 +3,12 @@ FastAPI应用主入口
 提供后端API服务，支持前端交互
 """
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pathlib import Path
 from loguru import logger
 from datetime import datetime, timedelta
@@ -13,15 +16,21 @@ import sys
 import asyncio
 
 from backend.config import settings
+from backend.middleware.request_context import (
+    RequestContextMiddleware,
+    get_request_id,
+    install_log_context,
+)
 
 # 前端目录（模块级常量）
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 
-# 配置日志
+# 配置日志（rid= 前缀使同一次请求的前后端日志可串联）
+install_log_context()
 logger.remove()
 logger.add(
     sys.stderr,
-    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{extra[request_id]}</cyan> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
     level="DEBUG" if settings.DEBUG else "INFO"
 )
 
@@ -74,23 +83,46 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # 前端需要读取 request_id 以在报错时告知用户/支持人员
+    expose_headers=["X-Request-ID"],
 )
 
+# 请求上下文（最外层）：为每个请求生成/透传 X-Request-ID 并注入日志。
+# 放在 CORS 之后注册 = 更靠外层，保证 CORS 生成的响应同样带上该头。
+app.add_middleware(RequestContextMiddleware)
+
 # 全局异常处理 — 确保所有异常返回JSON而非HTML traceback
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
+# 三类错误体都带 request_id：前端报错时把请求号显示出来，即可用一行日志定位。
+def _rid(request: Request) -> str:
+    return getattr(request.state, "request_id", "") or get_request_id()
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     return JSONResponse(
         status_code=exc.status_code,
-        content={"success": False, "detail": exc.detail},
+        content={"success": False, "detail": exc.detail, "request_id": _rid(request)},
         headers=getattr(exc, "headers", None),
     )
 
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={"success": False, "detail": jsonable_encoder(exc.errors()),
+                 "request_id": _rid(request)},
+    )
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
+    request_id = _rid(request)
     logger.error(f"未处理的异常 [{request.method} {request.url.path}]: {exc}", exc_info=True)
     return JSONResponse(
         status_code=500,
-        content={"success": False, "detail": f"服务器内部错误: {str(exc)}"},
+        content={"success": False, "detail": f"服务器内部错误: {str(exc)}",
+                 "request_id": request_id},
     )
 
 # 导入路由

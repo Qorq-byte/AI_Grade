@@ -294,6 +294,37 @@ r = req("GET", "/api/agent/workflow/questionnaire/list", token=user_token)
 d = body_of(r)
 log(r.status_code == 200 and d.get("success") and isinstance(d.get("data", []), list), "GET 问卷列表", str(d)[:120])
 
+print("=" * 66)
+print("G. 报告页一致性检查（步骤14 徽标与其「重新检查」按钮）")
+print("=" * 66)
+r = req("GET", "/api/agent/workflow/fe-no-such-session/status", token=user_token)
+d = body_of(r)
+# consistency 字段是否随状态返回，由 tests/test_engineering_regressions.py 的
+# test_status_exposes_consistency_report 覆盖；这里只验路由是否按归属拦截而非崩 500。
+log(r.status_code == 404, "GET 非本人会话状态 → 404（不泄露、不 500）", f"status={r.status_code}")
+r = req("POST", "/api/agent/workflow/fe-no-such-session/consistency-check", token=user_token)
+d = body_of(r)
+log(r.status_code == 404, "POST 非本人会话一致性检查 → 404（不泄露、不 500）",
+    f"status={r.status_code} {str(d)[:120]}")
+
+print("=" * 66)
+print("H. 步骤7 评分落地台账（徽标与实际服务的前端代码）")
+print("=" * 66)
+r = req("GET", "/api/agent/workflow/fe-no-such-session/score-summary", token=user_token)
+log(r.status_code == 404, "GET 非本人会话评分汇总 → 404（不泄露、不 500）", f"status={r.status_code}")
+# 徽标是否真的会被浏览器加载到：直接查后端实际服务的 HTML，而不是查磁盘文件
+r = req("GET", "/client", timeout=15)
+html = r.text if r.status_code == 200 else ""
+log("buildScoreDispositionBadge" in html, "/client 服务出的 HTML 含评分落地徽标函数",
+    f"len={len(html)}")
+log("if(sn===7)inner+=buildScoreDispositionBadge();" in html, "步骤7 面板会挂上该徽标")
+log("data.score_disposition" in html, "徽标数据来自 status 的 score_disposition 字段")
+log("模型判定资料不足" in html, "徽标区分「模型判定资料不足」与系统侧原因")
+# 弱定位是 Batch 12 新增的第 7 类：文案里必须能看出「不计入总分」，
+# 否则用户会把它当成已落地评分。
+log("引用可定位到原文行" in html, "徽标识别弱定位（引用只到原文行号）")
+log("不计入总分" in html, "弱定位文案说明不计入总分")
+
 print()
 print("=" * 66)
 print(f"结果: {PASS} 通过 / {FAIL} 失败")

@@ -253,9 +253,76 @@ def main():
     d = bof(r)
     check("GET score-summary", d.get("success"), str(d)[:150])
 
+    # 12.1 步骤间一致性检查：14 步跑完后必须已经落进状态，且能按需重跑
+    r = req("GET", f"/api/agent/workflow/{session_id}/status", token=token)
+    d = bof(r)
+    report = (d.get("data") or {}).get("consistency") or {}
+    check("GET status 带 steps一致性检查结果",
+          bool(report.get("checked")), f"codes={[i.get('code') for i in report.get('issues', [])]}")
+    check("一致性检查覆盖四类检查项",
+          report.get("checked") == ["indicator_allocation", "score_summary",
+                                    "report_text", "steps_and_coverage"],
+          str(report.get("checked")))
+    log(f"一致性结论：错误 {report.get('error_count')} 项 / 提示 {report.get('warning_count')} 项")
+
+    r = req("POST", f"/api/agent/workflow/{session_id}/consistency-check", token=token, json_body={})
+    d = bof(r)
+    rerun = (d.get("data") or {}).get("consistency") or {}
+    check("POST 重跑一致性检查", d.get("success") and bool(rerun.get("checked")), str(d)[:150])
+    check("重跑结论与自动检查一致",
+          len(rerun.get("issues", [])) == len(report.get("issues", [])),
+          f"{len(rerun.get('issues', []))} vs {len(report.get('issues', []))}")
+
     r = req("GET", f"/api/agent/workflow/{session_id}/indicators-for-scoring", token=token)
     d = bof(r)
     check("GET indicators-for-scoring", d.get("success"), str(d)[:150])
+
+    # 12.2 步骤7评分落地台账：区分「模型判定资料不足」与「系统把评分丢了」
+    r = req("GET", f"/api/agent/workflow/{session_id}/status", token=token)
+    d = bof(r)
+    dispo = (d.get("data") or {}).get("score_disposition") or {}
+    check("GET status 带评分落地台账", bool(dispo.get("total")), str(dispo)[:160])
+    counts = dispo.get("counts") or {}
+    check("台账分项计数之和等于指标总数",
+          sum(counts.values()) == dispo.get("total") and dispo.get("total", 0) > 0,
+          f"{counts} total={dispo.get('total')}")
+
+    r = req("GET", f"/api/agent/workflow/{session_id}/score-summary", token=token)
+    d = bof(r)
+    summary = d.get("data") or {}
+    check("GET score-summary 带同一份台账",
+          (summary.get("disposition") or {}).get("total") == dispo.get("total"),
+          f"summary={((summary.get('disposition') or {}).get('total'))} status={dispo.get('total')}")
+    check("台账的已落地分值与 score-summary 合计一致",
+          abs(float(summary.get("total_score") or 0) - float(dispo.get("accepted_score") or 0)) < 0.01,
+          f"summary={summary.get('total_score')} dispo={dispo.get('accepted_score')}")
+    check("已落地项数与 missing_count 互补",
+          int(counts.get("accepted") or 0) + int(summary.get("missing_count") or 0) == int(dispo.get("total") or 0),
+          f"accepted={counts.get('accepted')} missing={summary.get('missing_count')} total={dispo.get('total')}")
+
+    line = dispo.get("summary_line") or ""
+    check("台账结论可直接展示",
+          line.startswith("步骤 7 评分落地") and f"{counts.get('accepted')}/{dispo.get('total')}" in line,
+          line[:160])
+    # 模型可能给出体系里不存在的指标 id（实测有 4/6 条），必须单独记录而不是静默丢弃
+    check("台账单列体系外指标 ID（可为 0，但字段必须在）",
+          isinstance(dispo.get("unmatched"), list), str(type(dispo.get("unmatched"))))
+    if dispo.get("unmatched"):
+        log(f"体系外指标 ID：{[it.get('indicator_id') for it in dispo['unmatched']]}")
+    # 弱定位（引用只落到原文行号）**不得计入总分**：不独立算一遍，
+    # 「accepted_score 只累加 accepted」这条约束就没人守着。
+    _items = dispo.get("items") or {}
+    _expect = round(sum(float(v.get("actual_score") or 0) for v in _items.values()
+                        if isinstance(v, dict) and v.get("status") == "accepted"), 2)
+    check("已落地分值合计只累加 accepted（弱定位不计分）",
+          abs(_expect - float(dispo.get("accepted_score") or 0)) < 0.01,
+          f"独立计算={_expect} 台账={dispo.get('accepted_score')} "
+          f"弱定位={counts.get('anchor_weak')}")
+    system_side = (int(counts.get("anchor_unresolved") or 0) + int(counts.get("score_invalid") or 0)
+                   + int(counts.get("reason_missing") or 0))
+    log(f"评分落地台账：{line}")
+    log(f"系统侧未落地（引用/分值/理由）：{system_side} 项；"
+        f"模型判定资料不足：{counts.get('model_pending')} 项；未提及：{counts.get('not_mentioned')} 项")
 
     r = req("POST", f"/api/agent/workflow/{session_id}/verify-logic", token=token, json_body={})
     d = bof(r)

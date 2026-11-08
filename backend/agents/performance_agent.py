@@ -42,11 +42,13 @@ from backend.agents.tools.score_validator import (
     ScoreValidator, actual_indicator_score, allocation_valid, indicator_tree_error, score_number, validate_indicator_scores,
 )
 from backend.agents.tools.indicator_manager import IndicatorManager
+from backend.agents.tools import structured_output
 from backend.agents.prompts.prompt_manager import get_prompt_manager, TemperatureProfile
 from backend.agents.prompts.default_prompts import STEP_META, PromptTemplateFactory
 from backend.database import SessionLocal
 
 from backend.services.workflow_evidence import retrieve_step_evidence, render_evidence, report_evidence_index
+from backend.services import doc_coverage
 
 
 # ==================== 节点名称常量 ====================
@@ -105,6 +107,96 @@ def _ensure_system_config(state: PerformanceState):
         }
 
 
+# ==================== 步骤 7 评分落地处置口径 ====================
+
+# 一个叶子指标没进 indicator_score_map，原因至少有 6 种，对外必须分开说：
+# 实测一轮真实 14 步里 23 个叶子只落地 2 个，其中 16 个是模型按提示词要求
+# 明确写「待核实」——那是**正确的拒绝**，与「系统把评分丢了」完全不是一回事。
+DISPOSITION_LABELS = {
+    "accepted": "已落地",
+    "model_pending": "模型判定资料不足（待核实）",
+    "anchor_weak": "引用可定位到原文行、但该行未进入检索证据",
+    "anchor_unresolved": "引用无法定位",
+    "score_invalid": "分值不合法",
+    "reason_missing": "缺少评分理由",
+    "not_mentioned": "模型未提及",
+}
+
+
+def summarize_disposition(items: Dict[str, Dict[str, Any]],
+                          unmatched: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """把逐指标的处置结果汇总成可展示的台账（含一行可直接写进正文/告警的结论）。
+
+    `unmatched` 是模型给了分、但指标 id 不在当前体系内的条目（实测真实一轮里 6 条评分
+    有 4 条是这种）。它们不进 `items`（那份台账按叶子指标建），但必须单独计数——
+    否则「模型编了 id」和「模型没提这个指标」在对外口径里长得一模一样。
+    """
+    unmatched = list(unmatched or [])
+    if not items and not unmatched:
+        return {}
+    counts = {key: 0 for key in DISPOSITION_LABELS}
+    accepted_score = 0.0
+    for item in items.values():
+        status = item.get("status")
+        counts[status] = counts.get(status, 0) + 1
+        if status == "accepted":
+            value = score_number(item.get("actual_score"))
+            if value is not None:
+                accepted_score += value
+    total = len(items)
+    accepted = counts.get("accepted", 0)
+    reasons = [
+        f"{label} {counts[key]} 项"
+        for key, label in DISPOSITION_LABELS.items()
+        if key != "accepted" and counts.get(key)
+    ]
+    line = (f"步骤 7 评分落地 {accepted}/{total} 项"
+            f"（已落地分值合计 {round(accepted_score, 2)} 分）")
+    if reasons:
+        line += "：" + "、".join(reasons)
+    if unmatched:
+        keys = [str(item.get("indicator_id") or "") for item in unmatched]
+        shown = "、".join(keys[:5]) + ("等" if len(keys) > 5 else "")
+        line += f"；另有 {len(unmatched)} 条评分对应的指标 ID 不在当前指标体系内（{shown}）"
+    return {
+        "step": 7,
+        "total": total,
+        "counts": counts,
+        "accepted_score": round(accepted_score, 2),
+        "summary_line": line,
+        "items": items,
+        "unmatched": unmatched,
+    }
+
+
+def refresh_disposition(previous: Dict[str, Any], score_map: Dict[str, Any],
+                        leaf_ids: List[str]) -> Dict[str, Any]:
+    """人工改过评分后，把处置台账对齐到当前 `score_map`。
+
+    只改「已落地」这一栏，不重算「为什么没落地」——那个原因只有步骤 7 当时知道，
+    事后重新推断等于编。这样人工补分后界面不会继续显示旧结论（Batch 9 踩过同类坑：
+    status 返回落库旧结论，徽标还是绿的）。
+    """
+    items = dict((previous or {}).get("items") or {})
+    for leaf_id in leaf_ids:
+        entry = score_map.get(leaf_id)
+        if entry:
+            items[leaf_id] = {
+                "status": "accepted",
+                "actual_score": score_number(entry.get("actual_score")),
+                "evidence": entry.get("evidence_id"),
+                "evidence_anchor": entry.get("evidence_anchor"),
+                "note": "沿用已有评分" if entry.get("source") == "project_evidence" else "人工补分",
+            }
+        elif leaf_id in items:
+            if items[leaf_id].get("status") == "accepted":
+                items[leaf_id] = {"status": "not_mentioned", "note": "人工移除后未再赋分"}
+        else:
+            items[leaf_id] = {"status": "not_mentioned"}
+    # unmatched 记录的是「模型给了体系里不存在的 id」，人工补分不会让这些 id 变合法，原样保留
+    return summarize_disposition(items, (previous or {}).get("unmatched"))
+
+
 # ==================== PerformanceAgent ====================
 
 class PerformanceAgent:
@@ -145,13 +237,26 @@ class PerformanceAgent:
         self.comparison_mode = comparison_mode
         self.temperature_profile = temperature_profile
 
+        # 档位真正生效：temperature / top_p 由档位决定，请求参数只在档位为普通时作为覆盖
+        profile_params = {
+            TemperatureProfileEnum.PRECISE: (0.3, 0.5),
+            TemperatureProfileEnum.NORMAL: (0.7, 0.9),
+            TemperatureProfileEnum.CREATIVE: (0.9, 0.95),
+        }
+        profile_temp, profile_top_p = profile_params.get(
+            self.temperature_profile, (temperature, top_p)
+        )
+        if self.temperature_profile is TemperatureProfileEnum.NORMAL:
+            profile_temp, profile_top_p = temperature, top_p
+        self.temperature, self.top_p = profile_temp, profile_top_p
+
         # BaseAgent（单模型模式）
         try:
             self.base_agent = BaseAgent(
                 session_id=self.session_id,
                 model_name=model_name,
-                temperature=temperature,
-                top_p=top_p,
+                temperature=self.temperature,
+                top_p=self.top_p,
             )
         except Exception as e:
             logger.warning(f"BaseAgent初始化失败: {e}，将使用裸LLM调用")
@@ -208,9 +313,9 @@ class PerformanceAgent:
         execute = getattr(self, f"_node_step{step}")
 
         def run(state: PerformanceState):
-            from backend.routes.agent_routes import _WORKFLOW_PROGRESS
+            from backend.services import progress_bus
 
-            progress = _WORKFLOW_PROGRESS.get(self.session_id)
+            progress = progress_bus.get_progress(self.session_id)
             if progress is not None:
                 if progress["status"] == "retrying" and progress["current_step"] != step:
                     progress["status"] = "running"
@@ -284,6 +389,20 @@ class PerformanceAgent:
             db.close()
 
         full_human_prompt = human_prompt + "\n\n## 可追溯证据\n" + render_evidence(evidence)
+
+        # ── 资料覆盖度：明确告诉模型「这份资料它看到了多少」 ──
+        coverage_note = vars_for_human.get("document_coverage") or ""
+        if coverage_note:
+            full_human_prompt += "\n\n" + coverage_note
+        omitted_digest = vars_for_human.get("omitted_digest") or ""
+        if omitted_digest:
+            full_human_prompt += (
+                "\n\n## 未直接引用部分的要点（程序摘要，仅用于了解全貌）\n"
+                "以下是本次未直接引用进提示词的资料要点。它只能用于理解项目全貌与发现线索，"
+                "**不得当作证据编号引用，也不得把其中的数字直接写进评分理由**；"
+                "需要引用具体事实时，只能使用上方「可追溯证据」中列出的原文与编号。\n"
+                + omitted_digest
+            )
         if step_number == 7:
             full_human_prompt += (
                 "\n正文后可附 JSON 对象，字段 scores 按指标 ID 映射到"
@@ -338,16 +457,12 @@ class PerformanceAgent:
                         SystemMessage(content=system_prompt),
                         HumanMessage(content=full_human_prompt),
                     ]
-                    response = self.base_agent.llm.invoke(messages, config={"timeout": 300})
-                    self._record_token(response, step_number, state)
-                    return response.content if hasattr(response, 'content') else str(response)
+                    return self._invoke_llm(messages, step_number, state)
                 except Exception as e:
                     logger.warning(f"LLM invoke失败: {e}，回退到合并消息模式")
                     try:
                         combined = system_prompt + "\n\n" + full_human_prompt
-                        response = self.base_agent.llm.invoke(combined, config={"timeout": 300})
-                        self._record_token(response, step_number, state)
-                        return response.content if hasattr(response, 'content') else str(response)
+                        return self._invoke_llm(combined, step_number, state)
                     except Exception as e2:
                         logger.warning(f"LLM合并调用也失败: {e2}，回退到chat方法")
                         res = self.base_agent.chat(full_human_prompt, use_memory=False)
@@ -393,9 +508,7 @@ class PerformanceAgent:
                     SystemMessage(content=system_prompt),
                     HumanMessage(content=full_human_prompt),
                 ]
-                response = self.base_agent.llm.invoke(messages, config={"timeout": 300})
-                self._record_token(response, step_number, state)
-                return response.content if hasattr(response, 'content') else str(response)
+                return self._invoke_llm(messages, step_number, state)
             except Exception as exc:
                 raise RuntimeError("模型调用失败") from exc
 
@@ -404,13 +517,24 @@ class PerformanceAgent:
     def _record_token(self, response, step_number: int, state: PerformanceState):
         """从LLM响应中提取并记录token消耗"""
         try:
-            from backend.services.token_service import extract_token_usage_from_response, record_token_usage
+            from backend.services.token_service import extract_token_usage_from_response
+            self._record_usage(extract_token_usage_from_response(response), step_number, state)
+        except Exception as e:
+            logger.debug(f"Token记录失败(非关键): {e}")
+
+    def _record_usage(self, usage: Dict[str, int], step_number: int, state: PerformanceState,
+                      estimated: bool = False):
+        """把一次调用的用量落库；流转发模式没有 usage 时标注 estimated 并跳过写入"""
+        try:
+            from backend.services.token_service import record_token_usage
             from backend.database import SessionLocal as SL
             from backend.models.user_models import WorkflowSession
 
-            usage = extract_token_usage_from_response(response)
-            total = usage.get("total_tokens", 0)
+            total = int(usage.get("total_tokens", 0) or 0)
             if total <= 0:
+                return
+            if estimated:
+                logger.info(f"[Token] step={step_number} 用量为估算值（流式响应未返回 usage）")
                 return
 
             # 从WorkflowSession获取user_id和project_id
@@ -444,13 +568,241 @@ class PerformanceAgent:
         except Exception as e:
             logger.debug(f"Token记录失败(非关键): {e}")
 
+    @staticmethod
+    def _chunk_text(chunk) -> str:
+        """兼容 content 为 str 或内容块列表两种形态"""
+        content = getattr(chunk, "content", "")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(item.get("text", ""))
+            return "".join(parts)
+        return ""
+
+    def _invoke_llm(self, messages, step_number: int, state: PerformanceState,
+                    timeout: int = 300, stream: Optional[bool] = None) -> str:
+        """调用模型；有 SSE 消费者时走流式，逐块推送 token_delta 后拼成完整结果。
+
+        stream=False 用于「修复重试」这类内部补调：不希望把第二份输出混进前端的逐字流。
+        """
+        from backend.services import progress_bus
+
+        llm = self.base_agent.llm
+        sid = getattr(self, "session_id", "")
+        allow_stream = hasattr(llm, "stream") if stream is None else bool(stream)
+        stream_enabled = bool(sid) and allow_stream and hasattr(llm, "stream") and progress_bus.has_consumer(sid)
+
+        if stream_enabled:
+            try:
+                parts: List[str] = []
+                usage: Dict[str, int] = {}
+                for chunk in llm.stream(messages, config={"timeout": timeout}):
+                    text = self._chunk_text(chunk)
+                    if text:
+                        parts.append(text)
+                        progress_bus.push_delta(sid, step_number, text)
+                    meta = getattr(chunk, "usage_metadata", None)
+                    if meta:
+                        usage = {
+                            "prompt_tokens": int(meta.get("input_tokens", 0) or 0),
+                            "completion_tokens": int(meta.get("output_tokens", 0) or 0),
+                            "total_tokens": int(meta.get("total_tokens", 0) or 0),
+                        }
+                content = "".join(parts)
+                if content.strip():
+                    if usage.get("total_tokens"):
+                        self._record_usage(usage, step_number, state)
+                    else:
+                        self._record_usage(
+                            {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                            step_number, state, estimated=True,
+                        )
+                    return content
+                logger.warning(f"流式返回为空，回退非流式: step={step_number}")
+            except Exception as e:
+                logger.warning(f"流式调用失败，回退非流式: step={step_number}, {e}")
+
+        response = llm.invoke(messages, config={"timeout": timeout})
+        self._record_token(response, step_number, state)
+        return response.content if hasattr(response, "content") else str(response)
+
+    # ─── 长文档覆盖度 ────────────────────────────────────
+
+    # 单步提示词直接引用的原文预算。与原实现的 8000/12000 对齐，避免 token 成本突增；
+    # 超出预算的部分不再「静默消失」，而是变成覆盖度声明 + 要点摘要。
+    DOC_PREVIEW_BUDGET = 8000
+    DOC_FULL_BUDGET = 12000
+    # 这些步骤的模板只用 raw_text_preview（节选），覆盖度声明要按节选字数说，不能报满预算
+    PREVIEW_ONLY_STEPS = frozenset({1})
+
+    # ─── 分类内容（Step2 内容索引）注入预算 ────────────────
+    # effective_data_categorized 是「段落原文按类别重排」，体积≈语料本身
+    # （实测 9,925 字语料 → 10,415 字符 JSON）。步骤 3/7/9/12 都用它，
+    # 原样注入等于把整份语料往四个提示词里各灌一遍，且与同提示词里的原始资料重复。
+    # 因此按类别封顶，并把「没放进来多少」明确写进提示词。
+    CATEGORY_BUDGET = 6000
+    CATEGORY_ITEM_BUDGET = 1500
+    # 预算有限时的取用顺序：先给能决定「项目是什么、钱从哪来、要达成什么」的事实
+    CATEGORY_ORDER = ("项目概况", "资金管理", "绩效目标", "实施过程", "组织管理", "其他")
+    # 这些步骤的模板已经给了 raw_text_full，再注一遍分类内容是同一批字的重复，
+    # 实测（9,925 字语料）可省 4,948 字符/次，且减少「同一段话出现两次」的干扰。
+    CATEGORY_SKIP_STEPS = frozenset({12})
+
+    # ─── 步骤 7 评分落地的处置口径见模块级 DISPOSITION_LABELS ──
+
+    def _categorized_excerpt(self, state: PerformanceState,
+                             total: Optional[int] = None,
+                             per_item: Optional[int] = None,
+                             step_number: Optional[int] = None) -> str:
+        """把 Step2 的分类内容压到预算内，并声明省略了多少。"""
+        if step_number in self.CATEGORY_SKIP_STEPS:
+            return "（本步骤已直接提供原始资料全文，为避免同一批文字重复出现，此处不再重复注入分类内容。）"
+        budget = self.CATEGORY_BUDGET if total is None else total
+        item_budget = self.CATEGORY_ITEM_BUDGET if per_item is None else per_item
+        categorized = state.get("effective_data_categorized") or {}
+        if not isinstance(categorized, dict) or not categorized:
+            return ("（步骤 2 未产出分类内容：未提供可解析的原始资料，或内容索引未建立。"
+                    "本步骤不得据此推断任何项目事实，缺什么就写「资料不足」。）")
+
+        order = list(self.CATEGORY_ORDER) + [
+            name for name in categorized if name not in self.CATEGORY_ORDER
+        ]
+        blocks: List[str] = []
+        used = 0
+        dropped_categories = 0
+        dropped_chars = 0
+        for name in order:
+            text = (categorized.get(name) or "").strip()
+            if not text:
+                continue
+            room = min(item_budget, budget - used)
+            if room <= 0:
+                dropped_categories += 1
+                dropped_chars += len(text)
+                continue
+            shown = text[:room]
+            used += len(shown)
+            if len(shown) < len(text):
+                dropped_chars += len(text) - len(shown)
+                blocks.append(
+                    f"### {name}（共 {len(text)} 字，此处展示前 {len(shown)} 字，"
+                    f"其余 {len(text) - len(shown)} 字未放入本步骤）\n{shown}"
+                )
+            else:
+                blocks.append(f"### {name}（共 {len(text)} 字，全文）\n{shown}")
+
+        if dropped_categories or dropped_chars:
+            blocks.append(
+                f"—— 另有 {dropped_categories} 个类别、共 {dropped_chars} 字未放入本步骤"
+                f"（受本步骤分类资料预算 {budget} 字限制；完整分类内容见步骤 2 产出，"
+                "未看到的部分不要猜测）"
+            )
+        return "\n\n".join(blocks)
+
+    def _step7_material(self, state: PerformanceState) -> str:
+        """步骤 7 提示词里**真实下发**的材料，供引用锚点校验使用。
+
+        必须与 `default_prompts.STEP7_HUMAN_TEMPLATE` 的三项变量同源：
+        evaluation_table_markdown / indicator_system_full_json / effective_data_categorized。
+
+        为什么不能用 `step_evidence["7"]` 单独当校验依据：那个池子只有本步骤检索到的
+        几个 chunk（实测 3 条），而提示词里同时外露着 evaluation_table 内的编号
+        （P1-2-1 / P1-11-1 / P1-14-1 等）与原文小节标题。模型只看得见这整份材料，
+        校验就必须对着这整份材料做，否则会把真实评分判成「证据无效」。
+        """
+        return "\n".join([
+            state.get("evaluation_table") or "",
+            json.dumps(state.get("indicator_system") or {}, ensure_ascii=False),
+            self._categorized_excerpt(state, step_number=7),
+        ])
+
+    def _step7_source_text(self, state: PerformanceState) -> str:
+        """只取「项目资料原文」部分，用于抽小节标题（`一、项目概况` 这一层）。
+
+        为什么不能从 `_step7_material` 里抽标题：那是 evaluation_table +
+        指标体系 JSON + 分类原文的拼接，里面混着**步骤 6 自己生成的** Markdown 标题
+        （实测抽出过 `分值校验`、`资料缺口提示`、`结构化JSON数据供导出WordPDF`）。
+        模型若引用 `资料「分值校验」`，会被判成合法锚点——等于「自己引自己上一步的产物」，
+        与「引用项目资料」不是一回事。
+
+        所以标题与序号只从分类原文抽；材料全文仍用于 `material_id` 校验（编号确实下发过）。
+        """
+        return self._categorized_excerpt(state, step_number=7)
+
+    def _score_disposition_summary(self, items: Dict[str, Dict[str, Any]],
+                                   unmatched: Optional[List[Dict[str, Any]]] = None
+                                   ) -> Dict[str, Any]:
+        """把逐指标的处置结果汇总成可展示的台账（实现见模块级 summarize_disposition）。"""
+        return summarize_disposition(items, unmatched)
+
+    def _document_coverage(self, state: PerformanceState,
+                           step_number: int = 0) -> doc_coverage.CoveragePlan:
+        """整份资料切块 → 按预算取头尾 → 记录未引用部分（同一会话只算一次）。"""
+        cached = getattr(self, "_coverage_plan", None)
+        if cached is not None:
+            return cached
+
+        plan = doc_coverage.build_plan(
+            state.get("all_raw_texts") or {},
+            state.get("raw_text") or "",
+            budget_chars=self.DOC_FULL_BUDGET,
+        )
+        if plan.omitted_chars >= doc_coverage.DIGEST_MIN_CHARS:
+            plan.digest = self._digest_omitted(state, plan, step_number)
+
+        state["document_coverage"] = plan.to_dict()
+        if plan.omitted_chunks:
+            state.setdefault("warnings", []).append(
+                f"资料共 {plan.total_chars} 字，提示词直接引用 {plan.used_chars} 字"
+                f"（{plan.used_ratio * 100:.1f}%），未直接引用 {plan.omitted_chars} 字"
+                + ("，已压缩为要点摘要" if plan.digest else "，未做摘要")
+            )
+        self._coverage_plan = plan
+        return plan
+
+    def _digest_omitted(self, state: PerformanceState, plan: doc_coverage.CoveragePlan,
+                        step_number: int) -> str:
+        """把未直接引用的资料分批压成要点（map-reduce），失败不影响主流程。"""
+        if not getattr(self, "base_agent", None):
+            return ""
+        batches = doc_coverage.digest_batches(plan)
+        parts: List[str] = []
+        covered = 0
+        for batch in batches:
+            try:
+                reply = self._invoke_llm(
+                    doc_coverage.digest_messages(batch), step_number, state,
+                    timeout=120, stream=False,
+                )
+            except Exception as exc:
+                logger.warning(f"[覆盖度] 未引用资料压缩失败：{exc}")
+                break
+            if isinstance(reply, str) and reply.strip():
+                parts.append(reply)
+                covered += len(batch)
+        plan.digest_chars_covered = covered
+        digest = doc_coverage.reduce_digest(parts)
+        if digest:
+            logger.info(f"[覆盖度] 已把 {covered} 字未引用资料压缩为 {len(digest)} 字要点")
+        return digest
+
     def _build_human_vars(self, state: PerformanceState, step_number: int) -> Dict[str, Any]:
         """为Human Prompt模板构建变量"""
+        coverage = self._document_coverage(state, step_number)
+        preview_chars = min(coverage.used_chars, self.DOC_PREVIEW_BUDGET)
+        delivered = preview_chars if step_number in self.PREVIEW_ONLY_STEPS else None
         v = {
             "project_name": state.get("project_name", "未命名项目"),
             "project_type": state.get("project_type", "部门评价"),
-            "raw_text_preview": (state.get("raw_text") or "")[:8000],
-            "raw_text_full": (state.get("raw_text") or "")[:12000],
+            "raw_text_preview": coverage.text(self.DOC_PREVIEW_BUDGET),
+            "raw_text_full": coverage.text(),
+            "document_coverage": coverage.statement(delivered_chars=delivered),
+            "omitted_digest": coverage.digest,
         }
 
         # 数据充足性检测：如果文档为空或极少，在prompt中添加醒目警告
@@ -480,9 +832,7 @@ class PerformanceAgent:
         )
 
         v["cost_list_summary"] = (state.get("cost_list") or "")[:2000]
-        v["effective_data_categorized"] = json.dumps(
-            state.get("effective_data_categorized", {}), ensure_ascii=False, indent=2
-        )
+        v["effective_data_categorized"] = self._categorized_excerpt(state, step_number=step_number)
         cp_idx = state.get("content_index", {})
         v["content_index_summary"] = "\n".join(
             f"- {k[:80]}: {v1}" for k, v1 in list(cp_idx.items())[:30]
@@ -522,7 +872,8 @@ class PerformanceAgent:
 
     # ─── 结果记录 ────────────────────────────────────────
 
-    def _record_step_result(self, state: PerformanceState, step_number: int, content: str):
+    def _record_step_result(self, state: PerformanceState, step_number: int, content: str,
+                            structured: Any = None):
         if not content or not content.strip():
             raise ValueError("步骤未返回有效内容")
         _ensure_step_results(state)
@@ -543,6 +894,20 @@ class PerformanceAgent:
             "created_at": now,
             "updated_at": now,
         }
+        # 结构化输出的判定结果（仅步骤 3/4/7 有），供状态接口与前端展示
+        if structured is not None:
+            status = getattr(structured, "status", None)
+            if status:
+                state["step_results"][step_number]["structured_status"] = status
+            # 修复过就把首次正文单独留档：content 已被替换成修复版本，
+            # 不留这一份就再也查不到「模型第一次到底写了什么、为什么被修掉」。
+            original = getattr(structured, "original", "") or ""
+            if original and original != content:
+                state["step_results"][step_number]["raw_content"] = original
+            if status == "manual_review":
+                state["step_results"][step_number]["structured_errors"] = list(
+                    getattr(structured, "errors", [])[:5]
+                )
 
         sc = state["step_control"]
         sc["current_step"] = step_number
@@ -557,10 +922,10 @@ class PerformanceAgent:
 
         # 发布进度到全局字典，供SSE轮询端点读取
         try:
-            from backend.routes.agent_routes import _WORKFLOW_PROGRESS
+            from backend.services import progress_bus
             sid = state.get("session_id", "")
-            if sid and sid in _WORKFLOW_PROGRESS:
-                p = _WORKFLOW_PROGRESS[sid]
+            p = progress_bus.get_progress(sid) if sid else None
+            if p is not None:
                 p["last_step"] = step_number
                 p["step_results"][str(step_number)] = {
                     "step_name": step_name,
@@ -584,6 +949,14 @@ class PerformanceAgent:
                 "suggestions", "comprehensive_evaluation", "basic_info", "work_introduction",
                 "final_report", "score_summary", "score_validation", "step_evidence",
                 "completed_steps", "warnings", "approvals", "review_steps", "indicator_score_map",
+                "document_coverage", "consistency",
+                # 步骤 3/7/9 提示词的唯一资料入口；不落盘则重启续跑后这几步又看不到资料
+                "effective_data_categorized",
+                # 步骤 7 的逐指标处置台账：不含它，重启后「23 项里为什么只落地 7 项」就查不到了
+                "score_disposition",
+                # 弱定位的行号校验依据。只存行数（几十字节），不存全文；
+                # 不含它则「重启/重放后同一份输入判出不同结果」，验收链条断裂
+                "raw_line_counts",
             )
             backup = {key: state[key] for key in fields if key in state}
             backup["step_results"] = {
@@ -643,6 +1016,10 @@ class PerformanceAgent:
                         extracted[name] = r.get("content", "")
                 state["raw_text"] = "\n\n".join(extracted.values())
                 state["all_raw_texts"] = extracted
+                # 只存「文件名 → 非空行数」的轻量投影（几十字节），用于步骤 7 的弱定位
+                # 行号校验。不存全文：all_raw_texts 可能有几十万字，进备份会把文件撑大。
+                from backend.services import evidence_anchor as _anchor
+                state["raw_line_counts"] = _anchor.doc_line_counts(extracted)
                 state["uploaded_files"] = [{"original_name": re.sub(r"^u\d+_[a-f0-9]{32}_", "", name)}
                                            for name in extracted]
                 logger.info(f"[Init] 处理了 {len(results)} 个文件")
@@ -710,32 +1087,32 @@ class PerformanceAgent:
     def _node_step3(self, state: PerformanceState) -> PerformanceState:
         logger.info("[Step 3] 构建指标体系")
         itype = state.get("indicator_type") or "项目支出指标体系"
-        content = self._execute_step(state, 3)
-        try:
-            isys = json.loads(self._extract_json(content) or "null")
-        except ValueError:
-            isys = None
-        issue = indicator_tree_error(isys)
+        content, outcome = self._execute_step_structured(state, 3)
+        isys = outcome.payload if outcome.ok else None
+        issue = indicator_tree_error(isys) if outcome.ok else outcome.summary()
         if issue:
             state.setdefault("warnings", []).append("步骤 3 待人工复核：" + issue)
             content = "资料不足或指标格式异常，待人工复核：" + issue + "\n\n" + content
         else:
             isys["indicator_type"] = itype
             state["indicator_system"] = isys
-        self._record_step_result(state, 3, content)
+        self._record_step_result(state, 3, content, structured=outcome)
         return state
 
     # Step 4
     def _node_step4(self, state: PerformanceState) -> PerformanceState:
         logger.info("[Step 4] 生成指标分值")
-        content = self._execute_step(state, 4)
+        content, outcome = self._execute_step_structured(state, 4)
         import copy
         system = state.get("indicator_system") or {}
-        try:
-            parsed = json.loads(self._extract_json(content) or "{}")
+        scores = {}
+        if outcome.ok and isinstance(outcome.payload, dict):
+            parsed = outcome.payload
             scores = parsed.get("scores", parsed) if isinstance(parsed, dict) else {}
-        except ValueError:
-            scores = {}
+        elif not outcome.ok:
+            state.setdefault("warnings", []).append(
+                "步骤 4 模型输出不是可用分值 JSON：" + outcome.summary()
+            )
         candidate = copy.deepcopy(system)
         applied = {}
 
@@ -760,7 +1137,7 @@ class PerformanceAgent:
             state["score_validation"] = validation
             if not allocation_valid(validation):
                 state.setdefault("warnings", []).append("指标分值合计或层级分配未通过程序校验")
-        self._record_step_result(state, 4, content)
+        self._record_step_result(state, 4, content, structured=outcome)
         return state
 
     # Step 5
@@ -785,35 +1162,149 @@ class PerformanceAgent:
     # Step 7
     def _node_step7(self, state: PerformanceState) -> PerformanceState:
         logger.info("[Step 7] 生成指标得分分析")
-        content = (self._execute_step(state, 7) if state.get("indicator_system")
-                   else "资料不足，指标体系待复核后方可进行评分。")
+        if state.get("indicator_system"):
+            content, outcome = self._execute_step_structured(state, 7)
+        else:
+            content, outcome = "资料不足，指标体系待复核后方可进行评分。", None
         from backend.agents.tools.questionnaire_gen import indicator_leaves
+        from backend.services import evidence_anchor
 
         ids = {item["id"]: item for item in indicator_leaves(
             state.get("indicator_system", {}).get("level1_indicators", [])
         )}
-        evidence_ids = {hit["id"] for hit in state.get("step_evidence", {}).get("7", [])
-                        if hit["kind"] == "project"}
+        # 编号与定位串必须同源：都只认本步骤真正下发给模型的 project 检索块。
+        # 否则会出现「编号不认识、定位串却匹配到一个模型没看到的块」。
+        hits = [hit for hit in (state.get("step_evidence", {}).get("7") or [])
+                if isinstance(hit, dict) and hit.get("kind") == "project"]
+        evidence_ids = {hit.get("id") for hit in hits if hit.get("id")}
+        material = self._step7_material(state)
+        # 标题/序号只从原文抽，避免把步骤 6 自己生成的表格标题当锚点（见 _step7_source_text）
+        source_text = self._step7_source_text(state)
+        headings = evidence_anchor.material_headings(source_text)
+        ordinals = evidence_anchor.section_ordinals(source_text)
+        chunks = hits
+        # 弱定位所需的原文行数：线上用 all_raw_texts，重放用备份里的 raw_line_counts。
+        # 两处走同一个判定函数，避免「线上能落地、重放判拒」的口径分裂。
+        raw_texts = state.get("all_raw_texts") or {}
+        line_counts = state.get("raw_line_counts") or {}
         scores = dict(state.get("indicator_score_map", {}))
-        try:
-            parsed = json.loads(self._extract_json(content) or "{}")
-            candidates = parsed.get("scores", {}) if isinstance(parsed, dict) else {}
-        except ValueError:
+        candidates = {}
+        if outcome is not None:
+            if outcome.ok and isinstance(outcome.payload, dict):
+                candidates = outcome.payload.get("scores", {})
+            elif not outcome.ok:
+                state.setdefault("warnings", []).append(
+                    "步骤 7 模型输出不是可用评分 JSON：" + outcome.summary()
+                )
+        if not isinstance(candidates, dict):
             candidates = {}
-        for key, item in candidates.items() if isinstance(candidates, dict) else ():
-            if key not in ids or key in scores or not isinstance(item, dict):
+
+        # 模型给了分、但指标 id 不在体系内的条目：实测真实一轮里 6 条评分有 4 条是这种。
+        # 不记下来就等于「模型编了 id」和「模型没提这个指标」在对外口径里长得一模一样。
+        unmatched: List[Dict[str, Any]] = []
+        for key, item in candidates.items():
+            if key in ids:
+                continue
+            unmatched.append({
+                "indicator_id": key,
+                "actual_score": item.get("actual_score") if isinstance(item, dict) else None,
+                "evidence": item.get("evidence_id") if isinstance(item, dict) else None,
+            })
+
+        items: Dict[str, Dict[str, Any]] = {}
+        for key, indicator in ids.items():
+            existing = scores.get(key)
+            if key in scores and isinstance(existing, dict):
+                items[key] = {"status": "accepted",
+                              "actual_score": score_number(existing.get("actual_score")),
+                              "evidence": existing.get("evidence_id"),
+                              "evidence_anchor": existing.get("evidence_anchor"),
+                              "note": "沿用已有评分"}
+                continue
+            if key not in candidates:
+                items[key] = {"status": "not_mentioned"}
+                continue
+            item = candidates[key]
+            if not isinstance(item, dict):
+                # 提了这个指标但条目不是对象：与「没提」不同，不能混成同一个口径
+                items[key] = {"status": "score_invalid", "note": "条目不是对象"}
                 continue
             evidence = item.get("evidence_id")
             reason = item.get("reason")
-            value = actual_indicator_score(ids[key], {key: item})
-            if isinstance(evidence, str) and evidence in evidence_ids and isinstance(reason, str) and reason.strip() and value is not None:
-                scores[key] = {"actual_score": value, "evidence_id": evidence, "score_reason": reason,
-                               "full_score": score_number(ids[key].get("score")), "source": "project_evidence"}
+            reason_text = reason if isinstance(reason, str) else ""
+            anchor_from = "evidence_id"
+            if not (isinstance(evidence, str) and evidence.strip()):
+                # 实测：模型会把出处写进 reason（`（fe_wf_sample.txt「四、资金安排」）`）
+                # 而把 evidence_id 留成 null。引用确实存在，只是放错字段——按字段形式
+                # 判死等于又把真实评分丢掉一次。锚点仍在材料里校验，标准不放宽。
+                evidence, anchor_from = reason_text, "reason"
+            raw_value = item.get("actual_score")
+            if "actual_score" not in item:
+                # 列了这个指标却没写分值字段：结构缺字段，值得报，与「写 null 拒绝」不同
+                items[key] = {"status": "score_invalid", "note": "缺少 actual_score 字段",
+                              "evidence": evidence if isinstance(evidence, str) else None}
+                continue
+            if evidence_anchor.classify_score(raw_value) == "pending":
+                # 模型按提示词要求明确拒绝赋分（写「待核实」或 JSON null），
+                # 不是格式错误，也不能算「系统丢了评分」
+                items[key] = {"status": "model_pending",
+                              "actual_score": "待核实" if raw_value is None else str(raw_value).strip(),
+                              "evidence": evidence if isinstance(evidence, str) and evidence.strip() else None}
+                continue
+            value = actual_indicator_score(indicator, {key: item})
+            if value is None:
+                items[key] = {"status": "score_invalid", "actual_score": raw_value,
+                              "evidence": evidence if isinstance(evidence, str) else None}
+                continue
+            anchor = evidence_anchor.resolve(evidence, evidence_ids=evidence_ids,
+                                             material=material, headings=headings,
+                                             chunks=chunks, ordinals=ordinals,
+                                             raw_texts=raw_texts, line_counts=line_counts)
+            if not anchor.ok:
+                items[key] = {"status": "anchor_unresolved",
+                              "evidence": evidence if isinstance(evidence, str) else None,
+                              "anchor_from": anchor_from,
+                              "cited_ids": list(anchor.ids)}
+                continue
+            if not reason_text.strip():
+                items[key] = {"status": "reason_missing", "actual_score": value,
+                              "evidence": evidence}
+                continue
+            if anchor.kind == "material_locator":
+                # 引用落到了原文真实存在的行号，但那一行没进本步骤检索证据。
+                # 只证明「这一行存在」，不证明「这一行支持该评分」——所以**不写进
+                # indicator_score_map**，也就不进 total_score。单列出来让人工确认，
+                # 否则「无法评价、暂按基础分」那几条会借这个口子把总分抬上去。
+                items[key] = {"status": "anchor_weak", "actual_score": value,
+                              "evidence": evidence, "anchor_kind": anchor.kind,
+                              "anchor_from": anchor_from,
+                              "evidence_anchor": {**anchor.as_dict(), "from": anchor_from},
+                              "note": "行号在原文范围内，但该行未进入本步骤检索证据"}
+                continue
+            scores[key] = {"actual_score": value, "evidence_id": evidence,
+                           "evidence_anchor": {**anchor.as_dict(), "from": anchor_from},
+                           "score_reason": reason_text,
+                           "full_score": score_number(indicator.get("score")),
+                           "source": "project_evidence"}
+            items[key] = {"status": "accepted", "actual_score": value,
+                          "evidence": evidence, "anchor_kind": anchor.kind,
+                          "anchor_from": anchor_from,
+                          # 与 refresh_disposition 写入的字段同名同形：否则人工补分前后
+                          # 台账字段集合不同，前端读 matched 会时有时无
+                          "evidence_anchor": {**anchor.as_dict(), "from": anchor_from}}
+
         state["indicator_score_map"] = scores
-        if ids and len(scores) < len(ids):
-            content = "部分指标缺少可核实的评分依据，未确认分值列为待核实。\n\n" + content
+        disposition = self._score_disposition_summary(items, unmatched)
+        state["score_disposition"] = disposition
+        line = disposition.get("summary_line") or ""
+        incomplete = disposition.get("counts", {}).get("accepted", 0) < disposition.get("total", 0)
+        if line and (incomplete or unmatched):
+            content = line + "\n\n" + content
+            warnings = state.setdefault("warnings", [])
+            if line not in warnings:
+                warnings.append(line)
         state["indicator_analysis"] = content
-        self._record_step_result(state, 7, content)
+        self._record_step_result(state, 7, content, structured=outcome)
         return state
 
     # Step 8
@@ -942,8 +1433,30 @@ class PerformanceAgent:
         content = self._assemble_final_report(state)
         state["final_report"] = content
         self._record_step_result(state, 14, content)
+        # 报告成型后立刻做一次纯程序的步骤间一致性检查（不调模型）
+        self._run_consistency_check(state)
         logger.info("[Step 14] 报告生成完成")
         return state
+
+    def _run_consistency_check(self, state: PerformanceState) -> dict:
+        """跑一致性检查并写入 state["consistency"]；有结论则并入 warnings。
+
+        检查只报「两处数字确实对不上」，不改写任何产出物——报告里原本写什么就还是什么，
+        判断权交给人。
+        """
+        from backend.services import consistency
+
+        report = consistency.check_consistency(state)
+        state["consistency"] = report
+        line = consistency.summary_line(report)
+        if line:
+            warnings = state.setdefault("warnings", [])
+            if line not in warnings:
+                warnings.append(line)
+            logger.warning(f"[Step 14] {line}")
+        else:
+            logger.info("[Step 14] 步骤间一致性检查通过")
+        return report
 
     def _assemble_final_report(self, state: PerformanceState) -> str:
         """从各步骤结果拼装最终绩效评价报告，支持自定义章节排序"""
@@ -1017,14 +1530,82 @@ class PerformanceAgent:
     # ─── 工具 ───────────────────────────────────────────
 
     def _extract_json(self, text: str) -> Optional[str]:
-        m = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', text, re.DOTALL)
-        if m:
-            return m.group(1).strip()
-        start = text.find('{')
-        end = text.rfind('}')
-        if start >= 0 and end > start:
-            return text[start:end + 1]
-        return None
+        return structured_output.extract_json(text)
+
+    # ─── 结构化输出（形状校验 + 一次修复重试）─────────────
+
+    def _execute_step_structured(self, state: PerformanceState, step_number: int):
+        """执行需要 JSON 的步骤：拿文本 → 校验形状 → 必要时修复一次。
+
+        返回 (content, outcome)。outcome.status 为 ok / repaired / manual_review；
+        content 永远是模型的**原始文本**（修复后则替换为修复输出），不做静默改写。
+        """
+        content = self._execute_step(state, step_number)
+        outcome = structured_output.parse(step_number, content)
+        if outcome.ok:
+            structured_output.log_outcome(outcome)
+            self._note_structured_warnings(state, step_number, outcome)
+            return content, outcome
+
+        logger.warning(f"[Step {step_number}] 结构化输出不合规，尝试一次修复：{outcome.summary()}")
+        repaired = self._repair_structured_output(state, step_number, content, outcome)
+        if repaired:
+            second = structured_output.parse(step_number, repaired)
+            report = structured_output.shrink_report(step_number, content, second)
+            if second.ok and report.shrunk:
+                # 修复「通过」了，但少给了东西——这不是修好了，是修少了。
+                # 实测：20 个叶子被修成 5 条，原始 6,000+ 字正文还被替换掉；
+                # 另一种更隐蔽：条目一条没少，5 个真实分值全变成「待核实」。
+                # 宁可交人工复核并保留原文，也不接受缩水版本。
+                note = f"修复结果{report.reason}（修复缩水），不采用修复版本，保留原文待人工复核"
+                outcome.errors = [note, *list(outcome.errors or [])]
+                state.setdefault("warnings", []).append(f"步骤 {step_number} {note}")
+                structured_output.log_outcome(outcome)
+                return content, outcome
+            if second.ok:
+                if report.unverifiable:
+                    # 判不了不等于没问题：照常采用，但必须留下可查的痕迹。
+                    logger.warning(f"[Step {step_number}] {report.reason}")
+                    state.setdefault("warnings", []).append(
+                        f"步骤 {step_number} 已采用修复结果，但{report.reason}，请人工复核条目是否齐全"
+                    )
+                second.status = "repaired"
+                second.original = content
+                structured_output.log_outcome(second)
+                self._note_structured_warnings(state, step_number, second)
+                return repaired, second
+            outcome.errors = second.errors or outcome.errors
+        structured_output.log_outcome(outcome)
+        return content, outcome
+
+    def _repair_structured_output(self, state: PerformanceState, step_number: int,
+                                 content: str, outcome) -> Optional[str]:
+        if not getattr(self, "base_agent", None):
+            return None
+        try:
+            # 修复是内部补调：不流式（避免两份输出混在逐字流里），但要让等待的用户知道在重做
+            from backend.services import progress_bus
+
+            sid = getattr(self, "session_id", "")
+            if sid and progress_bus.has_consumer(sid):
+                progress_bus.push_delta(sid, step_number, "\n\n（输出未通过格式校验，正在重新生成结构化结果…）\n")
+            messages = structured_output.repair_messages(step_number, content, outcome.errors)
+            repaired = self._invoke_llm(messages, step_number, state, timeout=180, stream=False)
+            return repaired if isinstance(repaired, str) and repaired.strip() else None
+        except Exception as exc:
+            logger.warning(f"[Step {step_number}] 结构化修复调用失败：{exc}")
+            return None
+
+    def _note_structured_warnings(self, state: PerformanceState, step_number: int, outcome) -> None:
+        """把被忽略的条目记进 warnings，让人知道模型输出里有多少条没进结构化结果。"""
+        if not outcome.warnings:
+            return
+        preview = "；".join(outcome.warnings[:3])
+        more = f" 等 {len(outcome.warnings)} 条" if len(outcome.warnings) > 3 else ""
+        state.setdefault("warnings", []).append(
+            f"步骤 {step_number} 有部分输出未进入结构化结果：{preview}{more}"
+        )
+
 
     # ==================== 执行方法 ========================
 

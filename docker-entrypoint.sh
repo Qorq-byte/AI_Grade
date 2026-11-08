@@ -22,17 +22,24 @@ do
 done
 
 echo "等待 Redis 就绪..."
-until python - <<'PY' 2>/dev/null
+# 应用当前未使用 Redis（进度与增量走进程内总线），只有显式配置 REDIS_URL 时才等待，
+# 避免无 Redis 的部署被无意义的健康检查阻塞。
+if [ -n "${REDIS_URL}" ]; then
+    until python - <<'PY' 2>/dev/null
 import os
 import redis
 
-client = redis.from_url(os.environ.get("REDIS_URL", "redis://redis:6379/0"), socket_connect_timeout=3)
+client = redis.from_url(os.environ["REDIS_URL"], socket_connect_timeout=3)
 client.ping()
 PY
-do
-    echo "  尚不可用，2秒后重试..."
-    sleep 2
-done
+    do
+        echo "  尚不可用，2秒后重试..."
+        sleep 2
+    done
+    echo "  Redis 已就绪"
+else
+    echo "  未配置 REDIS_URL，跳过（当前为单进程内进度总线）"
+fi
 
 echo "所有依赖服务已就绪，启动应用..."
 exec "$@"

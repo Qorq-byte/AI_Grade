@@ -2,7 +2,7 @@
 核心内容索引工具
 Step 2 的核心功能：建立「有效项目资料」与「原文出处」的双向映射
 """
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Any
 from collections import defaultdict
 from dataclasses import dataclass, field
 import re
@@ -118,7 +118,9 @@ class ContentIndexer:
 
         # 语料存储
         self.chunks: List[ContentChunk] = []
-        self.index: Dict[str, IndexEntry] = {}  # chunk_id -> IndexEntry
+        # 注意：名字不能叫 index —— 会和下面的 index() 方法撞名（实例属性遮蔽方法，
+        # 调用处必然 TypeError）。Batch 10 修的就是这个。
+        self._entries: Dict[str, IndexEntry] = {}  # chunk_id -> IndexEntry
         self.category_index: Dict[str, List[str]] = defaultdict(list)  # category -> chunk_ids
         self.contradictions: List[Dict[str, Any]] = []  # 内容矛盾检测结果
         self.raw_texts: Dict[str, str] = {}  # {filename: full_text}
@@ -156,7 +158,7 @@ class ContentIndexer:
         """
         self.raw_texts = raw_texts
         self.chunks = []
-        self.index = {}
+        self._entries = {}
         self.category_index = defaultdict(list)
         self.contradictions = []
 
@@ -195,7 +197,7 @@ class ContentIndexer:
                 category=chunk.category or "未分类",
                 confidence=self._calculate_confidence(chunk),
             )
-            self.index[chunk.id] = entry
+            self._entries[chunk.id] = entry
             self.category_index[chunk.category or "未分类"].append(chunk.id)
 
         # 第4步：语义关联（可选）
@@ -209,7 +211,7 @@ class ContentIndexer:
             f"索引构建完成: 有效chunk={len(effective_chunks)}, "
             f"分类={len(self.category_index)}, 矛盾={len(self.contradictions)}"
         )
-        return self.index
+        return self._entries
 
     def get_index(self) -> Dict[str, str]:
         """
@@ -219,7 +221,7 @@ class ContentIndexer:
             Dict[核心内容片段, 原文出处字符串]
         """
         result = {}
-        for chunk_id, entry in self.index.items():
+        for chunk_id, entry in self._entries.items():
             source_str = "; ".join(entry.source_refs)
             key = f"[{entry.category}] {entry.core_content}"
             result[key] = source_str
@@ -243,7 +245,7 @@ class ContentIndexer:
         """
         result = []
         for i, (chunk_id, entry) in enumerate(sorted(
-            self.index.items(),
+            self._entries.items(),
             key=lambda x: (x[1].category, x[0])
         ), 1):
             result.append({
@@ -444,8 +446,20 @@ class ContentIndexer:
             logger.warning(f"语义关联构建失败: {e}")
 
     def _detect_contradictions(self):
-        """检测内容中的矛盾"""
-        # 按类别分组检测
+        """检测内容中的矛盾。
+
+        只保留「事实矛盾」（显式的状态词互斥：已完工 vs 在建）。
+
+        这里原本还有一个 `_detect_numeric_contradictions`：同一类别内任意两个数值
+        相差 2 倍就报「数值矛盾」。Batch 10 打开索引后实测，它在 9,925 字的评估语料上
+        产出 **10 条，全部为误报**：
+          - "2.0 / 4.0 / 3.0（数值）" —— 页码、年份、指标个数被当成同类数据；
+          - "860 / 912 / 486（万元）" —— 工程费、其他费、预备费本来就不该相等；
+          - "5.0% / 60.0%" —— 满意度（5 分制）与形象进度混在一起比。
+        要判对必须带上「主体 + 口径 + 单位」（同一指标的两种口径不一致才算矛盾），
+        那是抽取任务，不是正则能做的。留着它=每次运行往 warnings 灌 10 条假警告，
+        而 warnings 会进提示词，反而污染输出。故删除，不做半成品。
+        """
         for category, chunk_ids in self.category_index.items():
             if len(chunk_ids) < 2:
                 continue
@@ -453,51 +467,8 @@ class ContentIndexer:
             chunks = [self._find_chunk(cid) for cid in chunk_ids]
             chunks = [c for c in chunks if c is not None]
 
-            # 检测数值矛盾（资金额、日期等）
-            self._detect_numeric_contradictions(chunks, category)
-            # 检测事实矛盾（项目状态等）
             self._detect_factual_contradictions(chunks, category)
 
-    def _detect_numeric_contradictions(
-        self, chunks: List[ContentChunk], category: str
-    ):
-        """检测数值矛盾"""
-        # 提取所有数值
-        number_pattern = re.compile(
-            r'(\d+(?:\.\d+)?)\s*(万元|元|亿|百万|千万|%)?'
-        )
-        num_map: Dict[str, List[Tuple[float, ContentChunk]]] = {}
-
-        for chunk in chunks:
-            matches = number_pattern.findall(chunk.text)
-            for num_str, unit in matches:
-                try:
-                    value = float(num_str)
-                    key = f"{unit}" if unit else "数值"
-                    if key not in num_map:
-                        num_map[key] = []
-                    num_map[key].append((value, chunk))
-                except ValueError:
-                    continue
-
-        # 检测同一单位下数值差异过大的情况
-        for unit, values in num_map.items():
-            if len(values) >= 2:
-                vals = [v[0] for v in values]
-                max_val = max(vals)
-                min_val = min(vals)
-                # 如果最大值是最小值的2倍以上，可能存在矛盾
-                if min_val > 0 and max_val / min_val >= 2:
-                    self.contradictions.append({
-                        "type": "数值矛盾",
-                        "category": category,
-                        "description": f"同一类数据差异较大 ({unit})",
-                        "values": [f"{v[0]}{unit}" for v in values[:3]],
-                        "sources": [
-                            f"{v[1].source_file}::{v[1].source_location}"
-                            for v in values[:3]
-                        ],
-                    })
 
     def _detect_factual_contradictions(
         self, chunks: List[ContentChunk], category: str
@@ -523,13 +494,19 @@ class ContentIndexer:
                         found_statuses[kw] = []
                     found_statuses[kw].append(chunk)
 
-        # 检查是否存在互斥的状态描述
+        # 检查是否存在互斥的状态描述。用 frozenset 去重：原来的双重循环会把
+        # (已完成, 在建) 和 (在建, 已完成) 各报一条，同一个矛盾出现两次。
+        seen = set()
         contradictory_pairs = []
         for kw1 in found_statuses:
             for kw2 in found_statuses:
-                if kw1 != kw2 and kw1 in status_keywords and kw2 in status_keywords:
-                    if status_keywords[kw1] != status_keywords[kw2]:
-                        contradictory_pairs.append((kw1, kw2))
+                if kw1 == kw2 or status_keywords[kw1] == status_keywords[kw2]:
+                    continue
+                key = frozenset((kw1, kw2))
+                if key in seen:
+                    continue
+                seen.add(key)
+                contradictory_pairs.append((kw1, kw2))
 
         for kw1, kw2 in contradictory_pairs[:3]:
             self.contradictions.append({

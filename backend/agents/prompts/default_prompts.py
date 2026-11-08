@@ -135,7 +135,7 @@ STEP1_HUMAN_TEMPLATE = """## 项目基本信息
 ## 已上传文件列表
 {uploaded_files_summary}
 
-## 已提取的原始文本（前8000字）
+## 已提取的原始文本（节选；未纳入部分见下方「资料覆盖度」）
 {raw_text_preview}
 
 请整理该项目的完整资料清单。"""
