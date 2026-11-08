@@ -51,3 +51,15 @@ Thumbs.db
 
 # Trae
 .trae/
+
+# Agent workspace (本地协作数据，不入库)
+.workbuddy/
+
+# E2E / 探针运行产物
+wf_e2e_log.txt
+wf_e2e_result.json
+fe_wf_sample.txt
+_api_test_sample.txt
+
+# 本机个人资料（非项目内容）
+/*.docx
