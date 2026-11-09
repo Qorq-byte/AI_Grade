@@ -66,10 +66,13 @@ print("=" * 66)
 print("B. 认证（登录页实际调用）")
 print("=" * 66)
 # 管理员登录（登录页: POST /api/auth/login → data.{user_id,username,role,access_token,refresh_token}）
-r = req("POST", "/api/auth/login", json_body={"username": "admin", "password": "Admin@123456"})
+# 用 E2E 专用管理员：admin 已被首登强制改密打标，管理端接口对它一律 403
+from _e2e_auth import ensure_e2e_admin
+_admin_user, _admin_pwd = ensure_e2e_admin(BASE)
+r = req("POST", "/api/auth/login", json_body={"username": _admin_user, "password": _admin_pwd})
 d = body_of(r)
 admin_token = ""
-log(r.status_code == 200 and d.get("success"), "管理员登录 admin/Admin@123456", f"status={r.status_code} {str(d)[:120]}")
+log(r.status_code == 200 and d.get("success"), f"管理员登录 {_admin_user}", f"status={r.status_code} {str(d)[:120]}")
 if d.get("success"):
     ad = d.get("data", {})
     need = ["user_id", "username", "role", "access_token", "refresh_token"]
