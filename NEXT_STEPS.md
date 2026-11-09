@@ -6,7 +6,7 @@
 **新对话开场白（直接粘贴）：**
 
 ```
-读 D:/python/AI_Grade/NEXT_STEPS.md，从「批次 25」开始实施。
+读 D:/python/AI_Grade/NEXT_STEPS.md，从「批次 26」开始实施。
 动手前先按第 5 节取基线，改完按第 5 节的五段式交付。
 ```
 
@@ -16,8 +16,8 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `main` / 批次 24 提交，工作区干净 |
-| 已完成批次 | 第三轮 B1–B24（每批都有独立交付章节）+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
+| 分支 / HEAD | `main` / 批次 25 提交，工作区干净 |
+| 已完成批次 | 第三轮 B1–B25（每批都有独立交付章节）+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
 | 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），135 个端点 |
 | 前端 | 零构建，原生 HTML/CSS/JS + `frontend/shared/` |
 | 存储 | MySQL（库 `ai_grade_d`）+ `state_backups/*.json` 磁盘投影 |
@@ -26,12 +26,12 @@
 
 | 检查 | 命令 | 当前 |
 |---|---|---|
-| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **476 passed** |
+| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **488 passed** |
 | 前端共享层 / SSE | `node --test tests/test_*.cjs` | **45 pass**（5 个文件） |
 | 前端联通性 | `python frontend_e2e_check.py` | **75 通过 / 0 失败** |
 | 全接口 | `python test_all_apis.py` | **46/46** |
 | 真实工作流 | `python wf_e2e.py` | **47 项 / 0 失败**（约 4~5 分钟，要真实模型） |
-| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
+| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
 | 检索基线 | `python -m tests.rag_eval.run --check` | Recall@3 **0.448**、MRR 0.391、P 0.161 |
 
 ---
@@ -80,7 +80,7 @@
 |---|---|---|---|
 | **C1** | 拆分 `agent_routes.py` | **3473 行**，仍是单文件；只解了循环依赖（`progress_bus`） | 按域拆成 workflow/report/questionnaire/export/scoring；**路径与响应完全不变**，靠 `test_all_apis` 46 + `frontend_e2e_check` 72 证明 |
 | **C2** | 进度 / 检查点持久化 | ❌ `REDIS_URL` 只在 config 里躺着；`MemorySaver` 仍是进程内 | 多 worker 与重启续跑成立；做不到就继续在启动日志与文档里**明确写单 worker** |
-| **C3** | 写放大治理 | ❌ `state_backups` **16 MB / 24 个会话，单个最大 641 KB**；每步全量重写 | 改增量写或迁 step 表；单会话备份 ≤ 报告体积 1.2 倍 |
+| ~~**C3**~~ | ~~写放大治理~~ | ✅ **批次 25 已完成**：`step_results` 占备份体积 **64%**，其中 83% 是可证明的重复（`raw_outputs` 与 `content` 逐字相同占 47% 且无人读、`content` 与独立字段逐字相同占 37%）。新增 `backend/services/state_backup.py` 做「写时压缩 / 读时还原」，读入口单点 `load_state_backup` 返回形状不变、20+ 处调用方一行未改；存量 36 个会话 **22.1 MB → 9.7 MB（44%）**，备份/报告 **8.3x → 3.3x**，单会话总写入 **3,503 → 1,597 KB** | 见 `progress_round3.md` B25。**遗留**：①「≤ 报告 1.2 倍」不可达（其余 51% 是重启续跑必需的中间产物），判定标准应改为「可观测重复 == 0」；② 写放大**倍数**未降（5.7x → 6.3x，分子分母同步缩小），要降到 1.0x 得改增量/日志式落盘 |
 | **C4** | 可观测 | ❌ 无 `/metrics`；日志非结构化 | `/metrics` 覆盖步骤耗时/LLM 失败率/token/SSE 连接数；日志带 `request_id/session_id/step/user` |
 | **C5** | CI 与依赖 | ❌ 无 `.github/workflows`、无 `pyproject.toml`、无 `requirements-dev.txt` | CI = 编译检查 → 单测 → `test_all_apis` → 前端语法；依赖锁 `==` |
 | ~~**C6**~~ | ~~安全收尾~~ | ✅ **批次 24 已完成**：`api_key` 走 Fernet（`enc:v1:` 前缀，无密钥降级明文 + 启动告警）、列表接口改固定掩码（原来泄露前 8 位）、用户详情不再回显 `password_hash`；`users.must_change_password` 幂等 ALTER 加列 + 只给「仍用初始口令」的账号打标，未改密用户除白名单外一律 403（带 `X-Password-Change-Required` 供前端分流，否则会死循环）；`.env` 与 `*.sql` 历史泄露检查均为空，`.backup/` 补进 gitignore | 见 `progress_round3.md` B24。**遗留**：`admin` 仍是默认口令（已拦、未换）；`SECRET_ENCRYPTION_KEY` 未配 |
@@ -167,10 +167,27 @@
   ③ `admin` 仍是默认口令——护栏拦住了，但口令本身要管理员自己登录换掉；
   ④ `.e2e_credentials.json` 里是一个明文管理员口令（已 gitignore，分发时要删）。
 
-### 批次 25 = C3 写放大治理
-- **改**：`state_backups` 改增量（每步只写该步产物 + 索引），或迁 step 表；
-- **判定**：单会话备份体积 ≤ 报告 1.2 倍；重启恢复行为与现在一致（用现有恢复用例护航）；
-- **风险**：B15 刚修的竞态在增量写路径上会再来一遍 → 复用 `_publish_backup` / `_discard_backup`，别写裸 `open`。
+### 批次 25 = C3 写放大治理 ✅ 已完成
+- 交付见 `progress_round3.md` 的 B25。**先取证再动手**：36 个会话 22.1 MB，`step_results`
+  独占 64%，其中 83% 是逐字重复（`raw_outputs` 镜像 `content` 占 47% 且全仓无人读；
+  `content` 与独立字段相同占 37%）。
+- 做法：新增 `backend/services/state_backup.py`（`compact` 写时去重 / `hydrate` 读时还原），
+  `load_state_backup()` 单点还原，**20+ 处调用方零改动**；只在**逐字相等**时合并，不等就原样两存。
+- 数据：存量 36 份经 `compact_state_backups.py` 迁移，`hydrate(旧) == hydrate(新)` **36/36**；
+  22.1 MB → 9.7 MB、备份/报告 8.3x → 3.3x、单会话总写 3,503 → 1,597 KB。
+- 回归：`pytest 476 → 488`；变异 **11/11**；在线冒烟 3 个真实会话的步骤正文与报告逐字一致。
+- **留给后续**：①「备份 ≤ 报告 1.2 倍」这个目标不可达，判定标准应改成「可观测重复 == 0」；
+  ② 写放大倍数没降（5.7x → 6.3x），要降到 1.0x 必须改 base + append journal 的增量落盘，
+  会打破「一个会话一个 `*.json`」的约定（清理任务/问卷列表都在按 `*.json` 遍历），需要单独排期。
+
+### 批次 26 = B2 步骤间一致性从「检测」升级为「拦截」
+- **改**：`consistency.py` 已有 17 类检测，但没有 `issue_id → suggestion_ids` 映射，
+  步骤 11 的分数只检测不强制、步骤 14 缺章不阻断导出；
+- **判定**：三个子项各自有测试 —— ①未覆盖问题/无主建议能被报出；②步骤 11 与程序值冲突时
+  保留程序值并提示；③缺章不许进「可导出」；
+- **风险**：`_assemble_report_from_steps` / `_assemble_report_from_backup_steps` /
+  `_read_report` 三条组装路径都得同步，漏一条就是「报告里少一章却仍然提示可导出」。
+  另外 `consistency` 是**现算**的（`_consistency_report`），别把结论缓存进备份。
 
 ---
 
@@ -186,8 +203,8 @@
 
 ```bash
 cd /d/python/AI_Grade
-NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 424
-node --test tests/test_*.cjs                                                          # 42
+NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 488
+node --test tests/test_*.cjs                                                          # 45
 NO_PROXY='*' .venv/Scripts/python.exe -c "import backend.main"                        # 导入自检
 ```
 
@@ -196,7 +213,7 @@ NO_PROXY='*' .venv/Scripts/python.exe -c "import backend.main"                  
 ```bash
 NO_PROXY='*' HTTP_PROXY= HTTPS_PROXY= .venv/Scripts/python.exe -m uvicorn backend.main:app --port 8000
 NO_PROXY='*' .venv/Scripts/python.exe test_all_apis.py        # 46/46
-NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 72/0
+NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 75/0
 ```
 
 ---
@@ -221,6 +238,9 @@ NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 72/0
 | **备份文件默认不在 `.gitignore` 里** | B24 差点把 2.7MB 的 `mysqldump` 推上去——里面是真实 API Key 和口令哈希。`.gitignore` 原本只有 `state_backups/` 和 `backend/data/`，**没有 `.backup/`、`*.sql`**。→ 任何"先备份再动手"的操作，**备份完立刻 `git check-ignore -v <文件>`**，不要等到 `git add -A` |
 | **改 401/403 语义必须同步前端** | `api.js` 把 401 和 403 **一并**当 `code:'auth'`：先 refresh，失败就 `clearAuth()` + 跳登录页。B24 的"首登未改密"也用 403，若不加区分，用户会被反复踢回登录页而登录后又立刻 403 —— **死循环，改不了密也进不去**。解法：403 带独立响应头（`X-Password-Change-Required`）让前端**先于** auth 分支判断，且**不清 token**。凡新增 403 场景，先看前端会不会误判 |
 | **`create_all()` 不给已存在的表加列** | 项目没有 Alembic，`Base.metadata.create_all()` 只建**不存在的表**。在模型里加字段，线上表不会变，查询直接 `Unknown column`（B24 首次跑测试就撞上）。→ 加列必须配一段幂等 `ALTER`：查 `information_schema.COLUMNS` 再决定，别用 `ADD COLUMN IF NOT EXISTS`（MySQL 8 不支持） |
+| **判「能不能丢」先 grep 消费方** | B25 里 `step_results[N].raw_outputs` 占备份体积 47%（6.9 MB），但全仓只有写入、**零读取**——它是 `content` 的又一份副本。反过来 `content` 与 `experience_summary` 这类独立字段逐字相同（37%）也白存。**先确认「这个值谁在用」，再决定删还是留**；靠"看起来像诊断信息"猜，会漏掉真正被消费的那份 |
+| **存量数据的格式变更，改读入口而不是改所有调用点** | 备份里把正文换成引用后，有 20+ 处 `backup["step_results"][n]["content"]`（报告拼装、步骤编辑、refine 提示词、状态接口）。它们唯一的入口是 `load_state_backup()`，在那里 `hydrate` 一次，**调用方一行不用改**；若改成"写入侧留引用、调用方自己解析"，漏一处就是「报告少一章」这种静默故障 |
+| **体积类目标要先算清楚下限** | 交接文档给 C3 定的判据是「单会话备份 ≤ 报告 1.2 倍」。实际构成里 `final_report` 占 24.8%、重启续跑必需的中间产物占 51%，**1.2 倍在无损前提下不可达**（B25 做到 3.3x 已是下限附近）。→ 定判据时先算「无冗余下限」是多少，用**可计算**的指标（如「可观测重复字节 == 0」），别拍一个漂亮比值 |
 | **改安全的代码前先 grep「这个值谁在用」** | B24 花几分钟全仓 grep 后发现 `model_configs.api_key` 除管理后台的增删改查**没有任何消费方**（`ChatOpenAI` 全读环境变量），于是风险边界从"推理链路"缩到"库里那几个字节"，验证方式也确定成单测而不是端到端跑评价。**先确认数据流向，再决定验什么** |
 | **变异脚本跑完没还原** | 批次 18 遇到：工作树里 `list_questionnaires` 被留成了「裸 open」变异体，而注释还写着「必须走持锁的读入口」；下一次全量回归照样 322 passed（守门用例当时没覆盖到）。→ **每跑完一批变异脚本先 `git status --short`**，只应看到自己的改动；发现多出来的文件改动先用 `git diff` 看清再 `git checkout --` 还原 |
 | **变异脚本会「静默失效」** | 跑之前文件**已经被上一次中断的变异污染**时，锚点找不到 → 替换不生效 → 用例当然全绿，脚本报成「变异存活 / 变异点未找到」，看起来像覆盖不足，其实是根本没跑到。批次 21 复核踩到：盘上留着 `"no_evidence": False`，害得两个脚本各报一条假问题。→ **跑之前先 `git diff` 对着安全副本验一遍关键行；跑完除了 `git status --short` 还要 `grep` 关键行**；`.mutation_backup/` 残留别急着删，先 `diff` 看看它是干净版还是污染版 |
