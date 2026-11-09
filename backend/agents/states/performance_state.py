@@ -232,7 +232,11 @@ class PerformanceState(TypedDict, total=False):
     # Step6: 表格覆盖到几个叶子指标、表内数据行数（只统计）
     step6_table: Dict[str, Any]
 
-    indicator_analysis: str                # Step7: 指标分析内容
+    indicator_analysis: str                # Step7: 指标分析内容（模型原始输出，下游提示词读它）
+    # Step7: 原始输出拆成两份——评分 JSON 与正文。报告第四章只拼正文，
+    # 否则整段 JSON 会变成报告正文（批次 22 实测占报告 11.2%）
+    step7_scores_json: str
+    step7_prose: str
     # Step7: 输出长度画像（JSON/正文占比、是否先给 JSON、理由超字数条数），只审计不改写
     step7_length: Dict[str, Any]
     score_table: str                       # Step7: 最终评分表

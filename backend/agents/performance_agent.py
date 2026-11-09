@@ -1201,6 +1201,9 @@ class PerformanceAgent:
                 # 步骤 7 的输出长度画像 + 被截断的步骤：不含它们，重启后只能看到
                 # 「JSON 解析失败」这个症状，看不到「输出被砍断」这个原因（批次 20）
                 "step7_length", "truncated_steps",
+                # 步骤 7 的评分 JSON 与正文分开存：报告第四章只拼正文。不含这两项，
+                # 重启/重放之后拼出来的报告又会把整段 JSON 贴回去（批次 22）
+                "step7_scores_json", "step7_prose",
                 # 步骤 5/6 的覆盖度：不含它们，重启后「评分标准少了几个指标」只能靠读全文数
                 "step5_coverage", "step6_table",
                 # 弱定位的行号校验依据。只存行数（几十字节），不存全文；
@@ -1598,6 +1601,12 @@ class PerformanceAgent:
             if line not in warnings:
                 warnings.append(line)
         state["indicator_analysis"] = content
+        # 报告第四章直接拼这个字段：不把评分 JSON 拆出去，整段 JSON 就成了报告正文
+        # （新会话 73604287：3,738 字，占报告 11.2%）。`indicator_analysis` 保持原文不动，
+        # 步骤 9/11 的提示词与 refine 都读它，改语义会波及别处（批次 22）。
+        scores_json, prose = structured_output.split_step7_output(content)
+        state["step7_scores_json"] = scores_json
+        state["step7_prose"] = prose
         # 输出长度画像：JSON 是否在最前、正文多长、理由有没有超字数。
         # 只统计不改写——评分能不能落地由上面的锚点校验决定，这里只回答「为什么」。
         length = structured_output.audit_step7_length(content)
@@ -1758,6 +1767,20 @@ class PerformanceAgent:
             logger.info("[Step 14] 步骤间一致性检查通过")
         return report
 
+    @staticmethod
+    def _chapter_text(state: PerformanceState, key: str):
+        """组装报告时取某一章的正文。
+
+        唯一的例外是第四章（`indicator_analysis`）：步骤 7 的输出是「评分 JSON + 正文」，
+        整段拼进报告就是一段裸 JSON（批次 22 实测占报告 11.2%），所以优先取 `step7_prose`。
+        老会话没有这个字段，回退原文——宁可在报告里留着 JSON，也不能把章节清空。
+        """
+        if key == "indicator_analysis":
+            prose = (state.get("step7_prose") or "").strip()
+            if prose:
+                return prose
+        return state.get(key)
+
     def _assemble_final_report(self, state: PerformanceState) -> str:
         """从各步骤结果拼装最终绩效评价报告，支持自定义章节排序"""
         sections = []
@@ -1786,15 +1809,15 @@ class PerformanceAgent:
             for key in custom_order:
                 for num, name, content_key in DEFAULT_CHAPTERS:
                     if content_key == key or f"{num}、{name}" == key:
-                        ordered_chapters.append((f"{num}、{name}", state.get(content_key)))
+                        ordered_chapters.append((f"{num}、{name}", self._chapter_text(state, content_key)))
                         break
             chapter_map = ordered_chapters if ordered_chapters else [
-                (f"{num}、{name}", state.get(content_key))
+                (f"{num}、{name}", self._chapter_text(state, content_key))
                 for num, name, content_key in DEFAULT_CHAPTERS
             ]
         else:
             chapter_map = [
-                (f"{num}、{name}", state.get(content_key))
+                (f"{num}、{name}", self._chapter_text(state, content_key))
                 for num, name, content_key in DEFAULT_CHAPTERS
             ]
 
