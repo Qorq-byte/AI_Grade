@@ -71,3 +71,5 @@ fe_sample_upload.txt
 # 本机个人资料（非项目内容）
 /*.docx
 /gen_interview_doc.py
+# E2E 脚本自建管理员的口令（每台机器不同，不入库）
+.e2e_credentials.json
