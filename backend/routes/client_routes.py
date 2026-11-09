@@ -745,6 +745,8 @@ def change_password(req: ChangePasswordRequest, current_user: User = Depends(get
 
     new_hash, new_salt = hash_password(req.new_password)
     current_user.password_hash = f"{new_salt}:{new_hash}"
+    # 改完就解除强制改密，否则用户改完还是被自己的 403 拦着（批次 24）
+    current_user.must_change_password = False
     current_user.updated_at = datetime.now(timezone.utc)
     db.commit()
 
