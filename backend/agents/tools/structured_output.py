@@ -579,6 +579,41 @@ class Step7Length:
         )
 
 
+def split_step7_output(text: str) -> Tuple[str, str]:
+    """把步骤 7 的输出拆成（评分 JSON, 正文），认不准就整段当正文。
+
+    为什么要拆：契约要求「先 JSON 后正文」，而报告第四章是直接把 `indicator_analysis`
+    拼进去的——于是**整段 JSON 成了报告正文**（新会话 73604287：3,738 字，占报告 11.2%）。
+    拆分只在步骤 7 落盘时做一次，组装侧只取正文。
+
+    只在「取出的东西确实是合法 JSON」时才剥，且剥的时候连同包裹的代码块围栏一起剥掉：
+    半截 JSON 切掉一半比留着更难读，所以识别不到就原样返回，不做猜测式切割。
+    """
+    raw = text or ""
+    if not raw.strip():
+        return "", ""
+    blob = extract_json(raw)
+    if not blob:
+        return "", raw.strip()
+    try:
+        json.loads(blob)
+    except (ValueError, TypeError):
+        return "", raw.strip()
+    start = raw.find(blob)
+    if start < 0:
+        # JSON 是从首尾花括号截出来的，正常都能 find 到；真找不到就不动正文
+        return blob.strip(), raw.strip()
+    end = start + len(blob)
+    fence_open = re.search(r"```(?:json)?\s*$", raw[:start])
+    if fence_open:
+        start = fence_open.start()
+    fence_close = re.match(r"\s*```", raw[end:])
+    if fence_close:
+        end += fence_close.end()
+    prose = re.sub(r"\n{3,}", "\n\n", raw[:start] + raw[end:]).strip()
+    return blob.strip(), prose
+
+
 def audit_step7_length(text: str) -> Step7Length:
     """量步骤 7 的输出：JSON 是否在前、正文多长、理由有没有超字数。
 
