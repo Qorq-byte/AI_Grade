@@ -3637,3 +3637,153 @@ warning 总数 **368 → 364**（`on_event` 那几条弃用告警不再出现，
    这是**沿用改前行为**，本批没有改，也不打算在这一批改。
 5. **只覆盖了 `main.py` 里的任务。** 已确认 `backend/` 里只有这一处 `asyncio.create_task`；
    将来新增后台任务时，同样要「持引用 + 关闭时 await」，没有框架级约束。
+## B24.1 起点：四件事里有两件是「现在就能被人用」的洞
+
+**① `admin` 至今仍在用源码里写死的口令**
+
+`create_admin_if_not_exists()` 硬编码 `Admin@123456`，还把这个口令打进日志。本机库里实测：
+
+```
+=== 默认密码命中检查 (Admin@123456) ===
+  DEFAULT PWD -> 1 admin
+```
+
+也就是说，任何看过这个仓库的人都能直接登进管理员后台。这不是"理论上可能"，是**现在成立**。
+
+**② 管理员详情接口把口令哈希一起返回**
+
+```python
+"password_hash": user.password_hash,
+```
+
+`admin_routes.py:230`。哈希本身是可离线爆破的凭据材料（salt 也在里面），而前端任何位置都用不到它。
+
+**③ 第三方 API Key 明文落库，列表接口还把前 8 位交出去**
+
+```python
+api_key=req.api_key,                                   # admin_create_model，明文入库
+model.api_key = req.api_key                             # admin_update_model，明文更新
+"api_key": m.api_key[:8] + "***" if m.api_key else None  # admin_list_models，泄露前缀
+```
+
+多数厂商 Key 的前缀是固定的（`sk-`、`sk-proj-` 之类），前 8 位的遮蔽作用接近于零。
+一次 `mysqldump`、一份误传的备份，密钥就全泄了。
+
+**④ 备份文件差点进仓库**
+
+本批要改库结构，按规矩先 `mysqldump` 备份到 `.backup/`。备份完顺手 `git check-ignore`：
+
+```
+$ git check-ignore -v .backup/pre_b24_ai_grade_db.sql
+NOT IGNORED
+```
+
+`.gitignore` 里有 `state_backups/`、`backend/data/`，**唯独没有 `.backup/` 和 `*.sql`**。
+下一步如果执行 `git add -A`，这个 2.7MB、含真实密钥与口令哈希的 dump 就会推到 GitHub。
+已补规则；同时确认历史干净：`git log --all -- '*.sql' '*.dump'` 为空，
+`git rev-list --all --objects | grep -iE "\.sql$|\.dump$"` 为空，`git log -p -- .env` 为空。
+
+**⑤ 顺带查出来的潜伏 bug**
+
+`create_admin_if_not_exists()` 的替代分支：
+
+```python
+password_hash=hash_password("Admin@123456"),   # 返回 (hash, salt) 元组
+```
+
+`hash_password` 返回 `(hashed, salt)`，这里直接把**元组**塞进 `String(255)` 列。
+一旦走到这条分支，那个账号以后每次登录都会因为 `":" not in stored_value` 失败。
+（当前走不到：`Admin@123456` 满足密码复杂度，永远走分支一。但它是坏的。）
+
+**⑥ 取证：这个字段其实没有运行时消费点**
+
+全仓 grep `api_key` 后确认：`ChatOpenAI(...)` 的 5 处入参全部来自 `settings.DEEPSEEK_API_KEY`
+或 `llm_helper.get_model_credentials()`（读环境变量）。`model_configs.api_key` 除 admin 的
+增删改查外**没有任何读取方**。所以加密改造不会影响推理链路，风险边界很清晰——
+这也意味着不能靠"跑一次评价看看正不正常"来验证它，只能靠单元测试和库里的字节。
+
+## B24.2 做法：写时加密、读时兼容；初始口令一律拦到改完为止
+
+**1. `backend/services/secret_box.py`（新增，约 170 行）**
+
+- 写：`encrypt_secret(plain)` → `"enc:v1:<fernet-token>"`。带版本前缀，将来换算法可按前缀分流。
+- 读：`decrypt_secret(stored)`。**没有前缀就原样返回**——历史明文不需要停机迁移，
+  属于"写时加密、读时兼容"，老数据下一次被编辑时自然变成密文。
+- 幂等：已经是密文就原样返回，重复保存不会二次加密。
+- 空值 → `None`（不要留一个"加密后的空串"，否则 `has_api_key` 永远为真）。
+- 解不开 → 返回 `""` 而不是抛异常。这个值最终要喂给 LLM 客户端，抛异常会把
+  "密钥配错了"升级成"整个配置页 500"；返回空串还能落到既有的"未配置 API Key"提示分支。
+- 密钥来源 `SECRET_ENCRYPTION_KEY`，**允许填任意口令**（内部 SHA256 派生 32 字节再 base64），
+  不被 `Fernet.generate_key()` 的 44 字符格式绑住；同一口令永远派生同一把钥匙，重启不会解不开。
+- 没配密钥：**降级明文 + 告警一次**（`_warned_plaintext` 做一次性）。安全加固不该让一个
+  跑着的系统起不来，但也不能让人以为它生效了。
+
+**2. 掩码不看原文**
+
+```python
+def mask_secret(value):
+    return SECRET_MASK if value else None     # 固定 "********"
+```
+
+不保留任何片段，也不随长度变化（长度本身也是线索）。
+
+**3. `admin_routes` 接入**
+
+| 位置 | 改前 | 改后 |
+|---|---|---|
+| `admin_list_models` | `m.api_key[:8] + "***"` | `mask_secret(m.api_key)` + `has_api_key: bool` |
+| `admin_create_model` | `api_key=req.api_key` | `api_key=encrypt_secret(req.api_key)` |
+| `admin_update_model` | `model.api_key = req.api_key` | 判掩码后 `encrypt_secret(...)` |
+| `admin_get_user` | 返回 `password_hash` | **删掉该字段**，改为返回 `must_change_password` |
+
+`admin_update_model` 的掩码判断是必要的：前端把列表里的 `********` 原样回传，
+不判就会拿它覆盖掉真正的密文。
+
+**4. 首登强制改密**
+
+- **加列**：`User.must_change_password`，`nullable=False, server_default="0"`。
+  必须 NOT NULL 且有默认值，否则 ALTER 加列时老行是 NULL，判定逻辑拿不到确定的布尔值。
+- **幂等迁移**：项目没有 Alembic，`create_all()` 只建不存在的表、**不给已存在的表加列**。
+  新增 `backend/utils/schema_patches.py`：先查 `information_schema.COLUMNS` 再决定是否
+  `ALTER TABLE`；不用 `ADD COLUMN IF NOT EXISTS`（MySQL 8 不支持）。挂在 `init_db()` 里，
+  每次启动跑一遍，重复执行无副作用。
+- **精准打标，不一刀切**：`mark_default_password_users()` 对每个用户**逐个试算**已知初始口令
+  （`KNOWN_DEFAULT_PASSWORDS`），只有真的还在用初始口令的才置位。
+  一刀切会把"自己改过密码的人"也锁住，那是误伤。
+- **置位时机**：默认管理员创建时、管理员建号时、管理员重置密码后。
+  自助注册**不**置位（密码是本人设的）。
+- **拦截点放在 `get_current_user`**：135 个端点共用这一个依赖，改一处覆盖全部。
+  白名单只放 5 条：改密接口本身、`/api/auth/me`、login/logout/refresh。
+  未改密用户打这些之外的接口一律 403。
+
+**5. 403 必须能被前端区分开（否则是死循环）**
+
+`api.js` 原来把 401 和 403 **一并**当 `code: 'auth'`：先尝试 refresh，refresh 也失败就
+`onAuthFailure()` → `clearAuth()` + 跳登录页。如果"要改密"也用 403 且不区分，
+用户会被反复踢回登录页，而登录后第一个请求又 403 —— **永远改不了密，也永远进不去**。
+
+做法：403 响应带 `X-Password-Change-Required: 1`（CORS `expose_headers` 里也加上），
+前端在 `_send` 里**先于** auth 分支判断这个头，命中则抛
+`code: 'password_change_required'`、**不清 token**、跳 `#settings`。
+detail 保持字符串不动（改成 dict 会波及所有既有断言的响应形状）。
+
+登录响应与 `/api/auth/me` 都加 `must_change_password`，登录页据此直接送去改密面板，
+而不是让用户挨个点出 403。
+
+**6. E2E 脚本的凭据隔离**
+
+`test_all_apis.py` / `frontend_e2e_check.py` / `wf_e2e.py` 原本都硬编码 `admin/Admin@123456`。
+admin 被打标后它们会整片 403 —— 但那是安全策略在工作，不是回归。
+新增 `_e2e_auth.py`：给自动化测试**单独**建一个 `e2e_admin`（随机强口令、
+`must_change_password=False`），凭据写 `.e2e_credentials.json`（已 gitignore），
+首次生成、之后复用、登录失败就重设。**不动 admin 的强制改密状态，也不硬编码任何口令。**
+
+**被否掉的替代方案**
+
+- *只把明文换成哈希*：密钥要还原才能用，哈希不可逆，语义不对。
+- *给强制改密开一个环境变量豁免开关*：一个变量就能绕过整个护栏，等于自己开后门。
+- *让 E2E 脚本走"改密 → 记住新口令"*：跑一次就把 admin 口令改掉，下次还得再猜——
+  而且把"两个已知口令"变成新的暴露面。
+- *把 `detail` 改成 `{"code": ...}`*：所有既有前端提示与测试断言都从 `payload.detail`
+  取字符串，改形状的波及面远大于加一个响应头。
+
