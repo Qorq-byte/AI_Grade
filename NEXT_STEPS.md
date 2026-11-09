@@ -6,7 +6,7 @@
 **新对话开场白（直接粘贴）：**
 
 ```
-读 D:/python/AI_Grade/NEXT_STEPS.md，从「批次 24」开始实施。
+读 D:/python/AI_Grade/NEXT_STEPS.md，从「批次 25」开始实施。
 动手前先按第 5 节取基线，改完按第 5 节的五段式交付。
 ```
 
@@ -16,8 +16,8 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `main` / 批次 20 提交，工作区干净 |
-| 已完成批次 | 第三轮 B1–B23（每批都有独立交付章节）+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
+| 分支 / HEAD | `main` / 批次 24 提交，工作区干净 |
+| 已完成批次 | 第三轮 B1–B24（每批都有独立交付章节）+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
 | 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），135 个端点 |
 | 前端 | 零构建，原生 HTML/CSS/JS + `frontend/shared/` |
 | 存储 | MySQL（库 `ai_grade_d`）+ `state_backups/*.json` 磁盘投影 |
@@ -26,12 +26,12 @@
 
 | 检查 | 命令 | 当前 |
 |---|---|---|
-| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **424 passed** |
-| 前端共享层 / SSE | `node --test tests/test_*.cjs` | **42 pass**（5 个文件） |
-| 前端联通性 | `python frontend_e2e_check.py` | **72 通过 / 0 失败** |
+| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **476 passed** |
+| 前端共享层 / SSE | `node --test tests/test_*.cjs` | **45 pass**（5 个文件） |
+| 前端联通性 | `python frontend_e2e_check.py` | **75 通过 / 0 失败** |
 | 全接口 | `python test_all_apis.py` | **46/46** |
 | 真实工作流 | `python wf_e2e.py` | **47 项 / 0 失败**（约 4~5 分钟，要真实模型） |
-| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
+| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
 | 检索基线 | `python -m tests.rag_eval.run --check` | Recall@3 **0.448**、MRR 0.391、P 0.161 |
 
 ---
@@ -83,7 +83,7 @@
 | **C3** | 写放大治理 | ❌ `state_backups` **16 MB / 24 个会话，单个最大 641 KB**；每步全量重写 | 改增量写或迁 step 表；单会话备份 ≤ 报告体积 1.2 倍 |
 | **C4** | 可观测 | ❌ 无 `/metrics`；日志非结构化 | `/metrics` 覆盖步骤耗时/LLM 失败率/token/SSE 连接数；日志带 `request_id/session_id/step/user` |
 | **C5** | CI 与依赖 | ❌ 无 `.github/workflows`、无 `pyproject.toml`、无 `requirements-dev.txt` | CI = 编译检查 → 单测 → `test_all_apis` → 前端语法；依赖锁 `==` |
-| **C6** | 安全收尾 | ❌ 无 Fernet（`api_key` 明文）、无首登强制改密、未做过 `.env` 历史泄露检查 | 三项各自可用；README 提示轮换 |
+| ~~**C6**~~ | ~~安全收尾~~ | ✅ **批次 24 已完成**：`api_key` 走 Fernet（`enc:v1:` 前缀，无密钥降级明文 + 启动告警）、列表接口改固定掩码（原来泄露前 8 位）、用户详情不再回显 `password_hash`；`users.must_change_password` 幂等 ALTER 加列 + 只给「仍用初始口令」的账号打标，未改密用户除白名单外一律 403（带 `X-Password-Change-Required` 供前端分流，否则会死循环）；`.env` 与 `*.sql` 历史泄露检查均为空，`.backup/` 补进 gitignore | 见 `progress_round3.md` B24。**遗留**：`admin` 仍是默认口令（已拦、未换）；`SECRET_ENCRYPTION_KEY` 未配 |
 
 ### P2 · 质量上限与前端剩余
 
@@ -155,10 +155,17 @@
 - 启动日志顺序与改前一致（启动中 → 建库 → 管理员 → 模板 → 定时器）。
 - **留给后续**：多 worker 时每个进程都会跑一条清理循环（与 C2 同源，别单独修）。
 
-### 批次 24 = C6 安全收尾
-- **改**：Fernet 加密 `model_configs.api_key`（密钥来自 env，无密钥时降级为明文 + 启动警告）；首登强制改密；`git log -p -- .env` 检查；
-- **判定**：读写加密往返、老明文可平滑迁移；未改密用户除改密接口外一律 403；
-- **风险**：迁移脚本不可逆 → 先备份 DB。
+### 批次 24 = C6 安全收尾 ✅ 已完成
+- 交付见 `progress_round3.md` 的 B24。三件事都落地：`secret_box`（写加密/读兼容/无密钥降级告警）、
+  首登强制改密（幂等 ALTER + 精准打标 + `get_current_user` 单点拦截 + 前端 403 分流）、
+  `.env` 与备份文件的历史泄露检查（均为空，顺带补了 `.backup/`、`*.sql` 的忽略规则）。
+- 端到端：admin 登录 → `must_change_password: true` → 管理端接口 **403 + 标记头** →
+  改密 → 新口令登录 **200**（测完已把 admin 的哈希与标志原样还原）。
+- 迁移实测：64 个用户里**只有 admin** 被打标，其余 63 个未误伤。
+- **留给后续**：① `SECRET_ENCRYPTION_KEY` 还没配，新写入的 Key 仍是明文（机制就位、告警已出）；
+  ② 没有历史明文密钥需要迁移，所以"平滑迁移"这条路径只有单测覆盖、无真实数据验证；
+  ③ `admin` 仍是默认口令——护栏拦住了，但口令本身要管理员自己登录换掉；
+  ④ `.e2e_credentials.json` 里是一个明文管理员口令（已 gitignore，分发时要删）。
 
 ### 批次 25 = C3 写放大治理
 - **改**：`state_backups` 改增量（每步只写该步产物 + 索引），或迁 step 表；
@@ -211,6 +218,10 @@ NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 72/0
 | **后台任务要持引用，关闭时要 await** | `asyncio.create_task()` 返回的任务只被事件循环弱引用，不存起来就有被 GC 的风险；只 `cancel()` 不 `await` 等于把清理逻辑砍在半路。B23 的写法：模块级 `_CLEANUP_TASK` + 命名 + 幂等启动 + `cancel()` 后 `await`（吞掉 `CancelledError`），并放在 lifespan 的 `finally` 里 |
 | **备份是字段白名单** | `_persist_state_backup` 只写 `fields` 里的键。新增状态字段必须同步加进白名单，否则重启后只看到症状、看不到原因（`score_disposition`、`truncated_steps` 都栽过） |
 | **块编号可被模型「猜中」** | 编号规则是 `P<文件>-<行>-1`，模型看得懂；未下发的编号（如 `P1-5-1`）它会按规则推出来。所以「编号真实存在」不等于「模型真引到了那一行」，台账要留 `cited_ids` 与 `anchor_reason` 备查 |
+| **备份文件默认不在 `.gitignore` 里** | B24 差点把 2.7MB 的 `mysqldump` 推上去——里面是真实 API Key 和口令哈希。`.gitignore` 原本只有 `state_backups/` 和 `backend/data/`，**没有 `.backup/`、`*.sql`**。→ 任何"先备份再动手"的操作，**备份完立刻 `git check-ignore -v <文件>`**，不要等到 `git add -A` |
+| **改 401/403 语义必须同步前端** | `api.js` 把 401 和 403 **一并**当 `code:'auth'`：先 refresh，失败就 `clearAuth()` + 跳登录页。B24 的"首登未改密"也用 403，若不加区分，用户会被反复踢回登录页而登录后又立刻 403 —— **死循环，改不了密也进不去**。解法：403 带独立响应头（`X-Password-Change-Required`）让前端**先于** auth 分支判断，且**不清 token**。凡新增 403 场景，先看前端会不会误判 |
+| **`create_all()` 不给已存在的表加列** | 项目没有 Alembic，`Base.metadata.create_all()` 只建**不存在的表**。在模型里加字段，线上表不会变，查询直接 `Unknown column`（B24 首次跑测试就撞上）。→ 加列必须配一段幂等 `ALTER`：查 `information_schema.COLUMNS` 再决定，别用 `ADD COLUMN IF NOT EXISTS`（MySQL 8 不支持） |
+| **改安全的代码前先 grep「这个值谁在用」** | B24 花几分钟全仓 grep 后发现 `model_configs.api_key` 除管理后台的增删改查**没有任何消费方**（`ChatOpenAI` 全读环境变量），于是风险边界从"推理链路"缩到"库里那几个字节"，验证方式也确定成单测而不是端到端跑评价。**先确认数据流向，再决定验什么** |
 | **变异脚本跑完没还原** | 批次 18 遇到：工作树里 `list_questionnaires` 被留成了「裸 open」变异体，而注释还写着「必须走持锁的读入口」；下一次全量回归照样 322 passed（守门用例当时没覆盖到）。→ **每跑完一批变异脚本先 `git status --short`**，只应看到自己的改动；发现多出来的文件改动先用 `git diff` 看清再 `git checkout --` 还原 |
 | **变异脚本会「静默失效」** | 跑之前文件**已经被上一次中断的变异污染**时，锚点找不到 → 替换不生效 → 用例当然全绿，脚本报成「变异存活 / 变异点未找到」，看起来像覆盖不足，其实是根本没跑到。批次 21 复核踩到：盘上留着 `"no_evidence": False`，害得两个脚本各报一条假问题。→ **跑之前先 `git diff` 对着安全副本验一遍关键行；跑完除了 `git status --short` 还要 `grep` 关键行**；`.mutation_backup/` 残留别急着删，先 `diff` 看看它是干净版还是污染版 |
 | **8000 端口有旧进程** | 上一轮留下的 uvicorn 还占着 8000 时，新起的会绑失败，而 `test_all_apis` / `frontend_e2e_check` / `wf_e2e` 全是硬编码 8000 → 检查打在**旧代码**上。先 `netstat -ano \| grep :8000` 确认 PID，必要时重启 |
@@ -223,8 +234,8 @@ NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 72/0
 
 ## 7. 一句话判断该先做哪个
 
-A1 / A2 / A5 / A6 / A7 / A8 / A9 都做完了（批次 16–22），A3 也做完了（批次 23）。
-**「结论能不能引用」这条线清空了**，剩下的是护栏与底座。顺序建议：
+A1 / A2 / A5 / A6 / A7 / A8 / A9 都做完了（批次 16–22），A3 做完了（批次 23），
+C6 安全收尾也做完了（批次 24）。**「结论能不能引用」这条线清空了**，剩下的是护栏与底座。
 
 - **步骤 4 的「静默少给分」不用做了**（B18.1 证伪）。
 - **步骤 5 正文的「待核实」也不用做了**（B19.1 证伪：它只落盘 + 走 artifacts 接口，
@@ -235,11 +246,15 @@ A1 / A2 / A5 / A6 / A7 / A8 / A9 都做完了（批次 16–22），A3 也做完
 - **P0 只剩 A4（上传解析复用）**，而它的第一步是**量**（同一文件解析几次、耗时、文本一致性），
   不是改代码。没有测量数据之前不要动它。
 - **如果要做「让报告更可信」而不是「更完整」：做 B3（质量门禁）**。
-- **如果只做一件"能省钱"的事：先做 C3（写放大）**——`state_backups` 24 个会话 16 MB、
-  单个最大 641 KB，每步全量重写，这个量级会随会话数线性涨。
-- **C 类的大头（拆 `agent_routes.py`、CI、多 worker）不要先做**，除非要上线；
-  C6 安全收尾块头小、判据清楚，排在下一批。
+- **如果只做一件"能省钱"的事：做 C3（写放大）**——`state_backups` 24 个会话 16 MB、
+  单个最大 641 KB，每步全量重写，这个量级会随会话数线性涨。**这正是批次 25。**
+- **C 类的大头（拆 `agent_routes.py`、CI、多 worker）不要先做**，除非要上线。
 
 **这一轮反复出现的同一个模式，值得记住**：每次「输出太长」都不是模型不会写短，而是
 **我们让它写了一份没人读的东西**（步骤 7 的正文冗余、步骤 6 的 JSON 副本、步骤 7 的 JSON 进正文）。
 下次遇到 token 超标，先问「这段输出谁在读」，再谈预算。
+
+**B24 补一条同类教训**：这次动手前先做了一次「全仓 grep 这个字段谁在用」，
+发现 `model_configs.api_key` **除了管理后台的增删改查没有任何消费方**——
+所以加密改造的真实风险边界是"库里那几个字节"，而不是"推理链路会不会坏"。
+**改安全之前，先确认这个值到底流向哪里**，否则会花大量时间做无谓的端到端回归。
