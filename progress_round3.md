@@ -3548,3 +3548,92 @@ B20 把「先 JSON 后正文」写进契约后，步骤 7 的原始输出就是�
    （比如批量补分），必须同步调 `split_step7_output`，否则报告会显示旧正文。
 5. **单步骤导出（`export-step`）不受影响也不受保护**：它导的是步骤原文（含 JSON），
    这是设计如此——那是给人看「模型到底写了什么」的地方。
+
+## B23.1 起点：启动/关闭还在用废弃的 `on_event`，后台任务没人拿住也没人停
+
+**① 两处 `@app.on_event`**（`main.py:133` / `main.py:245`）：`startup_event` 干活，
+`shutdown_event` 只打一行日志。FastAPI 早已弃用这套写法，全量回归里 **368 条 warning**
+就有一部分来自它。
+
+**② 清理任务 `asyncio.create_task(_cleanup_loop())` 没有引用**
+
+`asyncio` 只对任务持弱引用，事件循环之外没人拿住就有被 GC 的风险；更实际的问题是
+**关闭时没人 cancel 它**——进程退出靠操作系统收尸，正在写的文件/库连接没有收尾机会。
+
+**③ `shutdown_event` 里没有任何实质动作**
+
+```
+@app.on_event("shutdown")
+async def shutdown_event():
+    """应用关闭事件"""
+    logger.info("应用关闭...")
+```
+
+**④ 顺带排查**：`backend/` 里 `asyncio.create_task` 只有这一处，没有别处裸调。
+
+## B23.2 做法：换成 lifespan，把任务拿住并在关闭时等它收尾
+
+1. **`@asynccontextmanager` 的 `lifespan`** 替代两处 `on_event`：
+   `await _on_startup()` → `yield` → **`finally: await _on_shutdown()`**。
+   用 `finally` 而不是顺序语句：正常退出、异常退出、被取消，都要收干净。
+2. **启动/关闭各抽成一个函数**（`_on_startup` / `_on_shutdown`）：内容与改前**逐行一致**
+   （配置自检 → 建库建表 → 默认管理员 → 默认模板 → 清理定时器；DB 失败只记日志、照常起服务），
+   抽出来才好在测试里直接调。
+3. **任务存进模块级 `_CLEANUP_TASK`**，并给任务起名 `file-cleanup`（排查时一眼看出是谁）。
+4. **`_start_cleanup_scheduler()` 幂等**：已有未结束的任务就返回同一个，不会起第二条循环。
+5. **`_stop_cleanup_scheduler()` 先 cancel 再 `await`**：只 cancel 不 await 等于把清理逻辑
+   留在半路（它可能正在写文件或写库）；等它退出后再返回，并清掉全局引用。
+6. **关闭阶段的异常不往上抛**：`_on_shutdown` 里 try/except 包住，进程退出不该被清理任务卡住。
+
+**被否掉的替代方案**
+
+- *只把 `on_event` 换成 `lifespan`、任务照旧不持引用*：deprecation 消失了，但「关闭时任务
+  被砍在半路」这个真问题还在——这正是本批要修的。
+- *在 `shutdown_event` 里用 `asyncio.all_tasks()` 遍历取消*：会连请求处理任务一起砍，
+  而且拿不到「哪个是清理任务」。
+- *给任务加超时强杀*：清理逻辑没有幂等保护，砍在一半比不砍更糟；先保证「等它自己退」。
+
+## B23.3 验证
+
+**改前红 / 改后绿**：`tests/test_lifespan.py` 14 条，改前 **14 条全红**（`_on_startup` /
+`_on_shutdown` / `_CLEANUP_TASK` / `_stop_cleanup_scheduler` 都不存在）。
+
+**变异**：新增 `_mutate_lifespan.py` **12/12 全抓**（lifespan 不跑启动、退出不跑关闭、
+用 except 代替 finally、应用不挂 lifespan、任务不持引用、启动不去重、任务不命名、
+关闭只 cancel 不 await、关闭不清引用、关闭异常不兜、DB 起不来也起任务、启动不建表）。
+既有 10 个脚本 **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 全抓**，无锚点失效。
+
+**真实 uvicorn 优雅关闭**（`uvicorn.Server` + `should_exit`，端口 8011）：
+
+| 项 | 结果 |
+|---|---|
+| 启动日志顺序 | 启动中 → 数据库初始化成功 → 管理员账号检查完成 → 默认Prompt模板已同步 → 清理定时器已启动 → `Application startup complete` |
+| 关闭日志顺序 | 应用关闭... → 文件保留清理定时器已停止 |
+| 退出后 `asyncio.all_tasks()` | **`[]`**（没有残留任务） |
+
+**端到端**：`test_all_apis` 46/46、`frontend_e2e_check` 72/0、`wf_e2e` **47 项 / 0 失败**。
+
+**回归**：`pytest 424 passed`（410 → 424）、`node 42 pass`；
+warning 总数 **368 → 364**（`on_event` 那几条弃用告警不再出现，`grep on_event` 为 0）。
+
+## B23.4 回滚
+
+- 代码：`git checkout -- backend/main.py`（本批只动这一个文件）。
+- 若只想临时恢复旧行为：把 `app = FastAPI(..., lifespan=lifespan)` 的 `lifespan=` 去掉，
+  启动/关闭都不会跑——注意这不是"回到 on_event"，是"什么都不跑"，仅用于排查。
+- 新增的两个函数（`_start_cleanup_scheduler` / `_stop_cleanup_scheduler`）是内部接口，
+  没有对外契约变化。
+
+## B23.5 剩余风险与未验证项（诚实列出）
+
+1. **Windows 上进程级终止不会走关闭流程。** `taskkill /F` 直接杀进程，lifespan 的 finally
+   不会执行——这是操作系统行为，不是本批引入。本批验证的是「收到优雅关闭信号时能收干净」
+   （`uvicorn` 的 `should_exit` 与 TestClient 上下文的进出）。
+2. **多 worker 下每个进程都会跑一条清理循环。** `MemorySaver` 与清理任务都还是单 worker 假设
+   （与 C2 同源）；真上多 worker 要先解决这个，否则同一时刻会有 N 个清理任务并发写库。
+3. **`_stop_cleanup_scheduler` 吞掉 `CancelledError`。** 若外层（uvicorn）此时正在取消，
+   最坏情况会延迟一点关闭；清理循环本身的取消点是 `asyncio.sleep`，实测很快返回。
+4. **启动失败仍照常起服务。** DB 不通时只记 error、不起清理任务、其余接口照旧 500——
+   这是**沿用改前行为**，本批没有改，也不打算在这一批改。
+5. **只覆盖了 `main.py` 里的任务。** 已确认 `backend/` 里只有这一处 `asyncio.create_task`；
+   将来新增后台任务时，同样要「持引用 + 关闭时 await」，没有框架级约束。
