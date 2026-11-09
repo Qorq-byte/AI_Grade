@@ -6,7 +6,7 @@
 **新对话开场白（直接粘贴）：**
 
 ```
-读 D:/python/AI_Grade/NEXT_STEPS.md，从「批次 20」开始实施。
+读 D:/python/AI_Grade/NEXT_STEPS.md，从「批次 21」开始实施。
 动手前先按第 5 节取基线，改完按第 5 节的五段式交付。
 ```
 
@@ -16,8 +16,8 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `main` / 批次 19 提交，工作区干净 |
-| 已完成批次 | 第三轮 B1–B19（每批都有独立交付章节）+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
+| 分支 / HEAD | `main` / 批次 20 提交，工作区干净 |
+| 已完成批次 | 第三轮 B1–B20（每批都有独立交付章节）+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
 | 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），135 个端点 |
 | 前端 | 零构建，原生 HTML/CSS/JS + `frontend/shared/` |
 | 存储 | MySQL（库 `ai_grade_d`）+ `state_backups/*.json` 磁盘投影 |
@@ -26,12 +26,12 @@
 
 | 检查 | 命令 | 当前 |
 |---|---|---|
-| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **341 passed** |
+| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **370 passed** |
 | 前端共享层 / SSE | `node --test tests/test_*.cjs` | **42 pass**（5 个文件） |
 | 前端联通性 | `python frontend_e2e_check.py` | **72 通过 / 0 失败** |
 | 全接口 | `python test_all_apis.py` | **46/46** |
 | 真实工作流 | `python wf_e2e.py` | **47 项 / 0 失败**（约 4~5 分钟，要真实模型） |
-| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核） |
+| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核） |
 | 检索基线 | `python -m tests.rag_eval.run --check` | Recall@3 **0.448**、MRR 0.391、P 0.161 |
 
 ---
@@ -56,6 +56,8 @@
 | ~~**A2**~~ | ~~结构化闸门扩到步骤 3 / 4~~ | ✅ **批次 17 已完成**：步骤 3 按叶子计数（改前恒 0 条）、步骤 4 走 scores，`SHRINK_CHECKED_STEPS=(3,4,7)`；26 份备份回放 0 误判。**遗留**：非修复路径的「步骤 4 少给分」仍静默，见 B17.5 第 1 条 | 见 `progress_round3.md` B17 |
 | ~~**A5**~~ | ~~评分标准夹带资料核对结论~~ | ✅ **批次 18 已完成**：73.8%（401/543）的叶子标准栏写着「无法判断」，而同行的分值已经落地（批次 16 之后）；改步骤 3 提示词 + 新增 `audit_standard_purity` 只计数不清洗；A/B 两份 75%/88% → **0%**，叶子未减少（20→26、25→25），缺口信息移入正文「资料核对提示」 | 见 `progress_round3.md` B18 |
 | ~~**A6**~~ | ~~步骤 7 的引用没有编号可引~~ | ✅ **批次 19 已完成**：48 条「引用无法定位」重放后 12 条是台账过期、真实剩 36 条，其中 21 条只写到文件名——因为材料 16 行却只下发 3 块（53 字），分类原文零编号。改后小材料下发 16 块（339 字），A/B 7/26 → 26/26、11/26 → 20/26，引用全部变成编号，总分 13.0 → 12.8（不虚高）；新增 `anchor_too_coarse` 与 `Anchor.reason` 让失败原因分得开 | 见 `progress_round3.md` B19 |
+| ~~**A7**~~ | ~~步骤 7 的输出长度纪律~~ | ✅ **批次 20 已完成**：`72111c2c` 的 12,862 字输出 JSON 断在半截 → 0/31。根因两条：**输出顺序**（正文在前、JSON 在后，撞上限先砍评分）与**上限从没生效**（langchain 发 `max_completion_tokens`，DeepSeek 只认 `max_tokens`，实际一路跑到 8192）。改「先 JSON 后正文」+ 理由 ≤60 字 + 正文 ≤1,200 字 + 步骤 7 预算 6000（走 `extra_body`）+ 截断记账。A/B：截断 7/9 → **0/6**，落地 mean 75% → **96%**，output_tokens 8,192 → 2,200 左右 | 见 `progress_round3.md` B20 |
+| **A8** | **步骤 5 / 6 的输出长度纪律** | ⚠️ **批次 20 端到端实测到**：步骤 5 在 13,349 字处被 8192 硬顶截断，同轮 `scoring_standards` 只剩 1 条（29 个叶子覆盖 0 条），工作流照样 completed。`token_usage` 全表：步骤 5 最大 10,352 token、步骤 6 8,434、步骤 4 7,669、步骤 2 7,605 | 步骤 5/6 不再出现 `finish_reason=length`；`scoring_standards` 覆盖 = 叶子数；评分标准栏仍受 B18 纯度约束 |
 | **A3** | **`main.py` 迁移到 `lifespan`** | `on_event` 仍有 2 处（`@app.on_event("startup"/"shutdown")`），测试里一直报 deprecation；后台任务未持引用、shutdown 不取消 | 启动/关闭日志与现有行为一致；清理定时器在 shutdown 时被取消（有测试） |
 | **A4** | **上传解析复用** | `agent_routes.py` 预览与 `performance_agent` 正式解析是两条独立路径，同一文件可能解析两次（阶段二第 4 项，❌ 未开始） | 先量：同一文件解析次数 / 耗时 / 文本一致性；达到同等结果再谈复用 |
 
@@ -103,10 +105,13 @@
 
 ---
 
-## 4. 建议的前 6 批（可直接照做）
+## 4. 建议的批次（可直接照做）
 
 > 顺序理由：**正确性债 > 护栏 > 底座 > 质量上限**。前两类决定「结论能不能被引用」，
 > 底座决定「能不能上多 worker」，质量上限则要先有评估才能谈收益。
+>
+> 批次 18 / 19 在当时被 A5 / A6 插队（评分标准夹带结论、引用没有编号可引），
+> 已经做完，见 `progress_round3.md` 的 B18 / B19；原计划的 B2、C1 仍在第 3 节待办里排队。
 
 ### 批次 16 = A1 步骤 7 下发提示词 ✅ 已完成
 - 交付见 `progress_round3.md` 的 B16（五段式）。放弃率 77%→8%，落地 6→24/26，
@@ -120,22 +125,28 @@
 - **留给后续**：① 非修复路径的静默少给分（`_node_step4` 只 apply 有值的键）没管，
   归 B3 或单独一批；② 首次 JSON 不可读时没有数值基准，只能比条目数。
 
-### 批次 18 = B2 `issue_id → suggestion_ids` 强制覆盖
-- **改**：步骤 9 产出带 `issue_id`；步骤 10 必须回填 `suggestion_ids`；一致性检查新增两类 issue；导出前阻断；
-- **判定**：构造「有问题无建议」「有建议无问题」各一条，必须报出；现有 24 份备份回放不得产生假阳性；
-- **风险**：老会话没有 `issue_id` → 只对新会话强制，老的降级为 warning。
+### 批次 20 = A7 步骤 7 的输出长度纪律 ✅ 已完成
+- 交付见 `progress_round3.md` 的 B20。截断率 7/9 → 0/6，落地率 mean 75% → 96%，
+  output_tokens 8,192 → 2,200 左右；根因是「正文在前、JSON 在后」+ `max_tokens` 从未生效。
+- **留给后续的两件事**：① 其余九个步骤仍是「跑到模型硬顶」，步骤 5 已在端到端被抓到截断（A8）；
+  ② `reason ≤ 60 字` 只有统计没有纠正。
 
-### 批次 19 = C1 拆分 `agent_routes.py`
-- **改**：按域拆 5 个文件，业务下沉 `services/`，`router` 前缀保持不变；
-- **判定**：`test_all_apis` 46 + `frontend_e2e_check` 72 全绿，OpenAPI 路径集合与拆分前**逐条 diff 为空**；
-- **风险**：`_QUESTIONNAIRE_CACHE`、`active_workflows` 这类模块级状态别拆散；拆完跑一次真实 `wf_e2e`。
+### 批次 21 = A8 步骤 5 / 6 的输出长度纪律
+- **取证先做**：`token_usage` 按步骤取 `MAX(completion_tokens)`（步骤 5 = 10,352、6 = 8,434、
+  4 = 7,669、2 = 7,605），再用 `tests/_probe_step7_length.py` 的同一套量法看步骤 5/6 的备份，
+  数清「JSON 是否在最前 / 正文多长 / 截断后少了几条」；
+- **改**：步骤 5 与 6 同样「先结构化、后叙述」；给这两步显式预算（`STEP_OUTPUT_BUDGETS`
+  已就位，加键即可）；步骤 5 的 JSON 若被截断，`scoring_standards` 覆盖不足要**报出来**而不是静默；
+- **判定**：端到端不再出现 `finish_reason=length`；`scoring_standards` 覆盖 = 叶子数；
+  B18 的 `standard_purity` 指标不退化；
+- **风险**：步骤 5 的 10,352 token 说明「写短」是唯一出路，别指望抬上限（8192 是硬顶）。
 
-### 批次 20 = C6 安全收尾
+### 批次 22 = C6 安全收尾
 - **改**：Fernet 加密 `model_configs.api_key`（密钥来自 env，无密钥时降级为明文 + 启动警告）；首登强制改密；`git log -p -- .env` 检查；
 - **判定**：读写加密往返、老明文可平滑迁移；未改密用户除改密接口外一律 403；
 - **风险**：迁移脚本不可逆 → 先备份 DB。
 
-### 批次 21 = C3 写放大治理
+### 批次 23 = C3 写放大治理
 - **改**：`state_backups` 改增量（每步只写该步产物 + 索引），或迁 step 表；
 - **判定**：单会话备份体积 ≤ 报告 1.2 倍；重启恢复行为与现在一致（用现有恢复用例护航）；
 - **风险**：B15 刚修的竞态在增量写路径上会再来一遍 → 复用 `_publish_backup` / `_discard_backup`，别写裸 `open`。
@@ -154,7 +165,7 @@
 
 ```bash
 cd /d/python/AI_Grade
-NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 341
+NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 370
 node --test tests/test_*.cjs                                                          # 42
 NO_PROXY='*' .venv/Scripts/python.exe -c "import backend.main"                        # 导入自检
 ```
@@ -180,6 +191,9 @@ NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 72/0
 | 变异体语法错误 | `SyntaxError` 会被当成「抓到」→ 每个变异体先离线 `compile()` |
 | **变异脚本并发** | 两个脚本都会临时改写 `performance_agent.py`，并发跑会互相覆盖，报出「漏抓」假象 → **必须串行**（B16 踩过） |
 | **台账是快照，不是现状** | `score_disposition` 里记的状态是会话当时跑出来的。批次 19 用今天的解析器重放，48 条「引用无法定位」里 12 条已能解析——拿旧台账当待办会修一个不存在的缺陷。取证一律重放一遍（`tests/_probe_anchor_gaps.py`） |
+| **`max_tokens` 在 DeepSeek 上从没生效** | `langchain-openai 1.2.1` 把 `max_tokens` 发成 `max_completion_tokens`，DeepSeek 只认请求体里的 `max_tokens` → 配置被当未知参数丢掉，模型一路跑到自己的 8192 硬顶。要真限长必须 `extra_body={"max_tokens": N}`。判据：`token_usage.completion_tokens` 恰好 8192 |
+| **输出顺序决定「截断时丢什么」** | 正文在前、JSON 在后 → 撞上限先丢评分（0 落地）；反过来只丢正文。凡是「既要结构化又要叙述」的步骤，结构化必须在前 |
+| **备份是字段白名单** | `_persist_state_backup` 只写 `fields` 里的键。新增状态字段必须同步加进白名单，否则重启后只看到症状、看不到原因（`score_disposition`、`truncated_steps` 都栽过） |
 | **块编号可被模型「猜中」** | 编号规则是 `P<文件>-<行>-1`，模型看得懂；未下发的编号（如 `P1-5-1`）它会按规则推出来。所以「编号真实存在」不等于「模型真引到了那一行」，台账要留 `cited_ids` 与 `anchor_reason` 备查 |
 | **变异脚本跑完没还原** | 批次 18 遇到：工作树里 `list_questionnaires` 被留成了「裸 open」变异体，而注释还写着「必须走持锁的读入口」；下一次全量回归照样 322 passed（守门用例当时没覆盖到）。→ **每跑完一批变异脚本先 `git status --short`**，只应看到自己的改动；发现多出来的文件改动先用 `git diff` 看清再 `git checkout --` 还原 |
 | **8000 端口有旧进程** | 上一轮留下的 uvicorn 还占着 8000 时，新起的会绑失败，而 `test_all_apis` / `frontend_e2e_check` / `wf_e2e` 全是硬编码 8000 → 检查打在**旧代码**上。先 `netstat -ano \| grep :8000` 确认 PID，必要时重启 |
@@ -192,15 +206,18 @@ NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 72/0
 
 ## 7. 一句话判断该先做哪个
 
-A1 / A2 / A5 / A6 已经做完（批次 16 / 17 / 18 / 19）。顺序又变了：
+A1 / A2 / A5 / A6 / A7 已经做完（批次 16 / 17 / 18 / 19 / 20）。顺序又变了：
 
 - **步骤 4 的「静默少给分」不用做了**（B18.1 证伪）。
 - **步骤 5 正文的「待核实」也不用做了**（B19.1 证伪：它只落盘 + 走 artifacts 接口，
   步骤 6/7 都不读它，是死产物）。
-- **如果只做一件事：给步骤 7 的输出加长度纪律。** 这是批次 19 端到端暴露的既有故障：
-  会话 `72111c2c` 的步骤 7 输出在 12,862 字处被截断，JSON 写到一半 → 修复缩水 →
-  人工复核 → 0/31 落地。旧会话 `3c6070b9` 也有 13,179 字的同类输出。
-  材料看得越全、模型写得越长，越容易撞上 `MAX_TOKENS`（当前 4000 配置、实测约 8k token 处截断）。
-  可做的两件事：理由限字数；「先 JSON 后分析」的输出顺序。判定标准：截断率、落地率、总分三项。
+- **如果只做一件事：给步骤 5 加长度纪律。** 这不是推测——批次 20 的截断记账第一次上
+  端到端就抓到：会话 `8b8443a3` 的步骤 5 在 **13,349 字**处被 8192 硬顶截断，
+  同轮 `scoring_standards` 只剩 **1 条**（29 个叶子覆盖 0 条），而工作流照样标成
+  `completed`、导出照样可用。步骤 5 的实测最大输出是 **10,352 token**，
+  在 8192 的硬顶下它天生写不完，写短是唯一出路（抬上限无效）。
+  判定标准沿用批次 20：截断率、`scoring_standards` 覆盖率、B18 的标准栏纯度不退化。
+- **批次 20 已经把工具准备好了**：`STEP_OUTPUT_BUDGETS` 加键即可给步骤 5/6 定预算，
+  `_note_truncation` 会自动记账，`tests/_probe_step7_length.py` 的量法可复用。
 - **如果要做「让报告更可信」而不是「更完整」：做 B3（质量门禁）**。
 - **C 类（拆文件、CI、安全）不要先做**。
