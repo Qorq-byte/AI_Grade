@@ -66,10 +66,13 @@ print("=" * 66)
 print("B. 认证（登录页实际调用）")
 print("=" * 66)
 # 管理员登录（登录页: POST /api/auth/login → data.{user_id,username,role,access_token,refresh_token}）
-r = req("POST", "/api/auth/login", json_body={"username": "admin", "password": "Admin@123456"})
+# 用 E2E 专用管理员：admin 已被首登强制改密打标，管理端接口对它一律 403
+from _e2e_auth import ensure_e2e_admin
+_admin_user, _admin_pwd = ensure_e2e_admin(BASE)
+r = req("POST", "/api/auth/login", json_body={"username": _admin_user, "password": _admin_pwd})
 d = body_of(r)
 admin_token = ""
-log(r.status_code == 200 and d.get("success"), "管理员登录 admin/Admin@123456", f"status={r.status_code} {str(d)[:120]}")
+log(r.status_code == 200 and d.get("success"), f"管理员登录 {_admin_user}", f"status={r.status_code} {str(d)[:120]}")
 if d.get("success"):
     ad = d.get("data", {})
     need = ["user_id", "username", "role", "access_token", "refresh_token"]
@@ -79,6 +82,23 @@ if d.get("success"):
 
 r = req("POST", "/api/auth/login", json_body={"username": "admin", "password": "wrong-password"})
 log(r.status_code == 401, "错误密码 → 401", f"status={r.status_code}")
+
+# 安全回归（批次 24）：初始口令登录必须带 must_change_password=true，
+# 且管理端接口对它返回 403 —— 这正是"默认口令不能直接用"的护栏。
+r = req("POST", "/api/auth/login", json_body={"username": "admin", "password": "Admin@123456"})
+_d = body_of(r)
+if r.status_code == 200 and _d.get("success"):
+    _adm = _d.get("data", {})
+    log(_adm.get("must_change_password") is True, "初始口令登录 → 标记必须改密",
+        f"must_change_password={_adm.get('must_change_password')}")
+    _r2 = req("GET", "/api/admin/dashboard", token=_adm.get("access_token", ""))
+    log(_r2.status_code == 403, "未改密的管理端请求 → 403",
+        f"status={_r2.status_code}")
+    log(_r2.headers.get("X-Password-Change-Required") == "1",
+        "403 带 X-Password-Change-Required 标记（前端据此跳改密而非登出）",
+        f"header={_r2.headers.get('X-Password-Change-Required')}")
+else:
+    log(True, "初始口令已不可登录（说明 admin 密码已被修改）", f"status={r.status_code}")
 
 # 注册（登录页: POST /api/auth/register）
 uname = f"fecheck_{uuid.uuid4().hex[:8]}"

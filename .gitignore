@@ -27,6 +27,15 @@ env/
 .env.local
 .env.*.local
 
+# 数据库备份（含真实密钥/密码，绝对不能入库）
+.backup/
+*.sql
+*.sql.gz
+*.dump
+
+# E2E 脚本自建管理员的口令（每台机器不同，不入库）
+.e2e_credentials.json
+
 # Data directories (created at runtime)
 backend/data/
 backend/exports/

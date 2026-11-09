@@ -22,6 +22,9 @@ class User(Base):
     role = Column(SAEnum(UserRole), default=UserRole.USER, nullable=False, index=True)
     is_active = Column(Boolean, default=True)
     tokens_used = Column(Integer, default=0)
+    # 初始/重置密码后置位：除改密与只读自身信息外，其余接口一律拒绝（批次 24）
+    # server_default 让已存在的 users 表通过 ALTER TABLE 加列时老行默认为 0
+    must_change_password = Column(Boolean, default=False, nullable=False, server_default="0")
     last_login_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

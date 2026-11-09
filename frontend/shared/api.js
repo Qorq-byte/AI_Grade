@@ -66,6 +66,23 @@
         location.href = target + '?redirect=' + encodeURIComponent(location.pathname + location.hash);
     }
 
+    /* 首登未改密：后端用 403 + 该响应头表示。不能走 401 的「清 token 跳登录」，
+       否则用户改不了密、也进不了系统，被死循环踢出。 */
+    var PWD_CHANGE_HEADER = 'X-Password-Change-Required';
+
+    function isPasswordChangeRequired(response) {
+        try { return response.headers.get(PWD_CHANGE_HEADER) === '1'; } catch (e) { return false; }
+    }
+
+    function redirectToChangePassword() {
+        var target = (CFG.routes && CFG.routes.client) || '/client/';
+        if (location.pathname.indexOf('/client') === 0) {
+            location.hash = '#settings';
+            return;
+        }
+        location.href = target + '#settings';
+    }
+
     function delay(ms) {
         return new Promise(function (r) { setTimeout(r, ms); });
     }
@@ -80,6 +97,8 @@
         this.getToken = options.getToken || readToken;
         this.getRefreshToken = options.getRefreshToken || readRefreshToken;
         this.onAuthFailure = options.onAuthFailure || function () { clearAuth(); redirectToLogin(); };
+        /* 被强制改密时只跳转、不清 token —— 用户还要用这个 token 去调改密接口 */
+        this.onPasswordChangeRequired = options.onPasswordChangeRequired || redirectToChangePassword;
         this._refreshing = null;
         this._inflight = Object.create(null); // key -> Promise（并发去重）
         this.metrics = { total: 0, failed: 0, retried: 0, refreshed: 0, deduped: 0 };
@@ -130,6 +149,7 @@
     };
 
     ApiClient.prototype._send = function (method, url, body, timeout, opts) {
+        var self = this;
         var requestId = newRequestId();
         var headers = Object.assign({}, opts.headers || {});
         var token = this.getToken();
@@ -166,6 +186,18 @@
 
         var fetchPromise = fetch(url, init).then(function (response) {
             if (response.status === 401 || response.status === 403) {
+                /* 先判「首登未改密」：它是 403，但语义不是登录失效 */
+                if (response.status === 403 && isPasswordChangeRequired(response)) {
+                    return response.json().catch(function () { return {}; }).then(function (payload) {
+                        var err = ApiError((payload && payload.detail) || '首次登录请先修改初始密码', {
+                            code: 'password_change_required', status: 403, retryable: false,
+                            requestId: requestId, payload: payload
+                        });
+                        err.passwordChangeRequired = true;
+                        if (self.onPasswordChangeRequired) self.onPasswordChangeRequired(err);
+                        throw err;
+                    });
+                }
                 return response.json().catch(function () { return {}; }).then(function (payload) {
                     throw ApiError((payload && payload.detail) || '登录状态已失效', {
                         code: 'auth', status: response.status, retryable: false, requestId: requestId, payload: payload

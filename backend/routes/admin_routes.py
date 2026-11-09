@@ -14,6 +14,7 @@ import os
 import json
 
 from backend.database import get_db
+from backend.services.secret_box import SECRET_MASK, encrypt_secret, mask_secret
 from backend.models.user_models import (
     User, UserRole, WorkflowSession, OperationLog,
     ModelConfig, PromptTemplate, KnowledgeBase,
@@ -227,9 +228,11 @@ def admin_get_user(user_id: int, db: Session = Depends(get_db)):
             "id": user.id,
             "username": user.username,
             "phone": user.phone,
-            "password_hash": user.password_hash,
+            # 不再返回 password_hash：哈希本身就是可离线爆破的凭据材料，
+            # 前端任何地方都用不到它（批次 24 安全收尾）
             "role": user.role.value if isinstance(user.role, UserRole) else user.role,
             "is_active": user.is_active,
+            "must_change_password": bool(getattr(user, "must_change_password", False)),
             "tokens_used": user.tokens_used,
             "last_login": user.last_login_at.isoformat() if user.last_login_at else None,
             "created_at": user.created_at.isoformat(),
@@ -266,6 +269,8 @@ def admin_update_user(user_id: int, req: AdminUpdateUserRequest, db: Session = D
         # 修改密码
         password_hash, salt = hash_password(req.password)
         user.password_hash = f"{salt}:{password_hash}"
+        # 管理员设的密码本人并不知道（或只是临时口令），置位后强制其下次登录自行改密
+        user.must_change_password = True
         changed.append("password")
 
     db.commit()
@@ -576,14 +581,19 @@ class ModelToggleRequest(BaseModel):
 
 @router.get("/models")
 def admin_list_models(db: Session = Depends(get_db)):
-    """获取所有模型配置"""
+    """获取所有模型配置
+
+    密钥一律返回固定掩码 + has_api_key 布尔位：管理员只需要知道「配没配」，
+    不需要（也不应该）看到密钥本身。旧实现返回前 8 位，等于泄露半个密钥。
+    """
     models = db.query(ModelConfig).order_by(ModelConfig.sort_order).all()
     return {
         "success": True,
         "data": [
             {
                 "id": m.id, "platform": m.platform, "model_name": m.model_name,
-                "model_id": m.model_id, "api_key": m.api_key[:8] + "***" if m.api_key else None,
+                "model_id": m.model_id, "api_key": mask_secret(m.api_key),
+                "has_api_key": bool(m.api_key),
                 "api_base_url": m.api_base_url, "is_enabled": m.is_enabled,
                 "supports_vision": m.supports_vision, "supports_file": m.supports_file,
                 "sort_order": m.sort_order, "created_at": m.created_at.isoformat(),
@@ -595,14 +605,14 @@ def admin_list_models(db: Session = Depends(get_db)):
 
 @router.post("/models")
 def admin_create_model(req: ModelConfigRequest, db: Session = Depends(get_db)):
-    """创建模型配置"""
+    """创建模型配置（密钥加密后落库）"""
     existing = db.query(ModelConfig).filter(ModelConfig.model_name == req.model_name).first()
     if existing:
         raise HTTPException(status_code=400, detail="模型名称已存在")
     max_order = db.query(func.max(ModelConfig.sort_order)).scalar() or 0
     model = ModelConfig(
         platform=req.platform, model_name=req.model_name, model_id=req.model_id or req.model_name,
-        api_key=req.api_key, api_base_url=req.api_base_url, is_enabled=req.is_enabled,
+        api_key=encrypt_secret(req.api_key), api_base_url=req.api_base_url, is_enabled=req.is_enabled,
         supports_vision=req.supports_vision, supports_file=req.supports_file,
         sort_order=max_order + 1,
     )
@@ -614,7 +624,7 @@ def admin_create_model(req: ModelConfigRequest, db: Session = Depends(get_db)):
 
 @router.put("/models/{model_id}")
 def admin_update_model(model_id: int, req: ModelConfigRequest, db: Session = Depends(get_db)):
-    """更新模型配置"""
+    """更新模型配置（密钥加密后落库；传空表示不改动密钥）"""
     model = db.query(ModelConfig).filter(ModelConfig.id == model_id).first()
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
@@ -622,7 +632,9 @@ def admin_update_model(model_id: int, req: ModelConfigRequest, db: Session = Dep
     model.model_name = req.model_name
     model.model_id = req.model_id or req.model_name
     if req.api_key:
-        model.api_key = req.api_key
+        # 前端拿回来的是掩码 `********`：那不是真密钥，不能拿它覆盖已存的密文
+        if req.api_key != SECRET_MASK:
+            model.api_key = encrypt_secret(req.api_key)
     model.api_base_url = req.api_base_url
     model.is_enabled = req.is_enabled
     model.supports_vision = req.supports_vision

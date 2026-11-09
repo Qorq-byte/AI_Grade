@@ -5,7 +5,7 @@ JWT认证中间件
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from jose import JWTError, jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from loguru import logger
@@ -22,6 +22,21 @@ REFRESH_TOKEN_EXPIRE_DAYS = settings.REFRESH_TOKEN_EXPIRE_DAYS
 
 # ── Bearer安全方案 ──
 security = HTTPBearer()
+
+# ── 强制改密（批次 24）──
+# 未完成首登改密时，除下面这些路径外一律 403。
+# 必须放开改密接口本身，否则用户被锁死在一个「改不了密也干不了事」的死角里。
+PASSWORD_CHANGE_EXEMPT_PATHS = (
+    "/api/client/password",   # 唯一的改密入口
+    "/api/auth/me",           # 前端要知道自己是谁、还差哪一步
+    "/api/auth/login",
+    "/api/auth/logout",
+    "/api/auth/refresh",
+)
+
+#: 前端靠这个 code 区分「要改密」和「登录失效」——
+#: 两者都是 403/401，如果共用 code，前端会清 token 把人踢回登录页，形成死循环。
+PASSWORD_CHANGE_REQUIRED_CODE = "password_change_required"
 
 def _sign_token(payload: dict) -> str:
     if not SECRET_KEY:
@@ -71,7 +86,14 @@ def decode_token(token: str) -> Optional[dict]:
 #  FastAPI 依赖注入
 # ═══════════════════════════════════════════════════════
 
+def is_password_change_exempt(path: str) -> bool:
+    """该路径是否允许「未完成首登改密」的账号访问。"""
+    clean = (path or "").rstrip("/") or "/"
+    return any(clean == p or clean.startswith(p + "/") for p in PASSWORD_CHANGE_EXEMPT_PATHS)
+
+
 async def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ) -> User:
@@ -115,7 +137,15 @@ async def get_current_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="账号已被禁用",
         )
-    
+
+    # 初始口令未改：只放行改密与自身信息，其余一律挡住
+    if getattr(user, "must_change_password", False) and not is_password_change_exempt(request.url.path):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="首次登录请先修改初始密码",
+            headers={"X-Password-Change-Required": "1"},
+        )
+
     return user
 
 
@@ -132,6 +162,7 @@ async def get_admin_user(
 
 
 async def get_optional_user(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(
         HTTPBearer(auto_error=False)
     ),
@@ -141,7 +172,7 @@ async def get_optional_user(
     if credentials is None:
         return None
     try:
-        return await get_current_user(credentials, db)
+        return await get_current_user(request, credentials, db)
     except HTTPException:
         return None
 

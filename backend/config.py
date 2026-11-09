@@ -69,6 +69,11 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24小时
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
+    # 数据库内密钥加密（批次 24）
+    # 一个口令即可（不必是 Fernet 格式，内部会做 SHA256 派生）；
+    # 留空则 model_configs.api_key 以明文落库，并在启动日志里告警。
+    SECRET_ENCRYPTION_KEY: str = ""
+
     # CORS Configuration
     ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:5173,http://localhost:8000"
     
@@ -99,6 +104,11 @@ class Settings(BaseSettings):
             issues.append("MYSQL_PASSWORD 未配置")
         if not self.DASHSCOPE_API_KEY and not self.OPENAI_API_KEY and not self.DEEPSEEK_API_KEY:
             issues.append("至少需要一个LLM API Key")
+        if not self.SECRET_ENCRYPTION_KEY:
+            issues.append(
+                "SECRET_ENCRYPTION_KEY 未配置（管理后台的 API Key 将以明文存库；"
+                "生成方式：python -m backend.services.secret_box）"
+            )
         return issues
 
 

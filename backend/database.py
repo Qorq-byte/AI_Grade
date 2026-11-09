@@ -49,6 +49,9 @@ def init_db():
     try:
         Base.metadata.create_all(bind=engine)
         logger.info("数据库表创建成功")
+        # create_all 只建新表，不给已存在的表补列；老库升级靠这段幂等补丁（批次 24）
+        from backend.utils.schema_patches import apply_schema_patches
+        apply_schema_patches(engine)
     except Exception as e:
         logger.error(f"数据库初始化失败: {str(e)}")
         raise

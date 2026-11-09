@@ -147,8 +147,53 @@ test('refresh 失败则判定认证失败并跳转登录', async () => {
     assert.ok(location.href.indexOf('/login?redirect=') === 0);
 });
 
-test('相同 URL 的并发 GET 只发一次请求', async () => {
-    let calls = 0;
+/* 批次 24：首登未改密返回 403 + X-Password-Change-Required。
+ * 它和「登录失效」都是 403，若不加区分就会清 token 把人踢回登录页，
+ * 而用户还要用这个 token 去调改密接口 —— 于是永远进不去，形成死循环。 */
+test('403 带强制改密标记 → 跳改密面板且保留 token', async () => {
+    let authFailed = 0, pwdRequired = 0;
+    const { Api, storage, location } = loadApi(
+        async () => jsonResponse({ success: false, detail: '首次登录请先修改初始密码' }, 403,
+            { 'X-Password-Change-Required': '1' }),
+        { config: { routes: { login: '/login', client: '/client' } } });
+    const api = new Api({
+        onAuthFailure: () => { authFailed++; },
+        onPasswordChangeRequired: () => { pwdRequired++; },
+    });
+
+    await assert.rejects(api.get('/api/client/reports'),
+        err => err.code === 'password_change_required' && err.passwordChangeRequired === true);
+
+    assert.equal(authFailed, 0, '不能当成登录失效（会清 token）');
+    assert.equal(pwdRequired, 1, '要触发改密跳转');
+    assert.equal(storage.getItem('token'), 'old-token', 'token 必须留着——还要拿它调改密接口');
+    assert.equal(location.href, '', '不该跳登录页');
+});
+
+test('403 带强制改密标记但用默认回调 → 落到设置页且不清 token', async () => {
+    const { Api, storage, location } = loadApi(
+        async () => jsonResponse({ detail: '首次登录请先修改初始密码' }, 403,
+            { 'X-Password-Change-Required': '1' }),
+        { config: { routes: { login: '/login', client: '/client' } } });
+
+    await assert.rejects(new Api().get('/api/client/reports'),
+        err => err.code === 'password_change_required');
+
+    assert.ok(location.hash === '#settings' || location.href.indexOf('settings') >= 0,
+        `应落到改密面板，实际 hash=${location.hash} href=${location.href}`);
+    assert.equal(storage.getItem('token'), 'old-token', '默认回调不能清 token');
+    assert.equal(location.href.indexOf('/login'), -1, '不能被送去登录页');
+});
+
+test('普通 403（无标记头）仍按认证失败处理', async () => {
+    let authFailed = 0;
+    const { Api } = loadApi(async () => jsonResponse({ detail: '需要管理员权限' }, 403));
+    const api = new Api({ onAuthFailure: () => { authFailed++; } });
+    await assert.rejects(api.get('/api/admin/users'), err => err.code === 'auth');
+    assert.equal(authFailed, 1);
+});
+
+test('相同 URL 的并发 GET 只发一次请求', async () => {    let calls = 0;
     const { Api } = loadApi(() => new Promise(resolve => {
         calls++;
         setTimeout(() => resolve(jsonResponse({ success: true, data: calls })), 20);

@@ -42,6 +42,17 @@ def api(method, path, data=None, token=None, files=None):
         return requests.delete(f"{BASE}{path}", headers=h, timeout=20)
     raise ValueError(method)
 
+
+def _e2e_admin_login():
+    """用 E2E 专用管理员登录。
+
+    不再硬编码 admin/Admin@123456：该账号已被首登强制改密打标，
+    管理端接口对它一律 403（这是安全策略在起作用，不是故障）。详见 _e2e_auth.py。
+    """
+    from _e2e_auth import ensure_e2e_admin
+    username, password = ensure_e2e_admin(BASE)
+    return api("POST", "/api/auth/login", {"username": username, "password": password})
+
 def expect_success(r, expected_code=200):
     if r.status_code != expected_code:
         return f"状态码={r.status_code} body={r.text[:200]}"
@@ -120,7 +131,7 @@ print("\n" + "=" * 60)
 print("3. 管理端 API 测试")
 print("=" * 60)
 
-admin_login = api("POST", "/api/auth/login", {"username": "admin", "password": "Admin@123456"})
+admin_login = _e2e_admin_login()
 admin_ok = admin_login.status_code == 200 and admin_login.json().get("success")
 
 if admin_ok:
