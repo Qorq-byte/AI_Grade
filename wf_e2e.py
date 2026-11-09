@@ -56,7 +56,10 @@ def bof(r):
 
 
 def main():
-    r = req("POST", "/api/auth/login", json_body={"username": "admin", "password": "Admin@123456"})
+    # E2E 专用管理员：admin 已被首登强制改密打标，管理端接口对它 403（见 _e2e_auth.py）
+    from _e2e_auth import ensure_e2e_admin
+    _user, _pwd = ensure_e2e_admin(BASE)
+    r = req("POST", "/api/auth/login", json_body={"username": _user, "password": _pwd})
     d = bof(r)
     token = d.get("data", {}).get("access_token", "") if d.get("success") else ""
     if not token:
