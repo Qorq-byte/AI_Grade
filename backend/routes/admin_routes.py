@@ -577,14 +577,19 @@ class ModelToggleRequest(BaseModel):
 
 @router.get("/models")
 def admin_list_models(db: Session = Depends(get_db)):
-    """获取所有模型配置"""
+    """获取所有模型配置
+
+    密钥一律返回固定掩码 + has_api_key 布尔位：管理员只需要知道「配没配」，
+    不需要（也不应该）看到密钥本身。旧实现返回前 8 位，等于泄露半个密钥。
+    """
     models = db.query(ModelConfig).order_by(ModelConfig.sort_order).all()
     return {
         "success": True,
         "data": [
             {
                 "id": m.id, "platform": m.platform, "model_name": m.model_name,
-                "model_id": m.model_id, "api_key": m.api_key[:8] + "***" if m.api_key else None,
+                "model_id": m.model_id, "api_key": mask_secret(m.api_key),
+                "has_api_key": bool(m.api_key),
                 "api_base_url": m.api_base_url, "is_enabled": m.is_enabled,
                 "supports_vision": m.supports_vision, "supports_file": m.supports_file,
                 "sort_order": m.sort_order, "created_at": m.created_at.isoformat(),
