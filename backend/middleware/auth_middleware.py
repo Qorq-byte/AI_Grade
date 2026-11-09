@@ -5,7 +5,7 @@ JWT认证中间件
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from jose import JWTError, jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from loguru import logger
@@ -93,6 +93,7 @@ def is_password_change_exempt(path: str) -> bool:
 
 
 async def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ) -> User:
@@ -136,7 +137,15 @@ async def get_current_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="账号已被禁用",
         )
-    
+
+    # 初始口令未改：只放行改密与自身信息，其余一律挡住
+    if getattr(user, "must_change_password", False) and not is_password_change_exempt(request.url.path):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="首次登录请先修改初始密码",
+            headers={"X-Password-Change-Required": "1"},
+        )
+
     return user
 
 
@@ -153,6 +162,7 @@ async def get_admin_user(
 
 
 async def get_optional_user(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(
         HTTPBearer(auto_error=False)
     ),
@@ -162,7 +172,7 @@ async def get_optional_user(
     if credentials is None:
         return None
     try:
-        return await get_current_user(credentials, db)
+        return await get_current_user(request, credentials, db)
     except HTTPException:
         return None
 
