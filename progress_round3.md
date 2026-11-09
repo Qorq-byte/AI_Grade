@@ -3450,3 +3450,101 @@ L3_02_01_01 资金到位率 | 分值=4
    `rows` 会随之变化，但不影响 `covered` / `missing_ids`——判断缺指标只看后两者。
 5. **只管了步骤 5 / 6 / 7 三步。** 步骤 4（7,669）、2（7,605）、3、9、10 仍跑到模型硬顶。
 6. **A/B 用的是 354 字的样例材料**，长材料（40 块 / 6,000 字）在新提示词下的体量没验过。
+
+## B22.1 起点：报告第四章有 11.2% 的篇幅是一段没人读的 JSON
+
+批次 21 清掉了步骤 6 那份 JSON 副本（第三章），剩下的问题在第四章。
+
+**① 证据：新会话 `73604287` 的报告 33,423 字，其中 3,738 字（11.2%）是评分 JSON**
+
+贴在「四、指标得分及分析」开头，形态是：标题与一行台账之后，紧跟着一个 JSON 代码块
+（围栏 + `{"scores": {"L3_01_01_01": {"actual_score": 2.0, …`），再往后才是正文。
+
+**② 来源不是模型乱写，是「组装 = 直拼原文」**
+
+B20 把「先 JSON 后正文」写进契约后，步骤 7 的原始输出就是「JSON + 正文」两段；
+而报告组装直接把 `state["indicator_analysis"]`（= 那段原始输出）拼进第四章。
+**三条组装路径都这么做**：
+
+| 路径 | 取的内容 |
+|---|---|
+| `PerformanceAgent._assemble_final_report`（步骤 14 写 `final_report`，报告查询首选） | `state["indicator_analysis"]` |
+| `agent_routes._assemble_report_from_steps`（内存态回退） | `values["indicator_analysis"]` |
+| `agent_routes._assemble_report_from_backup_steps`（磁盘投影回退） | `step_results["7"]["content"]` |
+
+**③ 规模**：27 份有 `final_report` 的会话，27 份含 JSON 代码块，最高占 **24%**
+（`b65e0b2c`：40,439 字里 9,842 字）。
+
+## B22.2 做法：落盘时拆一次，组装只取正文
+
+1. **`structured_output.split_step7_output(text) -> (json, prose)`**：用既有的 `extract_json`
+   取 blob，**先 `json.loads` 验一遍**，合法才剥；剥的时候连包裹的代码块围栏一起剥，
+   正文里的连续空行压成一个空行。识别不到合法 JSON 就整段当正文返回——半截 JSON 切一半
+   比留着更难读，不做猜测式切割。
+2. **步骤 7 落两个新字段**：`step7_scores_json`（原样 JSON 文本）与 `step7_prose`（正文）。
+   **`indicator_analysis` 保持原始全文不动**——步骤 9/11 的提示词与 refine 都读它，
+   改语义等于顺手改了别的步骤的输入。
+3. **三条组装路径统一「优先正文、回退原文」**：`_assemble_final_report` 新增
+   `_chapter_text(state, key)`（自定义章节排序的两条分支也走它），路由侧新增
+   `_chapter_from_values(values, key)`，备份组装对 step `"7"` 取 `backup["step7_prose"]`。
+4. **人工改步骤 7 跟着重算**：`PUT /workflow/{id}/steps/7` 走 `_apply_step_edit`，
+   写完 `indicator_analysis` 后同步重算这两个字段，否则报告里还是改前那段正文。
+5. **两个字段进备份白名单**：不加则重启/重放之后拼出来的报告又把整段 JSON 贴回去。
+
+**被否掉的替代方案**
+
+- *组装时用正则把 JSON 代码段剥掉*：治标——半截 JSON 剥完更难看，而且下次换个模型又回来。
+- *把 `indicator_analysis` 直接改成正文*：步骤 9/11 的提示词与 refine 都读它，
+  等于顺手改了三个步骤的输入，超出本批范围。
+- *拆完就把 JSON 丢掉*：导出、复核、将来的逐指标追溯都要它，只是不该出现在正文里。
+
+## B22.3 验证
+
+**改前红 / 改后绿**：`tests/test_report_no_raw_json.py` 18 条，改前 **15 红 3 绿**
+（3 条绿的是「不许退化」护栏：`indicator_analysis` 保持原文、score_map 不受影响、
+老备份回退可用）。
+
+**变异**：新增 `_mutate_report_json.py` **11/11 全抓**（拆前不校验合法性、不剥围栏、
+不压空行、返回值带围栏、节点不拆、组装退回原文、回退被删、values 路径不用正文、
+备份路径不用正文、人工改完不重算、白名单漏字段）。既有 9 个脚本
+**28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 全抓**，无锚点失效。
+
+**端到端**（真实工作流，新会话 `d08be1e4`，32 个叶子）：
+
+| 项 | 结果 |
+|---|---|
+| 步骤 7 原始输出 | 4,003 字，**含代码块围栏** |
+| `step7_prose` | 608 字，无围栏 |
+| `step7_scores_json` | 3,381 字，`json.loads` 可解析 |
+| 报告 | 27,657 字，**0 个代码块、0 处 `"scores"`**（上一轮 `73604287`：33,423 字 / 3,738 字 JSON = 11.2%） |
+| 第四章实际内容 | 一级指标得分汇总表（决策 8.50 / 过程 12.00 / 产出 12.00 / 效益 0.00 / 合计 32.50）+ 整体分析 + 未取得佐证清单 |
+| 导出 Word | 61,354 字节，正文 XML 里**无代码围栏、无 `"scores"`、无 `actual_score`** |
+| wf_e2e | **47 项 / 0 失败** |
+
+两轮报告字数不同（33,423 → 27,657）不能直接比：材料同为 354 字样例，但模型每次产出的
+正文长度本来就不同；能比的是「JSON 在不在正文里」。
+
+**回归**：`pytest 410 passed`（392 → 410）、`node 42 pass`、`test_all_apis 46/46`、
+`frontend_e2e_check 72/0`、`wf_e2e 47/0`。
+
+## B22.4 回滚
+
+- 组装回退：把 `_chapter_text` / `_chapter_from_values` / 备份组装那三处改回直取原字段，
+  立刻回到旧行为（JSON 回到报告），不需要动数据。
+- 代码：`git checkout -- backend/agents/performance_agent.py
+  backend/agents/tools/structured_output.py backend/agents/states/performance_state.py
+  backend/routes/agent_routes.py`。
+- 两个新字段是纯增量：留着不影响任何读方，删了也不影响老会话。
+
+## B22.5 剩余风险与未验证项（诚实列出）
+
+1. **历史报告不回洗。** 27 份已组装的报告存在 DB 的 `final_report` 里，本批不改写；
+   要清掉得重跑工作流或单独写迁移脚本（未做，也没做「哪些该重跑」的评估）。
+2. **只剥第一个 JSON 块。** 模型若输出两个 JSON 代码块（比如评分一份、汇总一份），
+   第二份会留在正文里。实测没出现，但没有专门防。
+3. **`step7_prose` 为空时回退原文。** 如果模型只给 JSON、不写正文，第四章还是会出现 JSON
+   （等于老行为）。这轮实测正文 608 字，长材料下模型「只给 JSON」的概率未测。
+4. **`_apply_step_edit` 是唯一重算入口。** 若将来新增别的写 `indicator_analysis` 的路径
+   （比如批量补分），必须同步调 `split_step7_output`，否则报告会显示旧正文。
+5. **单步骤导出（`export-step`）不受影响也不受保护**：它导的是步骤原文（含 JSON），
+   这是设计如此——那是给人看「模型到底写了什么」的地方。
