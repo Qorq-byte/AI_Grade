@@ -228,9 +228,11 @@ def admin_get_user(user_id: int, db: Session = Depends(get_db)):
             "id": user.id,
             "username": user.username,
             "phone": user.phone,
-            "password_hash": user.password_hash,
+            # 不再返回 password_hash：哈希本身就是可离线爆破的凭据材料，
+            # 前端任何地方都用不到它（批次 24 安全收尾）
             "role": user.role.value if isinstance(user.role, UserRole) else user.role,
             "is_active": user.is_active,
+            "must_change_password": bool(getattr(user, "must_change_password", False)),
             "tokens_used": user.tokens_used,
             "last_login": user.last_login_at.isoformat() if user.last_login_at else None,
             "created_at": user.created_at.isoformat(),
