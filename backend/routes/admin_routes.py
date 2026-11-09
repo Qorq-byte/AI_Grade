@@ -269,6 +269,8 @@ def admin_update_user(user_id: int, req: AdminUpdateUserRequest, db: Session = D
         # 修改密码
         password_hash, salt = hash_password(req.password)
         user.password_hash = f"{salt}:{password_hash}"
+        # 管理员设的密码本人并不知道（或只是临时口令），置位后强制其下次登录自行改密
+        user.must_change_password = True
         changed.append("password")
 
     db.commit()
