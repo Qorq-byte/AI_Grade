@@ -190,8 +190,9 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    # 前端需要读取 request_id 以在报错时告知用户/支持人员
-    expose_headers=["X-Request-ID"],
+    # 前端需要读取 request_id 以在报错时告知用户/支持人员；
+    # X-Password-Change-Required 用于区分「首登要改密」与「登录失效」两种 403
+    expose_headers=["X-Request-ID", "X-Password-Change-Required"],
 )
 
 # 请求上下文（最外层）：为每个请求生成/透传 X-Request-ID 并注入日志。
