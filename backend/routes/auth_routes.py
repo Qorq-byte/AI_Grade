@@ -88,7 +88,8 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)):
 @router.post("/admin/create-user", dependencies=[Depends(get_admin_user)])
 def admin_create_user(req: RegisterRequest, db: Session = Depends(get_db)):
     try:
-        user = create_user(db, req.username, req.password, req.phone)
+        # 管理员代办的口令，本人未参与设定 → 首登必须自己改一次
+        user = create_user(db, req.username, req.password, req.phone, must_change_password=True)
         return {
             "success": True,
             "message": f"用户 '{req.username}' 创建成功",
