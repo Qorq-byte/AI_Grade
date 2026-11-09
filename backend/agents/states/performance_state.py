@@ -225,8 +225,12 @@ class PerformanceState(TypedDict, total=False):
     score_validation: ScoreValidationResult  # Step4: 分值校验结果
 
     scoring_standards: Dict[str, str]      # Step5: 评分标准 {indicator_id: standard}
+    # Step5: 评分标准覆盖到几个叶子指标（只统计：`scoring_standards` 恒为 {"raw": ...}）
+    step5_coverage: Dict[str, Any]
 
     evaluation_table: str                  # Step6: 评价指标体系表（Markdown/HTML表格）
+    # Step6: 表格覆盖到几个叶子指标、表内数据行数（只统计）
+    step6_table: Dict[str, Any]
 
     indicator_analysis: str                # Step7: 指标分析内容
     # Step7: 输出长度画像（JSON/正文占比、是否先给 JSON、理由超字数条数），只审计不改写

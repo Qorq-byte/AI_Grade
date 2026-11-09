@@ -196,11 +196,14 @@ STANDARD_VERDICT_MARKERS = ("待核实", "无法判断", "资料不足", "现有
 # 72111c2c 的步骤 7 正好 8192，且那一次输出在 12,862 字处断在半截 JSON 上。
 # 所以预算必须显式塞进 `extra_body.max_tokens`（见 `_llm_for_step`）。
 #
-# 为什么只给步骤 7、而不是全步骤都设 4000：实测（token_usage 全表）
+# 为什么只给这几步、而不是全步骤都设 4000：实测（token_usage 全表）
 # 步骤 1/2/3/4/5/6/7/9/10 的最大 completion 都超过 4000，步骤 5 达 10,352。
-# 把 4000 变成真的，等于一次性截断 9 个步骤——那是另一个批次的量级与风险，
-# 不在「步骤 7 输出长度纪律」的范围内。这里只收紧本批真正量过的那一步。
-STEP_OUTPUT_BUDGETS = {7: 6000}
+# 把 4000 变成真的，等于一次性截断 9 个步骤——那是另一个批次的量级与风险。
+#
+# 批次 21 补上步骤 5 / 6：步骤 5 最大 10,352 token、2 次正好停在 8,192（占 7/28 次 ≥7,800），
+# 步骤 6 最大 8,434。两步都靠「少写」解决（步骤 6 去掉了重复的 JSON 副本），
+# 预算只作为「撞了要可预测」的下限，不是省钱手段。
+STEP_OUTPUT_BUDGETS = {5: 8000, 6: 6000, 7: 6000}
 
 # 这些 finish_reason 表示「不是模型自己写完的」，而是被长度上限砍断的。
 TRUNCATION_FINISH_REASONS = frozenset({"length", "max_tokens"})
@@ -225,6 +228,61 @@ def audit_standard_purity(system: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             if any(marker in str(leaf.get("scoring_standard") or "")
                    for marker in STANDARD_VERDICT_MARKERS)]
     return {"leaves": len(leaves), "with_verdict": len(hits), "ids": hits}
+
+
+def _leaf_coverage(system: Optional[Dict[str, Any]], text: str) -> tuple:
+    """按叶子指标名在产出里出现与否，算覆盖情况。
+
+    判据只取「名字出现过」这一条宽松口径，因为它只会**高估**覆盖：
+    漏报（该报的没报）比误报（不该报的报了）更难被发现，所以宁可偏严地不报。
+    需要更细的对齐时，应在导出侧做逐行比对，不应该把这里改成模糊匹配。
+    """
+    from backend.agents.tools.questionnaire_gen import indicator_leaves
+
+    leaves = list(indicator_leaves((system or {}).get("level1_indicators") or []))
+    body = text or ""
+    missing = [leaf.get("id") for leaf in leaves
+               if str(leaf.get("name") or "").strip() and str(leaf.get("name")) not in body]
+    return len(leaves), len(leaves) - len(missing), missing
+
+
+def audit_step5_coverage(system: Optional[Dict[str, Any]], text: str) -> Dict[str, Any]:
+    """步骤 5 的产出覆盖了几个叶子指标（只统计，不改写）。
+
+    为什么要量：这一步最大输出 24,570 字、2 次停在 8,192 token，一旦被截断
+    尾部指标就没有评分标准；而 `scoring_standards` 恒为 `{"raw": ...}` 一个键，
+    从状态里看不出「少了几个指标」。
+    """
+    leaves, covered, missing = _leaf_coverage(system, text)
+    return {"leaves": leaves, "covered": covered, "missing_ids": missing}
+
+
+def _markdown_table_rows(text: str) -> int:
+    """数 Markdown 表格的数据行（跳过表头与分隔线）。"""
+    rows = 0
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        if set(stripped) <= set("|-: "):
+            continue
+        # 表头：六列里必然同时出现「三级指标」和「评分标准」
+        if "三级指标" in stripped and "评分标准" in stripped:
+            continue
+        if len(stripped.strip("|").split("|")) < 3:
+            continue
+        rows += 1
+    return rows
+
+
+def audit_step6_table(system: Optional[Dict[str, Any]], text: str) -> Dict[str, Any]:
+    """步骤 6 的评价表覆盖了几个叶子指标，以及表里有多少数据行。
+
+    表格少一行，报告第三章和第四章的指标就对不上；这条以前完全没人管。
+    """
+    leaves, covered, missing = _leaf_coverage(system, text)
+    return {"leaves": leaves, "covered": covered, "rows": _markdown_table_rows(text),
+            "missing_ids": missing}
 
 
 
@@ -1143,6 +1201,8 @@ class PerformanceAgent:
                 # 步骤 7 的输出长度画像 + 被截断的步骤：不含它们，重启后只能看到
                 # 「JSON 解析失败」这个症状，看不到「输出被砍断」这个原因（批次 20）
                 "step7_length", "truncated_steps",
+                # 步骤 5/6 的覆盖度：不含它们，重启后「评分标准少了几个指标」只能靠读全文数
+                "step5_coverage", "step6_table",
                 # 弱定位的行号校验依据。只存行数（几十字节），不存全文；
                 # 不含它则「重启/重放后同一份输入判出不同结果」，验收链条断裂
                 "raw_line_counts",
@@ -1349,6 +1409,18 @@ class PerformanceAgent:
         logger.info("[Step 5] 生成评分标准")
         content = self._execute_step(state, 5)
         state["scoring_standards"] = {"raw": content}
+        # 覆盖度只统计：`scoring_standards` 恒为 {"raw": ...}，从状态里看不出少了几个指标
+        coverage = audit_step5_coverage(state.get("indicator_system"), content)
+        state["step5_coverage"] = coverage
+        if coverage["missing_ids"]:
+            warning = (
+                f"步骤 5 的评分标准没有覆盖 {len(coverage['missing_ids'])} 个指标"
+                f"（共 {coverage['leaves']} 个），缺的指标在评分时只能按标准全文推断"
+            )
+            warnings = state.setdefault("warnings", [])
+            if warning not in warnings:
+                warnings.append(warning)
+            logger.warning(f"[Step 5] {warning}")
         self._record_step_result(state, 5, content)
         return state
 
@@ -1358,6 +1430,19 @@ class PerformanceAgent:
         content = (self._execute_step(state, 6) if state.get("indicator_system")
                    else "资料不足，指标体系待复核后方可生成评价表。")
         state["evaluation_table"] = content
+        # 表格覆盖度：少一行，报告第三章与第四章的指标就对不上
+        table = audit_step6_table(state.get("indicator_system"), content)
+        state["step6_table"] = table
+        if table["missing_ids"]:
+            warning = (
+                f"评价指标体系表缺少 {len(table['missing_ids'])} 个指标"
+                f"（共 {table['leaves']} 个，表内数据行 {table['rows']} 行），"
+                "报告第三章与第四章的指标会对不上"
+            )
+            warnings = state.setdefault("warnings", [])
+            if warning not in warnings:
+                warnings.append(warning)
+            logger.warning(f"[Step 6] {warning}")
         # 标记问卷可生成：指标体系表完成后可触发问卷生成
         state["questionnaire_ready"] = True
         self._record_step_result(state, 6, content)
