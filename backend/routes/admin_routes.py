@@ -14,6 +14,7 @@ import os
 import json
 
 from backend.database import get_db
+from backend.services.secret_box import SECRET_MASK, encrypt_secret, mask_secret
 from backend.models.user_models import (
     User, UserRole, WorkflowSession, OperationLog,
     ModelConfig, PromptTemplate, KnowledgeBase,
@@ -595,14 +596,14 @@ def admin_list_models(db: Session = Depends(get_db)):
 
 @router.post("/models")
 def admin_create_model(req: ModelConfigRequest, db: Session = Depends(get_db)):
-    """创建模型配置"""
+    """创建模型配置（密钥加密后落库）"""
     existing = db.query(ModelConfig).filter(ModelConfig.model_name == req.model_name).first()
     if existing:
         raise HTTPException(status_code=400, detail="模型名称已存在")
     max_order = db.query(func.max(ModelConfig.sort_order)).scalar() or 0
     model = ModelConfig(
         platform=req.platform, model_name=req.model_name, model_id=req.model_id or req.model_name,
-        api_key=req.api_key, api_base_url=req.api_base_url, is_enabled=req.is_enabled,
+        api_key=encrypt_secret(req.api_key), api_base_url=req.api_base_url, is_enabled=req.is_enabled,
         supports_vision=req.supports_vision, supports_file=req.supports_file,
         sort_order=max_order + 1,
     )
@@ -614,7 +615,7 @@ def admin_create_model(req: ModelConfigRequest, db: Session = Depends(get_db)):
 
 @router.put("/models/{model_id}")
 def admin_update_model(model_id: int, req: ModelConfigRequest, db: Session = Depends(get_db)):
-    """更新模型配置"""
+    """更新模型配置（密钥加密后落库；传空表示不改动密钥）"""
     model = db.query(ModelConfig).filter(ModelConfig.id == model_id).first()
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
@@ -622,7 +623,9 @@ def admin_update_model(model_id: int, req: ModelConfigRequest, db: Session = Dep
     model.model_name = req.model_name
     model.model_id = req.model_id or req.model_name
     if req.api_key:
-        model.api_key = req.api_key
+        # 前端拿回来的是掩码 `********`：那不是真密钥，不能拿它覆盖已存的密文
+        if req.api_key != SECRET_MASK:
+            model.api_key = encrypt_secret(req.api_key)
     model.api_base_url = req.api_base_url
     model.is_enabled = req.is_enabled
     model.supports_vision = req.supports_vision
