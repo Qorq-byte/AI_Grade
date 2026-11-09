@@ -23,6 +23,21 @@ REFRESH_TOKEN_EXPIRE_DAYS = settings.REFRESH_TOKEN_EXPIRE_DAYS
 # ── Bearer安全方案 ──
 security = HTTPBearer()
 
+# ── 强制改密（批次 24）──
+# 未完成首登改密时，除下面这些路径外一律 403。
+# 必须放开改密接口本身，否则用户被锁死在一个「改不了密也干不了事」的死角里。
+PASSWORD_CHANGE_EXEMPT_PATHS = (
+    "/api/client/password",   # 唯一的改密入口
+    "/api/auth/me",           # 前端要知道自己是谁、还差哪一步
+    "/api/auth/login",
+    "/api/auth/logout",
+    "/api/auth/refresh",
+)
+
+#: 前端靠这个 code 区分「要改密」和「登录失效」——
+#: 两者都是 403/401，如果共用 code，前端会清 token 把人踢回登录页，形成死循环。
+PASSWORD_CHANGE_REQUIRED_CODE = "password_change_required"
+
 def _sign_token(payload: dict) -> str:
     if not SECRET_KEY:
         raise HTTPException(status_code=503, detail="认证服务未配置")
@@ -70,6 +85,12 @@ def decode_token(token: str) -> Optional[dict]:
 # ═══════════════════════════════════════════════════════
 #  FastAPI 依赖注入
 # ═══════════════════════════════════════════════════════
+
+def is_password_change_exempt(path: str) -> bool:
+    """该路径是否允许「未完成首登改密」的账号访问。"""
+    clean = (path or "").rstrip("/") or "/"
+    return any(clean == p or clean.startswith(p + "/") for p in PASSWORD_CHANGE_EXEMPT_PATHS)
+
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
