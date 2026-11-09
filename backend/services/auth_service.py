@@ -156,3 +156,27 @@ def create_admin_if_not_exists(db: Session):
             db.refresh(admin)
             logger.info("默认管理员账号已创建(替代方式)")
     return admin
+
+
+def mark_default_password_users(db: Session) -> list[str]:
+    """把「还在用初始口令」的账号标记为必须改密。
+
+    升级到强制改密的版本时，存量库里可能已经有一个用默认口令跑着的 admin。
+    不能简单地把所有用户都置位（会误伤自己改过密码的人），所以逐个试算已知初始口令。
+    返回被标记的用户名。
+    """
+    marked: list[str] = []
+    for user in db.query(User).all():
+        if getattr(user, "must_change_password", False):
+            continue
+        stored = user.password_hash or ""
+        if ":" not in stored:
+            continue
+        salt, stored_hash = stored.split(":", 1)
+        if any(verify_password(pwd, stored_hash, salt) for pwd in KNOWN_DEFAULT_PASSWORDS):
+            user.must_change_password = True
+            marked.append(user.username)
+    if marked:
+        db.commit()
+        logger.warning(f"以下账号仍在使用初始口令，已要求下次登录修改: {', '.join(marked)}")
+    return marked
