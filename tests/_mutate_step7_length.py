@@ -19,14 +19,16 @@ MUTATIONS = [
      '        if get_model_provider(model_name) == "deepseek":\n'
      '            kwargs["extra_body"] = {"max_tokens": budget}',
      '        if False:\n            kwargs["extra_body"] = {"max_tokens": budget}'),
+    # 批次 21 把预算表从 {7: 6000} 扩到 {5: 8000, 6: 6000, 7: 6000}，
+    # 这两条锚点跟着搬家；判据不变，仍是「量过的步才有预算、值不能被悄悄改小」。
     ("步骤 7 的预算退回全局 4000（等于没给这步留空间）",
      "backend/agents/performance_agent.py",
-     "STEP_OUTPUT_BUDGETS = {7: 6000}",
-     "STEP_OUTPUT_BUDGETS = {7: 4000}"),
-    ("预算表被顺手扩到别的步骤（会截断 9 个步骤里的正文）",
+     "STEP_OUTPUT_BUDGETS = {5: 8000, 6: 6000, 7: 6000}",
+     "STEP_OUTPUT_BUDGETS = {5: 8000, 6: 6000, 7: 4000}"),
+    ("预算表被顺手扩到别的步骤（会截断没量过的步骤正文）",
      "backend/agents/performance_agent.py",
-     "STEP_OUTPUT_BUDGETS = {7: 6000}",
-     "STEP_OUTPUT_BUDGETS = {7: 6000, 8: 6000}"),
+     "STEP_OUTPUT_BUDGETS = {5: 8000, 6: 6000, 7: 6000}",
+     "STEP_OUTPUT_BUDGETS = {5: 8000, 6: 6000, 7: 6000, 8: 6000}"),
     ("调用时不用带预算的实例（前面的 bind 白做）",
      "backend/agents/performance_agent.py",
      "        llm = self._llm_for_step(step_number)",
