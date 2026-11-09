@@ -47,6 +47,7 @@ from backend.agents.tools import structured_output
 from backend.agents.prompts.prompt_manager import get_prompt_manager, TemperatureProfile
 from backend.agents.prompts.default_prompts import STEP_META, PromptTemplateFactory
 from backend.database import SessionLocal
+from backend.utils.llm_helper import get_model_provider
 
 from backend.services.workflow_evidence import retrieve_step_evidence, render_evidence, report_evidence_index
 from backend.services import doc_coverage
@@ -186,6 +187,28 @@ NO_EVIDENCE_MARKER = "未提供佐证"
 # 实测 27 份备份里 400/543（74%）的叶子把结论写进了这一栏，报告因此自相矛盾：
 # 标准栏写着「无法判断」，同行的分值却已经落地。这里只做计数，不改原文。
 STANDARD_VERDICT_MARKERS = ("待核实", "无法判断", "资料不足", "现有资料未", "本项资料未")
+
+# ── 单次输出的 token 预算（按步骤）────────────────────────
+# 为什么需要这张表：`settings.MAX_TOKENS`（4000）**从来没有生效过**。
+# langchain-openai 1.2.1 把 `max_tokens` 发成 `max_completion_tokens`，
+# 而 DeepSeek 的兼容接口只认请求体里的 `max_tokens`——这个字段被当成未知参数丢掉，
+# 模型于是一路跑到自己的单次硬顶 8192 token。证据：`token_usage` 表里会话
+# 72111c2c 的步骤 7 正好 8192，且那一次输出在 12,862 字处断在半截 JSON 上。
+# 所以预算必须显式塞进 `extra_body.max_tokens`（见 `_llm_for_step`）。
+#
+# 为什么只给步骤 7、而不是全步骤都设 4000：实测（token_usage 全表）
+# 步骤 1/2/3/4/5/6/7/9/10 的最大 completion 都超过 4000，步骤 5 达 10,352。
+# 把 4000 变成真的，等于一次性截断 9 个步骤——那是另一个批次的量级与风险，
+# 不在「步骤 7 输出长度纪律」的范围内。这里只收紧本批真正量过的那一步。
+STEP_OUTPUT_BUDGETS = {7: 6000}
+
+# 这些 finish_reason 表示「不是模型自己写完的」，而是被长度上限砍断的。
+TRUNCATION_FINISH_REASONS = frozenset({"length", "max_tokens"})
+
+
+def step_output_budget(step_number: int) -> Optional[int]:
+    """该步骤显式配置的输出 token 预算；没配就返回 None（沿用模型默认）。"""
+    return STEP_OUTPUT_BUDGETS.get(int(step_number))
 
 
 def audit_standard_purity(system: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -494,12 +517,14 @@ class PerformanceAgent:
             )
         if step_number == 7:
             full_human_prompt += (
-                "\n正文后可附 JSON 对象，字段 scores **必须是以指标 ID 为键的对象**"
+                "\n先输出 JSON 代码块，再写正文：第一段就是 ```json 块，字段 scores "
+                "**必须是以指标 ID 为键的对象**"
                 "（形如 {\"L3_01_01_01\": {\"actual_score\": 4, \"evidence_id\": \"P1-12-1\", "
                 "\"reason\": \"……\"}}），不是数组。每个三级指标都要有一条；"
                 "仅为有项目资料及评分依据的指标赋分，evidence_id 必须引用本步骤的项目资料编号。"
                 "没有依据时按评分规则第 3 条「未取得佐证」计分并在理由中写明缺什么，"
                 "只有评分规则第 4 条的两种情形才写「待核实」、不输出数值。"
+                "JSON 之后的正文不超过 1,200 字，每个 reason 不超过 60 字。"
             )
         if step_number == 11:
             full_human_prompt += "\n程序评分结果：" + json.dumps(state.get("score_summary", {}), ensure_ascii=False)
@@ -686,6 +711,57 @@ class PerformanceAgent:
             return "".join(parts)
         return ""
 
+    def _llm_for_step(self, step_number: int):
+        """按步骤取模型实例：配了输出预算的步骤，绑一份带预算的副本。
+
+        DeepSeek 必须走 `extra_body.max_tokens`——langchain 1.x 把 `max_tokens`
+        发成 `max_completion_tokens`，DeepSeek 把它当未知字段丢掉（详见
+        STEP_OUTPUT_BUDGETS 的注释）。绑不上就退回默认实例，不能让调用直接失败。
+        """
+        llm = self.base_agent.llm
+        budget = step_output_budget(step_number)
+        if not budget or llm is None:
+            return llm
+        kwargs = {"max_tokens": budget}
+        model_name = getattr(self, "model_name", "") or getattr(self.base_agent, "model_name", "")
+        if get_model_provider(model_name) == "deepseek":
+            kwargs["extra_body"] = {"max_tokens": budget}
+        try:
+            return llm.bind(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"步骤 {step_number} 的输出预算绑定失败，沿用模型默认上限：{exc}")
+            return llm
+
+    def _note_truncation(self, state: PerformanceState, step_number: int,
+                         finish_reason: Optional[str], chars: int) -> bool:
+        """输出被长度上限砍断时记账：状态、告警、日志三处都要留痕。
+
+        为什么必须记：改前这条信息只存在于「JSON 解析失败」这个次要症状里，
+        看上去像模型不会写 JSON，实际是它根本没写完。运维与复核要能一眼分开。
+        """
+        if finish_reason not in TRUNCATION_FINISH_REASONS:
+            return False
+        try:
+            steps = state.setdefault("truncated_steps", [])
+            if step_number not in steps:
+                steps.append(step_number)
+            budget = step_output_budget(step_number)
+            limit = f"{budget} token 预算" if budget else "模型单次输出上限"
+            warning = (
+                f"步骤 {step_number} 的输出被长度上限截断（{limit}，已生成 {chars} 字），"
+                "末尾内容可能缺失，该步骤结论需人工复核是否完整"
+            )
+            warnings = state.setdefault("warnings", [])
+            if warning not in warnings:
+                warnings.append(warning)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"截断记账失败(非关键): {exc}")
+        logger.warning(
+            f"[Step {step_number}] 输出被长度上限截断：finish_reason={finish_reason}, "
+            f"{limit}, {chars} 字"
+        )
+        return True
+
     def _invoke_llm(self, messages, step_number: int, state: PerformanceState,
                     timeout: int = 300, stream: Optional[bool] = None) -> str:
         """调用模型；有 SSE 消费者时走流式，逐块推送 token_delta 后拼成完整结果。
@@ -694,7 +770,7 @@ class PerformanceAgent:
         """
         from backend.services import progress_bus
 
-        llm = self.base_agent.llm
+        llm = self._llm_for_step(step_number)
         sid = getattr(self, "session_id", "")
         allow_stream = hasattr(llm, "stream") if stream is None else bool(stream)
         stream_enabled = bool(sid) and allow_stream and hasattr(llm, "stream") and progress_bus.has_consumer(sid)
@@ -703,6 +779,7 @@ class PerformanceAgent:
             try:
                 parts: List[str] = []
                 usage: Dict[str, int] = {}
+                finish_reason: Optional[str] = None
                 for chunk in llm.stream(messages, config={"timeout": timeout}):
                     text = self._chunk_text(chunk)
                     if text:
@@ -715,6 +792,9 @@ class PerformanceAgent:
                             "completion_tokens": int(meta.get("output_tokens", 0) or 0),
                             "total_tokens": int(meta.get("total_tokens", 0) or 0),
                         }
+                    reason = (getattr(chunk, "response_metadata", None) or {}).get("finish_reason")
+                    if reason:
+                        finish_reason = reason
                 content = "".join(parts)
                 if content.strip():
                     if usage.get("total_tokens"):
@@ -724,6 +804,7 @@ class PerformanceAgent:
                             {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
                             step_number, state, estimated=True,
                         )
+                    self._note_truncation(state, step_number, finish_reason, len(content))
                     return content
                 logger.warning(f"流式返回为空，回退非流式: step={step_number}")
             except Exception as e:
@@ -731,7 +812,10 @@ class PerformanceAgent:
 
         response = llm.invoke(messages, config={"timeout": timeout})
         self._record_token(response, step_number, state)
-        return response.content if hasattr(response, "content") else str(response)
+        text = response.content if hasattr(response, "content") else str(response)
+        meta = getattr(response, "response_metadata", None) or {}
+        self._note_truncation(state, step_number, meta.get("finish_reason"), len(text or ""))
+        return text
 
     # ─── 长文档覆盖度 ────────────────────────────────────
 
@@ -1056,6 +1140,9 @@ class PerformanceAgent:
                 "effective_data_categorized",
                 # 步骤 7 的逐指标处置台账：不含它，重启后「23 项里为什么只落地 7 项」就查不到了
                 "score_disposition",
+                # 步骤 7 的输出长度画像 + 被截断的步骤：不含它们，重启后只能看到
+                # 「JSON 解析失败」这个症状，看不到「输出被砍断」这个原因（批次 20）
+                "step7_length", "truncated_steps",
                 # 弱定位的行号校验依据。只存行数（几十字节），不存全文；
                 # 不含它则「重启/重放后同一份输入判出不同结果」，验收链条断裂
                 "raw_line_counts",
@@ -1426,6 +1513,12 @@ class PerformanceAgent:
             if line not in warnings:
                 warnings.append(line)
         state["indicator_analysis"] = content
+        # 输出长度画像：JSON 是否在最前、正文多长、理由有没有超字数。
+        # 只统计不改写——评分能不能落地由上面的锚点校验决定，这里只回答「为什么」。
+        length = structured_output.audit_step7_length(content)
+        state["step7_length"] = length.as_dict()
+        if not length.json_first and length.json_parsed:
+            logger.info(f"[Step 7] 输出未按「先 JSON 后正文」：{length.summary()}")
         self._record_step_result(state, 7, content, structured=outcome)
         return state
 

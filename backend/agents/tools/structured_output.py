@@ -520,6 +520,106 @@ def repair_shrunk(step: int, original_text: str, repaired) -> bool:
     return shrink_report(step, original_text, repaired).shrunk
 
 
+# ═══════════════════════════════════════════════════════
+#  步骤 7 的输出长度审计（Batch 20）
+# ═══════════════════════════════════════════════════════
+#
+# 为什么要单独量：步骤 7 的输出撞上了模型单次上限（实测 8,192 token）时，
+# 表现成「JSON 解析失败 → 整轮 0 落地」，看起来像模型不会写 JSON，
+# 实际是它**没写完**。只靠是否可解析这一个布尔量，看不出「差多少」。
+# 这里把输出拆成「JSON 占比 / 正文占比 / 顺序 / 理由字数」四项，
+# 只统计、不改写——和 `audit_standard_purity` 同一套思路。
+
+STEP7_REASON_CHAR_LIMIT = 60
+STEP7_PROSE_CHAR_LIMIT = 1200
+# JSON 之前允许的引导语字数（「以下是评分：」这种一句）。
+# 超过这个数就说明模型又按「先分析、后给数据」的老习惯写了。
+STEP7_JSON_LEAD_CHARS = 200
+
+
+@dataclass
+class Step7Length:
+    """一次步骤 7 输出的长度画像。"""
+
+    total_chars: int = 0
+    json_chars: int = 0
+    prose_chars: int = 0
+    json_first: bool = False
+    json_parsed: bool = False
+    items: int = 0
+    reason_over_limit: int = 0
+    reason_max_chars: int = 0
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "total_chars": self.total_chars,
+            "json_chars": self.json_chars,
+            "prose_chars": self.prose_chars,
+            "json_first": self.json_first,
+            "json_parsed": self.json_parsed,
+            "items": self.items,
+            "reason_over_limit": self.reason_over_limit,
+            "reason_max_chars": self.reason_max_chars,
+        }
+
+    def summary(self) -> str:
+        if not self.total_chars:
+            return "步骤 7 无输出"
+        flags = []
+        if not self.json_first:
+            flags.append("JSON 不在最前")
+        if not self.json_parsed:
+            flags.append("JSON 不可解析")
+        if self.reason_over_limit:
+            flags.append(f"{self.reason_over_limit} 条理由超过 {STEP7_REASON_CHAR_LIMIT} 字")
+        if self.prose_chars > STEP7_PROSE_CHAR_LIMIT:
+            flags.append(f"正文 {self.prose_chars} 字超过 {STEP7_PROSE_CHAR_LIMIT} 字")
+        return f"输出 {self.total_chars} 字（JSON {self.json_chars} / 正文 {self.prose_chars}），" + (
+            "；".join(flags) if flags else "长度纪律符合"
+        )
+
+
+def audit_step7_length(text: str) -> Step7Length:
+    """量步骤 7 的输出：JSON 是否在前、正文多长、理由有没有超字数。
+
+    只统计、不改写，也不参与评分判定——评分落地与否仍由 `parse` + 锚点校验决定。
+    """
+    raw = text or ""
+    result = Step7Length(total_chars=len(raw))
+    if not raw:
+        return result
+
+    blob = extract_json(raw)
+    if blob:
+        result.json_chars = len(blob)
+        position = raw.find(blob[:40]) if len(blob) >= 40 else raw.find(blob)
+        if position < 0:
+            position = raw.find("{")
+        result.json_first = 0 <= position <= STEP7_JSON_LEAD_CHARS
+        result.prose_chars = max(0, len(raw) - result.json_chars)
+        try:
+            payload = json.loads(blob)
+        except Exception:  # noqa: BLE001
+            payload = None
+        if isinstance(payload, dict):
+            result.json_parsed = True
+            scores = payload.get("scores")
+            if isinstance(scores, dict):
+                result.items = len(scores)
+                lengths = [
+                    len(item["reason"]) for item in scores.values()
+                    if isinstance(item, dict) and isinstance(item.get("reason"), str)
+                ]
+                if lengths:
+                    result.reason_max_chars = max(lengths)
+                    result.reason_over_limit = sum(
+                        1 for value in lengths if value > STEP7_REASON_CHAR_LIMIT
+                    )
+    else:
+        result.prose_chars = len(raw)
+    return result
+
+
 def repair_messages(step: int, raw: str, errors: List[str]):
     """构造「只重出 JSON」的修复对话。"""
     system = (

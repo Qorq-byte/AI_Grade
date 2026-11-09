@@ -229,6 +229,8 @@ class PerformanceState(TypedDict, total=False):
     evaluation_table: str                  # Step6: 评价指标体系表（Markdown/HTML表格）
 
     indicator_analysis: str                # Step7: 指标分析内容
+    # Step7: 输出长度画像（JSON/正文占比、是否先给 JSON、理由超字数条数），只审计不改写
+    step7_length: Dict[str, Any]
     score_table: str                       # Step7: 最终评分表
 
     experience_summary: str                # Step8: 经验做法
@@ -285,6 +287,8 @@ class PerformanceState(TypedDict, total=False):
     errors: List[str]
     warnings: List[str]
     execution_log: List[Dict[str, Any]]   # 执行日志
+    # 输出被长度上限截断的步骤（finish_reason=length），供复核与统计
+    truncated_steps: List[int]
 
     # ── Token统计 ──
     token_usage: Dict[str, int]           # model_name -> total_tokens_used
