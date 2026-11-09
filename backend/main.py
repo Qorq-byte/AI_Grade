@@ -80,13 +80,19 @@ async def _on_startup():
 
         # 自动创建默认管理员账号
         from backend.database import SessionLocal
-        from backend.services.auth_service import create_admin_if_not_exists
+        from backend.services.auth_service import create_admin_if_not_exists, mark_default_password_users
         db = SessionLocal()
         try:
             create_admin_if_not_exists(db)
+            # 存量库里可能已有用初始口令跑着的账号（升级前创建的），逐个试算并打标
+            mark_default_password_users(db)
         finally:
             db.close()
         logger.info("管理员账号检查完成")
+
+        # 密钥存储状态（未配置 SECRET_ENCRYPTION_KEY 时这里会明确提示）
+        from backend.services.secret_box import describe_storage
+        logger.info(f"数据库密钥加密: {describe_storage()}")
 
         # 自动填充默认Prompt模板到数据库（仅插入缺失步骤）
         from backend.agents.prompts.default_prompts import PromptTemplateFactory, STEP_META
