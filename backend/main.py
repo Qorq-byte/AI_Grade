@@ -9,7 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 from loguru import logger
 from datetime import datetime, timedelta
 import sys
@@ -34,12 +36,111 @@ logger.add(
     level="DEBUG" if settings.DEBUG else "INFO"
 )
 
+# ── 启动 / 关闭（lifespan）──────────────────────────────
+# 为什么不用 @app.on_event：FastAPI 已弃用（启动日志和测试里一直报 deprecation），
+# 而且 on_event 的 shutdown 只能打日志、没法 await 被取消的后台任务。
+# lifespan 允许「先 yield 再 await 收尾」，清理定时器才有地方等它真正停下（批次 23）。
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await _on_startup()
+    try:
+        yield
+    finally:
+        # 用 finally：正常退出、异常退出、被取消，都要把后台任务收干净
+        await _on_shutdown()
+
+
+async def _on_startup():
+    """应用启动：配置自检 → 建库建表 → 默认管理员/模板 → 清理定时器。"""
+    logger.info(f"{settings.APP_NAME} v{settings.APP_VERSION} 启动中...")
+
+    # ── 环境配置校验 ──
+    config_issues = settings.validate_required_settings()
+    if config_issues:
+        logger.warning("=" * 50)
+        logger.warning("环境配置缺失，请检查以下配置项（可参考 .env.example）：")
+        for issue in config_issues:
+            logger.warning(f"  ⚠ {issue}")
+        logger.warning("=" * 50)
+
+    logger.info(f"LangSmith追踪: {'启用' if settings.LANGCHAIN_TRACING_V2 else '禁用'}")
+    logger.info(f"默认模型: {settings.DEFAULT_MODEL}")
+
+    # 初始化数据库
+    try:
+        from backend.database import init_db
+        # 先导入所有模型，确保Base.metadata包含所有表定义
+        from backend.models.user_models import (
+            User, Project, ProjectFile, WorkflowSession, Report,
+            TokenUsage, PromptTemplate, AiConversation, AiMessage,
+            OperationLog, Notification, ReportModuleSequence,
+        )
+        init_db()
+        logger.info("数据库初始化成功")
+
+        # 自动创建默认管理员账号
+        from backend.database import SessionLocal
+        from backend.services.auth_service import create_admin_if_not_exists
+        db = SessionLocal()
+        try:
+            create_admin_if_not_exists(db)
+        finally:
+            db.close()
+        logger.info("管理员账号检查完成")
+
+        # 自动填充默认Prompt模板到数据库（仅插入缺失步骤）
+        from backend.agents.prompts.default_prompts import PromptTemplateFactory, STEP_META
+        db2 = SessionLocal()
+        try:
+            for step_number in range(1, 15):
+                existing = db2.query(PromptTemplate).filter_by(
+                    step_number=step_number, is_system=True
+                ).first()
+                if existing is None:
+                    meta = STEP_META.get(step_number, {"name": f"Step {step_number}"})
+                    system_prompt = PromptTemplateFactory.build_raw_system_prompt(step_number)
+                    human_prompt = PromptTemplateFactory.build_raw_human_prompt(step_number)
+                    full_prompt = f"{system_prompt}\n\n---\n\n{human_prompt}"
+                    pt = PromptTemplate(
+                        step_number=step_number,
+                        step_name=meta.get("name", f"Step {step_number}"),
+                        prompt_content=full_prompt,
+                        is_system=True,
+                        version=1,
+                        change_log="系统初始化默认模板",
+                    )
+                    db2.add(pt)
+            db2.commit()
+            logger.info("默认Prompt模板已同步到数据库")
+        except Exception as e:
+            logger.warning(f"默认Prompt模板同步失败（非致命）: {e}")
+        finally:
+            db2.close()
+
+        # ── 启动文件保留清理任务 ──
+        # 沿用改前的行为：DB 起不来就不起清理任务（它一样连不上库）
+        _start_cleanup_scheduler()
+
+    except Exception as e:
+        logger.error(f"数据库初始化失败: {str(e)}")
+
+
+async def _on_shutdown():
+    """应用关闭：停掉清理定时器（取消 + 等它收尾）。"""
+    logger.info("应用关闭...")
+    try:
+        await _stop_cleanup_scheduler()
+    except Exception as e:  # noqa: BLE001 关闭阶段不能再把进程卡住
+        logger.error(f"关闭清理定时器失败: {e}")
+
+
 # 创建FastAPI应用实例
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     description="基于LangGraph和RAG的智能绩效评价报告生成系统",
-    debug=settings.DEBUG
+    debug=settings.DEBUG,
+    lifespan=lifespan,
 )
 
 # ── 前端页面路由注册表 ──
@@ -130,86 +231,20 @@ from backend.routes import agent_routes
 from backend.routes.client_routes import router as client_router
 
 
-@app.on_event("startup")
-async def startup_event():
-    """应用启动事件"""
-    logger.info(f"{settings.APP_NAME} v{settings.APP_VERSION} 启动中...")
-    
-    # ── 环境配置校验 ──
-    config_issues = settings.validate_required_settings()
-    if config_issues:
-        logger.warning("=" * 50)
-        logger.warning("环境配置缺失，请检查以下配置项（可参考 .env.example）：")
-        for issue in config_issues:
-            logger.warning(f"  ⚠ {issue}")
-        logger.warning("=" * 50)
-    
-    logger.info(f"LangSmith追踪: {'启用' if settings.LANGCHAIN_TRACING_V2 else '禁用'}")
-    logger.info(f"默认模型: {settings.DEFAULT_MODEL}")
-    
-    # 初始化数据库
-    try:
-        from backend.database import init_db
-        # 先导入所有模型，确保Base.metadata包含所有表定义
-        from backend.models.user_models import (
-            User, Project, ProjectFile, WorkflowSession, Report,
-            TokenUsage, PromptTemplate, AiConversation, AiMessage,
-            OperationLog, Notification, ReportModuleSequence,
-        )
-        init_db()
-        logger.info("数据库初始化成功")
-        
-        # 自动创建默认管理员账号
-        from backend.database import SessionLocal
-        from backend.services.auth_service import create_admin_if_not_exists
-        db = SessionLocal()
-        try:
-            create_admin_if_not_exists(db)
-        finally:
-            db.close()
-        logger.info("管理员账号检查完成")
-        
-        # 自动填充默认Prompt模板到数据库（仅插入缺失步骤）
-        from backend.agents.prompts.default_prompts import PromptTemplateFactory, STEP_META
-        db2 = SessionLocal()
-        try:
-            for step_number in range(1, 15):
-                existing = db2.query(PromptTemplate).filter_by(
-                    step_number=step_number, is_system=True
-                ).first()
-                if existing is None:
-                    meta = STEP_META.get(step_number, {"name": f"Step {step_number}"})
-                    system_prompt = PromptTemplateFactory.build_raw_system_prompt(step_number)
-                    human_prompt = PromptTemplateFactory.build_raw_human_prompt(step_number)
-                    full_prompt = f"{system_prompt}\n\n---\n\n{human_prompt}"
-                    pt = PromptTemplate(
-                        step_number=step_number,
-                        step_name=meta.get("name", f"Step {step_number}"),
-                        prompt_content=full_prompt,
-                        is_system=True,
-                        version=1,
-                        change_log="系统初始化默认模板",
-                    )
-                    db2.add(pt)
-            db2.commit()
-            logger.info("默认Prompt模板已同步到数据库")
-        except Exception as e:
-            logger.warning(f"默认Prompt模板同步失败（非致命）: {e}")
-        finally:
-            db2.close()
-        
-        # ── 启动文件保留清理任务 ──
-        _start_cleanup_scheduler()
-        
-    except Exception as e:
-        logger.error(f"数据库初始化失败: {str(e)}")
+# 后台清理任务的引用：`asyncio.create_task` 返回的任务只被事件循环弱引用，
+# 不自己拿住就有被 GC 的风险；而且进程关闭时没人 cancel 它（批次 23）。
+_CLEANUP_TASK: Optional[asyncio.Task] = None
 
 
-def _start_cleanup_scheduler():
-    """启动后台定时清理任务（每天凌晨3点检查）"""
+def _start_cleanup_scheduler() -> Optional[asyncio.Task]:
+    """启动后台定时清理任务（每天凌晨3点检查）；重复调用返回同一个任务。"""
+    global _CLEANUP_TASK
+    if _CLEANUP_TASK is not None and not _CLEANUP_TASK.done():
+        return _CLEANUP_TASK
+
     from backend.services.cleanup_service import CleanupService
     from backend.database import SessionLocal
-    
+
     async def _cleanup_loop():
         while True:
             now = datetime.now()
@@ -217,17 +252,17 @@ def _start_cleanup_scheduler():
             if next_run <= now:
                 next_run = next_run + timedelta(days=1)
             wait_seconds = (next_run - now).total_seconds()
-            
+
             logger.info(f"文件清理任务将在 {next_run.strftime('%Y-%m-%d %H:%M:%S')} 执行（等待 {wait_seconds/3600:.1f} 小时）")
             await asyncio.sleep(wait_seconds)
-            
+
             try:
                 db = SessionLocal()
                 try:
                     stuck_count = CleanupService.cleanup_failed_workflows(db, max_age_hours=24)
                     if stuck_count > 0:
                         logger.info(f"自动清理了 {stuck_count} 个卡住的工作流")
-                    
+
                     stats = CleanupService.cleanup_expired_files(db)
                     if stats["deleted_files"] > 0:
                         logger.info(
@@ -238,14 +273,31 @@ def _start_cleanup_scheduler():
                     db.close()
             except Exception as e:
                 logger.error(f"自动清理任务执行失败: {e}")
-    
-    asyncio.create_task(_cleanup_loop())
+
+    _CLEANUP_TASK = asyncio.create_task(_cleanup_loop(), name="file-cleanup")
     logger.info("文件保留清理定时器已启动（每日凌晨3点）")
-    
-@app.on_event("shutdown")
-async def shutdown_event():
-    """应用关闭事件"""
-    logger.info("应用关闭...")
+    return _CLEANUP_TASK
+
+
+async def _stop_cleanup_scheduler() -> bool:
+    """取消清理任务并等它真正结束；返回是否真的停了一个在跑的任务。
+
+    只 cancel 不 await 等于把清理逻辑留在半路（它在写文件/写库时被砍断），
+    所以这里等任务退出后再返回。
+    """
+    global _CLEANUP_TASK
+    task, _CLEANUP_TASK = _CLEANUP_TASK, None
+    if task is None or task.done():
+        return False
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:  # noqa: BLE001 任务自身异常不应阻断关闭
+        logger.error(f"清理任务退出时异常: {e}")
+    logger.info("文件保留清理定时器已停止")
+    return True
 
 
 @app.get("/health")
