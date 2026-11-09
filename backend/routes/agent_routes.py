@@ -29,6 +29,7 @@ from backend.agents import performance_agent
 from backend.agents.performance_agent import PerformanceAgent
 from backend.agents.tools.export_service import ExportService, ExportStyle, export_report
 from backend.agents.tools.score_validator import actual_indicator_score, indicator_tree_error, score_number
+from backend.agents.tools import structured_output
 from backend.services.workflow_evidence import report_evidence_index
 from backend.services import export_cache
 from backend.agents.tools.questionnaire_gen import QuestionnaireGenerator, generate_default_questionnaire, indicator_leaves
@@ -294,6 +295,12 @@ def _apply_step_edit(session_id, step, content, source, expected_version=None):
             raise HTTPException(status_code=422, detail="请修改步骤 3 的指标体系来调整指标分配，或使用逐指标评分")
     else:
         updates = {STEP_CONTENT_FIELDS[step]: {"raw": content} if step == 5 else content}
+        if step == 7:
+            # 报告第四章取的是 step7_prose：人工改完必须跟着重算，
+            # 否则报告里还是修改前那段正文（批次 22）
+            scores_json, prose = structured_output.split_step7_output(content)
+            updates["step7_scores_json"] = scores_json
+            updates["step7_prose"] = prose
 
     prior_revision = {"version": version, "content": previous.get("content", ""),
                       "edited_by": previous.get("edited_by", "workflow")}
@@ -1407,6 +1414,20 @@ async def save_report_content(req: SaveReportRequest, db: Session = Depends(get_
     }
 
 
+def _chapter_from_values(values: dict, key: str):
+    """取某一章的正文。
+
+    第四章（`indicator_analysis`）优先取步骤 7 的正文 `step7_prose`：整段输出是
+    「评分 JSON + 正文」，直接拼进报告就是一段裸 JSON（批次 22）。老会话没有这个字段，
+    回退原文，宁可在报告里留着也不清空章节。
+    """
+    if key == "indicator_analysis":
+        prose = (values.get("step7_prose") or "").strip()
+        if prose:
+            return prose
+    return values.get(key)
+
+
 def _assemble_report_from_steps(values: dict) -> str:
     """从各步骤State值拼装完整报告Markdown"""
     sections = []
@@ -1417,7 +1438,7 @@ def _assemble_report_from_steps(values: dict) -> str:
         ("一、绩效评价工作开展情况", values.get("work_introduction")),
         ("二、项目基本情况", values.get("basic_info")),
         ("三、评价指标体系", values.get("evaluation_table")),
-        ("四、指标得分及分析", values.get("indicator_analysis")),
+        ("四、指标得分及分析", _chapter_from_values(values, "indicator_analysis")),
         ("五、综合评价分析及结论", values.get("comprehensive_evaluation")),
         ("六、主要经验做法", values.get("experience_summary")),
         ("七、存在问题及原因分析", values.get("problems_analysis")),
@@ -1463,6 +1484,9 @@ def _assemble_report_from_backup_steps(backup: dict) -> str:
         content = ""
         if isinstance(step, dict):
             content = step.get("content", "")
+        if step_num == "7":
+            # 第四章只拼正文：不带这一步，报告里就会出现整段评分 JSON（批次 22）
+            content = (backup.get("step7_prose") or "").strip() or content
         if not content:
             content = "（本部分内容尚未生成）"
         if not content.startswith("#"):
