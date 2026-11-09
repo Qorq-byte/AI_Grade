@@ -62,6 +62,8 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
                 "username": user.username,
                 "role": user.role.value,
                 "tokens_used": user.tokens_used,
+                # 前端据此直接把用户送到改密面板，而不是让他挨个点出 403
+                "must_change_password": bool(getattr(user, "must_change_password", False)),
                 "access_token": access_token,
                 "refresh_token": refresh_token,
             }
@@ -174,6 +176,7 @@ def get_me(current_user: User = Depends(get_current_user)):
             "role": current_user.role.value,
             "phone": current_user.phone,
             "is_active": current_user.is_active,
+            "must_change_password": bool(getattr(current_user, "must_change_password", False)),
             "tokens_used": current_user.tokens_used,
             "created_at": current_user.created_at.isoformat(),
         }
