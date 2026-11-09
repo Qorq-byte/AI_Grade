@@ -211,10 +211,16 @@ def _agent(monkeypatch, llm, model_name="deepseek-chat", session_id=""):
     return agent
 
 
-def test_budget_table_only_covers_step7():
-    """给全部步骤硬顶 4000 会截断 9 个步骤（步骤 5 实测 10,352 token），不能顺手改。"""
-    assert performance_agent.STEP_OUTPUT_BUDGETS == {7: 6000}
-    assert performance_agent.step_output_budget(8) is None
+def test_budget_table_only_covers_measured_steps():
+    """预算表只覆盖真正量过的步骤；不许被顺手扩成「全步骤都 4000」。
+
+    批次 21 按 `token_usage` 的数据把 5 / 6 也纳入（步骤 5 最大 10,352、
+    步骤 6 最大 8,434），其余步骤仍是「跑到模型硬顶」——它们没有量过，
+    硬加一个上限只会制造没必要的截断。
+    """
+    assert performance_agent.STEP_OUTPUT_BUDGETS == {5: 8000, 6: 6000, 7: 6000}
+    for unmeasured in (1, 2, 3, 4, 8, 9, 10, 11, 12, 13):
+        assert performance_agent.step_output_budget(unmeasured) is None
 
 
 def test_budget_is_above_global_max_tokens(monkeypatch):
