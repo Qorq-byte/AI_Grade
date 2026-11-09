@@ -47,6 +47,7 @@ from backend.agents.tools import structured_output
 from backend.agents.prompts.prompt_manager import get_prompt_manager, TemperatureProfile
 from backend.agents.prompts.default_prompts import STEP_META, PromptTemplateFactory
 from backend.database import SessionLocal
+from backend.services import state_backup
 from backend.utils.llm_helper import get_model_provider
 
 from backend.services.workflow_evidence import retrieve_step_evidence, render_evidence, report_evidence_index
@@ -1223,7 +1224,12 @@ class PerformanceAgent:
 
     @staticmethod
     def update_state_backup(session_id: str, updates: Dict[str, Any]) -> None:
-        """Merge a backup update and publish it with an atomic replacement."""
+        """Merge a backup update and publish it with an atomic replacement.
+
+        落盘走 `state_backup.compact()`：步骤正文与独立字段逐字相同时只存一份引用
+        （批次 25 实测备份体积 -54%，见 `backend/services/state_backup.py`）。
+        `load_state_backup()` 会把引用还原回去，所以调用方看到的形状不变。
+        """
         with _STATE_BACKUP_LOCK:
             backup = PerformanceAgent.load_state_backup(session_id)
             backup.update(updates)
@@ -1233,7 +1239,7 @@ class PerformanceAgent:
             temp_path = Path(temp_name)
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as target:
-                    json.dump(backup, target, ensure_ascii=False, indent=2)
+                    state_backup.dump(backup, target)
                 _publish_backup(temp_path, path)
             finally:
                 temp_path.unlink(missing_ok=True)
@@ -1249,12 +1255,16 @@ class PerformanceAgent:
 
     @staticmethod
     def load_state_backup(session_id: str) -> Dict[str, Any]:
-        """从文件恢复关键状态"""
+        """从文件恢复关键状态。
+
+        返回前先 `hydrate()`：把批次 25 引入的「正文引用」还原成 `content`，
+        这样所有调用方（报告拼装、步骤编辑、进度查询）拿到的仍是全文。
+        """
         try:
             with _STATE_BACKUP_LOCK:
                 with (STATE_BACKUP_DIR / f"{session_id}.json").open(encoding="utf-8") as f:
                     backup = json.load(f)
-                    return backup if isinstance(backup, dict) else {}
+                    return state_backup.hydrate(backup) if isinstance(backup, dict) else {}
         except (OSError, ValueError):
             return {}
 
