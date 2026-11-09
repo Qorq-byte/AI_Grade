@@ -7,6 +7,13 @@ from sqlalchemy.orm import Session
 from loguru import logger
 from backend.models.user_models import User, UserRole
 
+#: 首次启动自动创建的管理员口令。它是公开可见的（写在源码和 README 里），
+#: 所以创建后必须置 must_change_password，登录第一件事就是改掉（批次 24）。
+DEFAULT_ADMIN_PASSWORD = "Admin@123456"
+
+#: 迁移时用来识别「还在用初始口令」的账号。只认这些；用户自己设的密码不会被误标。
+KNOWN_DEFAULT_PASSWORDS = (DEFAULT_ADMIN_PASSWORD,)
+
 
 def hash_password(password: str, salt: str = None) -> tuple:
     if salt is None:
@@ -42,8 +49,13 @@ def validate_password_strength(password: str) -> list:
     return errors
 
 
-def create_user(db: Session, username: str, password: str, phone: str = None, role: str = "user") -> User:
-    """创建用户（含密码复杂度校验）"""
+def create_user(db: Session, username: str, password: str, phone: str = None, role: str = "user",
+                must_change_password: bool = False) -> User:
+    """创建用户（含密码复杂度校验）
+
+    must_change_password=True 用于「初始口令不是本人设定」的账号（管理员建号、
+    默认管理员），登录后先强制改密。
+    """
     # 密码复杂度校验
     validation_errors = validate_password_strength(password)
     if validation_errors:
@@ -67,12 +79,13 @@ def create_user(db: Session, username: str, password: str, phone: str = None, ro
         username=username,
         password_hash=stored_value,
         phone=phone,
-        role=UserRole.ADMIN if role == "admin" else UserRole.USER
+        role=UserRole.ADMIN if role == "admin" else UserRole.USER,
+        must_change_password=must_change_password,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
-    logger.info(f"创建用户成功: username={username}, role={role}")
+    logger.info(f"创建用户成功: username={username}, role={role}, 需改密={must_change_password}")
     return user
 
 
@@ -119,22 +132,27 @@ def create_admin_if_not_exists(db: Session):
             admin = create_user(
                 db=db,
                 username="admin",
-                password="Admin@123456",
-                role="admin"
+                password=DEFAULT_ADMIN_PASSWORD,
+                role="admin",
+                must_change_password=True,
             )
-            logger.info("默认管理员账号已创建: admin/Admin@123456")
+            # 不再把口令打进日志：日志会被收集、转发、贴进工单，等于二次泄露
+            logger.info("默认管理员账号已创建（初始口令见文档，首次登录必须修改）")
         except ValueError as e:
             # 如果密码复杂度校验失败，使用更简单的密码通过hash直接创建
             logger.warning(f"默认管理员创建失败({e})，尝试替代方式")
+            # 注意 hash_password 返回 (hash, salt) 元组，必须拼成 "salt:hash" 才能过后续校验
+            raw_hash, raw_salt = hash_password(DEFAULT_ADMIN_PASSWORD)
             admin = User(
                 username="admin",
-                password_hash=hash_password("Admin@123456"),
+                password_hash=f"{raw_salt}:{raw_hash}",
                 role=UserRole.ADMIN,
                 is_active=True,
+                must_change_password=True,
                 created_at=datetime.utcnow()
             )
             db.add(admin)
             db.commit()
             db.refresh(admin)
-            logger.info("默认管理员账号已创建(替代方式): admin/Admin@123456")
+            logger.info("默认管理员账号已创建(替代方式)")
     return admin
