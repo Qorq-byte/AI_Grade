@@ -1853,48 +1853,6 @@ async def export_step_content(request: ExportStepRequest, user: User = Depends(g
 #  工作流 - 问卷答案提交
 # ═══════════════════════════════════════════════════════
 
-@router.post("/workflow/questionnaire", response_model=AgentResponse, dependencies=[Depends(_require_body_workflow)])
-async def generate_questionnaire(request: QuestionnaireRequest):
-    session_id = request.session_id
-    values = _get_workflow_values(session_id)
-    indicators = values.get("indicator_system") or {}
-    if not indicators.get("level1_indicators"):
-        raise HTTPException(status_code=400, detail="指标体系尚未生成，请先完成步骤 3")
-    signature = hashlib.sha256(json.dumps(
-        [indicators, sorted(set(request.custom_indicator_ids)) if request.custom_indicator_ids is not None else None,
-         request.max_questions], ensure_ascii=False, sort_keys=True,
-    ).encode()).hexdigest()
-    backup = PerformanceAgent.load_state_backup(session_id)
-    previous = _QUESTIONNAIRE_CACHE.get(session_id) or backup.get("questionnaire", {})
-    if previous.get("indicator_version") == signature and previous.get("questions"):
-        return _questionnaire_response(session_id, previous)
-
-    generator = QuestionnaireGenerator()
-    questions = generator.generate_questions(
-        indicators, custom_indicators=request.custom_indicator_ids, max_questions=request.max_questions,
-    )
-    if not questions:
-        return AgentResponse(success=True, data={
-            "session_id": session_id, "questionnaire": [], "display_markdown": "", "total_questions": 0,
-        }, message="资料不足，当前指标中没有符合条件的问卷题目")
-    for item in previous.get("questions", []):
-        if item.get("created_by") == "user" and item.get("question_type") == "open_ended":
-            questions.append({**item, "index": len(questions) + 1})
-
-    published = {
-        "project_name": values.get("project_name") or "未命名项目", "questions": questions,
-        "display_md": generator.format_questionnaire_for_display(questions),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-        "indicator_version": signature, "version": uuid.uuid4().hex,
-    }
-    history = backup.get("questionnaire_history", [])
-    if previous.get("questions"):
-        history = [*history, previous]
-    PerformanceAgent.update_state_backup(session_id, {"questionnaire": published, "questionnaire_history": history})
-    _QUESTIONNAIRE_CACHE[session_id] = published
-    return _questionnaire_response(session_id, published)
-
-
 @router.get("/workflow/questionnaire/list", response_model=AgentResponse)
 async def list_questionnaires(user: User = Depends(get_current_user),
                               db: Session = Depends(get_db)):
