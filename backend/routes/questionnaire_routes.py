@@ -134,3 +134,37 @@ async def submit_questionnaire_answers(req: SubmitQuestionnaireRequest, db: Sess
     db.commit()
     return {"success": True, "data": {"saved": len(rows), "errors": []}, "message": "答卷已保存"}
 
+@router.get("/workflow/{session_id}/questionnaire/answers", dependencies=[Depends(_require_path_workflow)])
+async def get_questionnaire_answers(session_id: str):
+    """获取指定 session 的问卷答案（用于报告生成引用）"""
+    from backend.database import SessionLocal
+    from backend.models.user_models import QuestionnaireAnswer
+
+    db = SessionLocal()
+    try:
+        rows = db.query(QuestionnaireAnswer).filter(
+            QuestionnaireAnswer.session_id == session_id
+        ).order_by(QuestionnaireAnswer.submitted_at).all()
+
+        return {
+            "success": True,
+            "data": [{
+                "id": r.id,
+                "question_id": r.question_id,
+                "question_text": r.question_text,
+                "question_type": r.question_type,
+                "related_indicator_name": r.related_indicator_name,
+                "selected_level_index": r.selected_level_index,
+                "text_answer": r.text_answer,
+                "submitted_at": r.submitted_at.isoformat() if r.submitted_at else None,
+            } for r in rows],
+            "total": len(rows),
+        }
+    finally:
+        db.close()
+
+
+# ═══════════════════════════════════════════════════════
+#  工作流 - 调查问卷生成
+# ═══════════════════════════════════════════════════════
+
