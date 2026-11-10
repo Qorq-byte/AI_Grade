@@ -55,6 +55,17 @@ def _key(item: dict) -> tuple:
     return item["path"], tuple(item["methods"])
 
 
+def _dep_names(deps) -> list:
+    """依赖比对只看函数名，不看定义模块。
+
+    拆分 `agent_routes.py` 会把 `_require_*` 这类依赖搬到 `_workflow_deps`，
+    它们的 `__module__` 随之改变 —— 但**接口契约没变**（还是同一个函数、同样的副作用）。
+    把模块名算进契约，每次搬依赖都会假红，快照就会被人为无视，那才是真的失守。
+    丢依赖、换成另一个函数，仍然按名字抓得住。
+    """
+    return sorted({str(item).rsplit(".", 1)[-1] for item in deps})
+
+
 def diff(before: list[dict], after: list[dict]) -> list[str]:
     issues = []
     before_map = {_key(item): item for item in before}
@@ -65,9 +76,11 @@ def diff(before: list[dict], after: list[dict]) -> list[str]:
         issues.append(f"多了路由：{key[1]} {key[0]}")
     for key in before_map.keys() & after_map.keys():
         old, new = before_map[key], after_map[key]
-        for field in ("name", "deps", "body", "response_model", "status_code"):
+        for field in ("name", "body", "response_model", "status_code"):
             if old[field] != new[field]:
                 issues.append(f"{key[1]} {key[0]} 的 {field} 变了：{old[field]!r} → {new[field]!r}")
+        if _dep_names(old["deps"]) != _dep_names(new["deps"]):
+            issues.append(f"{key[1]} {key[0]} 的 deps 变了：{old['deps']!r} → {new['deps']!r}")
     return issues
 
 

@@ -36,6 +36,25 @@ def test_changed_dependency_is_detected():
     assert any("deps" in item for item in issues)
 
 
+def test_dependency_moving_between_modules_is_not_a_diff():
+    """批次 34：`_require_*` 搬到 `_workflow_deps` 后模块名变了，但契约没变。
+
+    把模块名算进契约，每次搬依赖都会假红 —— 快照一旦假红，就会被人为无视。
+    """
+    before = [_route("/a", deps=["backend.routes.agent_routes._require_path_workflow"])]
+    after = [_route("/a", deps=["backend.routes._workflow_deps._require_path_workflow"])]
+
+    assert diff(before, after) == []
+
+
+def test_dependency_replaced_by_another_function_is_detected():
+    """同模块换函数（鉴权换成另一个）仍要抓 —— 只放宽了模块名。"""
+    before = [_route("/a", deps=["backend.routes.agent_routes._require_path_workflow"])]
+    after = [_route("/a", deps=["backend.routes._workflow_deps._require_body_workflow"])]
+
+    assert any("deps" in item for item in diff(before, after))
+
+
 def test_changed_response_model_and_body_are_detected():
     before = [_route("/a", body="OldReq", response="OldResp")]
     after = [_route("/a", body="NewReq", response="NewResp")]
