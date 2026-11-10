@@ -1869,19 +1869,6 @@ class SubmitQuestionnaireRequest(BaseModel):
     questionnaire_version: str | None = None
 
 
-def _questionnaire_response(session_id, data):
-    return AgentResponse(success=True, data={
-        "session_id": session_id, "questionnaire": data["questions"],
-        "display_markdown": data.get("display_md", ""),
-        "total_questions": len(data["questions"]), "questionnaire_version": data.get("version"),
-    })
-
-
-@router.get("/workflow/{session_id}/questionnaire", response_model=AgentResponse)
-async def get_public_questionnaire(session_id: str):
-    return _questionnaire_response(session_id, _published_questionnaire(session_id))
-
-
 @router.post("/workflow/questionnaire/submit")
 async def submit_questionnaire_answers(req: SubmitQuestionnaireRequest, db: Session = Depends(get_db)):
     from backend.models.user_models import QuestionnaireAnswer
