@@ -442,7 +442,7 @@
         var currentUserData=null,isChatEnabled=true,isCollapsed=false,isMobileOpen=false,currentConversationId=null,conversations=[],isRecording=false,recordingTimer=null,recordingSeconds=0,currentMode='',speechRecognition=null,chatStatusPollTimer=null,notificationPollTimer=null;
 
         // ====== WF State ======
-        var wfSessionId=null,wfRunning=false,wfCurrentStep=0,wfStatus="",wfStatusController=null,wfCoverage=null,wfConsistency=null,wfDispo=null,wfCritique=null,wfVersions={},wfEvidence={},wfReviewSteps=[],wfCompletedSteps=[],wfStepContents={},wfApprovalStep=null,wfUploadedFiles=[],wfAbortController=null
+        var wfSessionId=null,wfRunning=false,wfCurrentStep=0,wfStatus="",wfStatusController=null,wfCoverage=null,wfConsistency=null,wfDispo=null,wfCritique=null,wfCritiqueSwitches={},wfVersions={},wfEvidence={},wfReviewSteps=[],wfCompletedSteps=[],wfStepContents={},wfApprovalStep=null,wfUploadedFiles=[],wfAbortController=null
 
         function initWfStepper(){var l=document.getElementById('wfStepperList');if(!l)return;l.innerHTML='';for(var i=1;i<=14;i++){(function(sn){var div=document.createElement('div');div.className='wf-step';div.id='wfStep'+sn;div.innerHTML='<div class="wf-step-dot">'+sn+'</div><span class="wf-step-name">'+C.STEP_NAMES[sn]+'</span>';div.onclick=function(){selectWfStep(sn)};l.appendChild(div)})(i)}}
 
@@ -456,7 +456,7 @@
     inner+=buildCoverageBadge();
     if(sn===14)inner+=buildConsistencyBadge();
     if(sn===7)inner+=buildScoreDispositionBadge();
-    if(sn===9)inner+=buildStep9CritiqueBadge();
+    if(sn===9||sn===10)inner+=buildCritiqueBadge(sn);
     if(!txt&&st!=='done'){
         inner+='<div class="wf-empty"><h3>'+C.STEP_NAMES[sn]+'</h3><p>'+(st==='done'?'该步骤已完成，但内容尚未加载。':'该步骤尚未执行或内容生成中。')+'</p></div>';
     }else{
@@ -525,8 +525,20 @@ function buildConsistencyBadge(){
 /* 步骤7评分落地台账：区分「模型看过资料说没法评」与「系统把评分丢了」 */
 /* 步骤 9 的漏项补全：批次 29。台账只有几十到几百字节，放 /status 里没问题；
    前后两版正文不进轮询，点「看修订前版本」才去拉。 */
-function buildStep9CritiqueBadge(){
-    var d=wfCritique;
+/* 漏项补全：批次 29 做步骤 9，批次 30 扩到步骤 10。
+   台账（几十到几百字节）随 /status 回来；前后两版正文按需拉 /critique/{step}。 */
+var CRITIQUE_LABEL={9:'问题分析',10:'改进建议'};
+function buildCritiqueBadge(step){
+    var all=wfCritique||{},d=all[String(step)]||null;
+    var on=!!wfCritiqueSwitches[String(step)];
+    var label=CRITIQUE_LABEL[step]||('步骤'+step);
+    /* 开关按钮：默认开，点一下关掉（少花一次模型钱）；关着的时候也要能点开 */
+    var btn='<a href="javascript:void(0)" onclick="toggleCritique('+step+')" style="margin-left:8px;font-size:12px;color:'+(on?'#975a16':'#3182ce')+'">'
+        +(on?'关闭「'+label+'」漏项补全':'开启「'+label+'」漏项补全')+'</a>';
+    if(!on){
+        return '<div class="wb-dispo" role="status" style="background:#f7fafc;color:#4a5568">'
+            +'⏸ 「'+label+'」漏项补全已关闭（不会补写未点名的扣分指标）'+btn+'</div>';
+    }
     if(!d||!d.enabled)return '';
     var low=Number(d.low_score||0),miss=(d.missing||[]).length,gained=(d.gained||[]).length;
     var head,cls;
@@ -548,18 +560,32 @@ function buildStep9CritiqueBadge(){
         html+='<span class="wb-dispo-chip">'+Number(d.chars_before)+' 字 → '+Number(d.chars_after)+' 字</span>';
     }
     if(d.revised){
-        html+=' <a href="javascript:void(0)" onclick="showStep9Critique()" style="color:#3182ce;font-size:12px">看修订前版本</a>';
+        html+=' <a href="javascript:void(0)" onclick="showCritique('+step+')" style="color:#3182ce;font-size:12px">看修订前版本</a>';
     }
-    html+='</div><div id="wfCritiqueDiff" style="display:none"></div>';
+    html+=btn;
+    html+='</div><div id="wfCritiqueDiff'+step+'" style="display:none"></div>';
     return html;
 }
 
-function showStep9Critique(){
-    var box=document.getElementById('wfCritiqueDiff');
+function toggleCritique(step){
+    if(!wfSessionId)return;
+    var on=!!wfCritiqueSwitches[String(step)];
+    api('POST','/api/agent/workflow/set-critique',
+        {session_id:wfSessionId,enabled:!on,step:step})
+        .then(function(){
+            wfCritiqueSwitches[String(step)]=!on;
+            /* 重新渲染当前面板：徽标状态与按钮文案都跟着变 */
+            selectWfStep(step);
+        })
+        .catch(function(e){ if(window.WBUI&&WBUI.toast)WBUI.toast('切换失败：'+(e.message||'未知错误'),'error'); });
+}
+
+function showCritique(step){
+    var box=document.getElementById('wfCritiqueDiff'+step);
     if(!box||!wfSessionId)return;
     if(box.style.display!=='none'){box.style.display='none';return}
     box.style.display='block';box.innerHTML='加载中...';
-    api('GET','/api/agent/workflow/'+encodeURIComponent(wfSessionId)+'/step9-critique')
+    api('GET','/api/agent/workflow/'+encodeURIComponent(wfSessionId)+'/critique/'+step)
         .then(function(r){
             var d=(r&&r.data)||{};
             var before=d.before||'',after=d.after||'';
@@ -1231,7 +1257,7 @@ function refineStepContent(stepNum, msgText, isApprovalReject){
             // 重置状态，准备新评价
             wfStatusController?.abort();
             wfSessionId=newWorkflowSession();sessionStorage.setItem(workflowSessionKey,wfSessionId);
-            wfCompletedSteps=[];wfStepContents={};wfVersions={};wfEvidence={};wfReviewSteps=[];wfApprovalStep=null;wfCurrentStep=0;wfStatus='running';wfCoverage=null;wfConsistency=null;wfDispo=null;wfCritique=null;
+            wfCompletedSteps=[];wfStepContents={};wfVersions={};wfEvidence={};wfReviewSteps=[];wfApprovalStep=null;wfCurrentStep=0;wfStatus='running';wfCoverage=null;wfConsistency=null;wfDispo=null;wfCritique=null;wfCritiqueSwitches={};
             document.getElementById('wfRetryBtn').hidden=true;
             window._currentQuestionData=null;  // 清空问卷缓存，确保下次切换Tab重新加载
             initWfStepper();document.getElementById('wfLayout').style.display='flex';
@@ -1366,7 +1392,8 @@ var body={session_id:wfSessionId,use_rag:document.getElementById("wfUseRag").che
                 if (data.document_coverage && data.document_coverage.total_chars) wfCoverage = data.document_coverage;
                 wfConsistency = (data.consistency && data.consistency.checked) ? data.consistency : null;
                 wfDispo = (data.score_disposition && data.score_disposition.total) ? data.score_disposition : null;
-                wfCritique = (data.step9_critique && data.step9_critique.enabled) ? data.step9_critique : null;
+                wfCritique = data.critique || (data.step9_critique ? {'9': data.step9_critique} : null);
+                wfCritiqueSwitches = data.critique_switches || {};
                 wfApprovalStep = null;
                 if (data.requires_approval) {
                     handleSSEEvent({event:'waiting_approval', session_id:wfSessionId, approval_step:data.approval_step});
