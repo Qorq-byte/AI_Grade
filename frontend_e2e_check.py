@@ -353,16 +353,49 @@ log("质量未验证" in html, "质量徽标区分「质量未验证」（一条
 log("d.review" in html or "rv=d.review" in html, "报告卡片读取接口返回的 review 字段")
 
 # 批次 29：步骤 9 的漏项补全。徽标读 /status 里的台账，正文走单独接口。
-log("buildStep9CritiqueBadge" in html, "/client 服务出的 HTML 含步骤9漏项补全徽标")
-log("showStep9Critique" in html, "徽标可展开修订前后对比")
-log("step9-critique" in html, "对比面板调用 /step9-critique 接口")
+log("buildCritiqueBadge" in html, "/client 服务出的 HTML 含漏项补全徽标（两步共用）")
+log("showCritique" in html, "徽标可展开修订前后对比")
+log("'/critique/'+step" in html, "对比面板调用 /critique/{step} 接口")
+log("toggleCritique" in html, "/client 含补全开关按钮")
+log("critique_switches" in html, "开关状态来自 /status 的 critique_switches")
+
+r = req("GET", "/api/agent/workflow/fe-no-such-session/critique/10", token=user_token)
+log(r.status_code == 404, "GET 不存在会话的步骤10补全台账 → 404（不 500）", f"status={r.status_code}")
+
+# 不支持的步骤必须 400，但依赖 `_require_path_workflow` 会先判会话 ——
+# 拿不存在的 session 只会得到 404，测不到 400 那条分支。用管理员账号（名下有真实会话）。
+_adm_reports = (req("GET", "/api/client/reports", token=admin_token).json().get("data") or [])
+_adm_sid = _adm_reports[0]["session_id"] if _adm_reports else ""
+r = req("GET", f"/api/agent/workflow/{_adm_sid}/critique/12", token=admin_token)
+log(bool(_adm_sid) and r.status_code == 400,
+    "已有会话 + 不支持的步骤 → 400（而不是静默返回别的步骤）",
+    f"sid={_adm_sid[:8] or '无'} status={r.status_code}")
+
+# 开关的联调：真的关掉再打开，并从 /status 读回当前值。
+# 跑完会恢复成「开」——这是新会话的默认值，不留副作用。
+if _adm_sid:
+    _off = req("POST", "/api/agent/workflow/set-critique", token=admin_token,
+               json_body={"session_id": _adm_sid, "enabled": False, "step": 10})
+    _st1 = req("GET", f"/api/agent/workflow/{_adm_sid}/status", token=admin_token).json()
+    _on = req("POST", "/api/agent/workflow/set-critique", token=admin_token,
+              json_body={"session_id": _adm_sid, "enabled": True, "step": 10})
+    _st2 = req("GET", f"/api/agent/workflow/{_adm_sid}/status", token=admin_token).json()
+    log(_off.status_code == 200 and _st1["data"]["critique_switches"]["10"] is False
+        and _on.status_code == 200 and _st2["data"]["critique_switches"]["10"] is True,
+        "步骤10补全开关能真正关掉再打开（读回状态为准）")
 
 r = req("GET", "/api/agent/workflow/fe-no-such-session/step9-critique", token=user_token)
-log(r.status_code == 404, "GET 不存在会话的补全台账 → 404（不 500）", f"status={r.status_code}")
+log(r.status_code == 404, "批次 29 的旧路径仍可用（404 说明路由在）", f"status={r.status_code}")
 
 r = req("POST", "/api/agent/workflow/set-critique", token=user_token,
-        json_body={"session_id": "fe-no-such-session", "enabled": True})
+        json_body={"session_id": "fe-no-such-session", "enabled": True, "step": 10})
 log(r.status_code == 404, "POST 开关不存在的会话 → 404（不 500）", f"status={r.status_code}")
+
+# 用管理员 token：这个会话属于管理员，换成刚注册的 user_token 会先被判「工作流不存在」
+r = req("POST", "/api/agent/workflow/set-critique", token=admin_token,
+        json_body={"session_id": _adm_sid, "enabled": True, "step": 11})
+log(bool(_adm_sid) and r.status_code == 400, "开关不支持的步骤 → 400",
+    f"status={r.status_code}")
 
 r = req("GET", "/api/client/reports", token=user_token)
 rows = (r.json().get("data") or []) if r.status_code == 200 else []

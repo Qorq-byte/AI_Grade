@@ -1,4 +1,4 @@
-"""A/B：步骤 9 的「漏项补全」到底值不值多花一次调用（批次 29）。
+"""A/B：漏项补全到底值不值多花一次调用（批次 29 步骤 9 / 批次 30 步骤 10）。
 
 这是本批的**决策依据**，不是回归测试。它跑真实模型、花钱，所以不放进 CI，
 也不放进 `tests/` 的常规收集（文件名以 `_` 开头）。
@@ -13,8 +13,8 @@
 4. **闸门拒绝**：被拒的次数 —— 被拒说明模型改坏了，比"补上了"更值得看。
 
 用法：
-    python -m tests._ab_step9_critique --session 5eedf8e0 --rounds 2
-    python -m tests._ab_step9_critique --model deepseek-chat --rounds 3
+    python -m tests._ab_critique --step 9  --session 5eedf8e0 --rounds 2
+    python -m tests._ab_critique --step 10 --session 5eedf8e0 --rounds 3
 """
 from __future__ import annotations
 
@@ -60,17 +60,22 @@ def _named_ratio(state, text):
     return len(named) / len(names), names, [n for n in names if n not in (text or "")]
 
 
-def _run_once(agent, state, critique: bool):
+STEP_FIELDS = {9: ("problems_analysis", "critique_step9", "step9_critique"),
+               10: ("suggestions", "critique_step10", "step10_critique")}
+
+
+def _run_once(agent, state, step: int, critique: bool):
     state = copy.deepcopy(state)
     # 备份里的 step_control 可能缺键（老会话尤其如此），先用真实默认值补齐，
     # 再打开开关 —— 否则 `_record_step_result` 会在 step_statuses 上 KeyError
+    field_name, flag, ledger_field = STEP_FIELDS[step]
     pa._ensure_step_control(state)
-    state["step_control"]["critique_step9"] = critique
+    state["step_control"][flag] = critique
     with _UsageSpy(agent) as spy:
-        out = agent._node_step9(state)
-    text = out.get("problems_analysis") or ""
+        out = agent._node_step9(state) if step == 9 else agent._node_step10(state)
+    text = out.get(field_name) or ""
     ratio, names, missing = _named_ratio(out, text)
-    ledger = out.get("step9_critique") or {}
+    ledger = out.get(ledger_field) or {}
     return {
         "text": text,
         "chars": len(text.strip()),
@@ -89,7 +94,9 @@ def main() -> int:
     parser.add_argument("--session", default="", help="用哪份真实备份当输入（前缀即可）")
     parser.add_argument("--model", default="", help="默认沿用会话里的模型")
     parser.add_argument("--rounds", type=int, default=2)
-    parser.add_argument("--dump-dir", default=".backup/ab_step9", help="把两版正文落盘，便于人工抽检")
+    parser.add_argument("--step", type=int, default=9, choices=(9, 10))
+    parser.add_argument("--dump-dir", default=".backup/ab_critique",
+                        help="把两版正文落盘，便于人工抽检")
     args = parser.parse_args()
 
     files = sorted(Path(pa.STATE_BACKUP_DIR).glob("*.json"),
@@ -106,19 +113,24 @@ def main() -> int:
         print("找不到可用作输入的会话（需要 indicator_analysis + indicator_score_map）")
         return 1
 
+    if args.step not in STEP_FIELDS:
+        print(f"只支持步骤 {list(STEP_FIELDS)}")
+        return 1
     session_id, state = target
     model = args.model or state.get("model_name") or "deepseek-chat"
     print(f"输入会话：{session_id}")
     print(f"模型：{model}；轮次：{args.rounds}\n")
 
     agent = pa.PerformanceAgent(session_id=f"ab-{session_id[:8]}", model_name=model)
-    base_ratio, names, _ = _named_ratio(state, state.get("problems_analysis") or "")
-    print(f"低分指标 {len(names)} 个；该会话现有问题分析的点名率 {base_ratio:.0%}\n")
+    field_name = STEP_FIELDS[args.step][0]
+    base_ratio, names, _ = _named_ratio(state, state.get(field_name) or "")
+    print(f"步骤 {args.step}：低分指标 {len(names)} 个；"
+          f"该会话现有点名率 {base_ratio:.0%}\n")
 
     rows = []
     for index in range(args.rounds):
-        off = _run_once(agent, state, critique=False)
-        on = _run_once(agent, state, critique=True)
+        off = _run_once(agent, state, args.step, critique=False)
+        on = _run_once(agent, state, args.step, critique=True)
         rows.append((off, on))
         dump = Path(args.dump_dir)
         dump.mkdir(parents=True, exist_ok=True)
