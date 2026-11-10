@@ -4034,3 +4034,178 @@ compact→hydrate 严格往返一致、真实形态下体积比 < 0.5、迁移�
    一次性维护脚本不值得引入文件锁。
 6. **纯 `open()` 的读路径仍然存在**（`test_state_backup_race.py` 的用例 4 就是守这条），
    本批没有新增裸写路径，但也没有把既有的裸读路径改掉。
+
+---
+
+# 批次 26 = B2 一致性从「检测」升级为「拦截」（2026-11-10）
+
+## B26.1 起点：17 类检测一直在喊，但没有一条能拦住任何事
+
+交接文档给 B2 列了三个子项。动手前先把这三个子项的现状逐条取证：
+
+| 子项 | 取证结果 |
+|---|---|
+| 问题 ↔ 建议 的对应关系 | `grep -rn "issue_id"` **为零**。`issues` 里只有 `code`，同码多条时无法区分；日志里说「第 3 条问题」，第二天换个会话就对不上了 |
+| 步骤 11 的分数强制 | `_node_step11` 用 `re.sub(r"(?m)^.*(?:综合得分\|评价等级)\s*[：:].*$", "")` **静默**抹掉模型自述的那行，再拼程序汇总值。抹掉这件事**没有任何痕迹**——用户不知道模型原本写了什么，事后也无从追 |
+| 步骤 14 缺章阻断导出 | 没有。`_assemble_final_report` 对空章节**不跳过**，而是写一句「（本部分内容尚未生成，请检查AI模型配置后重新运行工作流）」——于是报告「看起来完整」、实际少一章，导出的 Word 里那一章就只有这一句话 |
+
+**存量影响面（30 份有报告的会话全部回放）**：
+
+- `INDICATOR_ALLOCATION_D4` 出现 **25 次**、`PARTIAL_SCORE_PRESENTED` **16 次** —— 都是 `warning`/提示型，
+  挂了半年，没人处理。**这不奇怪：提示不改变任何行为，就不会有人处理。**
+- 缺章 **0 个**。也就是说这道闸门上线时**存量零误拦**。
+- 得分与叙述脱节：16 个会话里 **167 个**三级指标得分率 <60%，其中 **131 个（78%）没在「问题分析」里被点名**、
+  **134 个（80%）没在「改进建议」里被点名**。报告会写「本项目成本控制有待加强」，
+  却不会提那个只拿 6/10 分的指标叫什么 —— 读者没法把结论对回评分表。
+
+结论：**缺的不是"检测能力"，是"检测结果改变行为"的那一步。**
+
+## B26.2 做法：给每条问题发编号、给结构性缺陷发一票否决、给分数替换留账
+
+**1）`id` 与 `blocking`（`consistency.py`）**
+
+`check_consistency` 末尾统一打标，不在 17 个检查函数里各写一遍：
+
+```python
+counters: Dict[str, int] = {}
+for item in issues:
+    item["blocking"] = item["code"] in BLOCKING_CODES
+    counters[item["code"]] = counters.get(item["code"], 0) + 1
+    item["id"] = f"{item['code']}#{counters[item['code']]}"
+```
+
+`BLOCKING_CODES` 只有 4 个，全是**结构性**缺陷：`INDICATOR_MISSING`、`REPORT_WITH_INCOMPLETE_STEPS`、
+`REPORT_TOO_SHORT`、`REPORT_CHAPTER_MISSING`。
+
+**被否掉的方案**：拦「所有 `error`」。`PARTIAL_SCORE_PRESENTED`、`INDICATOR_ALLOCATION_D4` 这些也是 error 级，
+但它们是**口径提示**——总分算法本身允许的偏差。拦了它们的后果不是「改对」，而是
+**用户学会点「仍要导出」**，于是真缺章时也照点。**闸门一旦被绕过一次，就永久失效。**
+
+**2）两个新检查**
+
+- `chapters`：`EMPTY_CHAPTER_MARKER = "（本部分内容尚未生成"`，**故意不带右括号** ——
+  步骤失败时写的是「（本部分内容尚未生成，请检查AI模型配置后重新运行工作流）」，
+  这一句同样是缺章，带上右括号就漏了（这是第一版真实的漏检，见 B26.3 的变异第 12 条）。
+  章节标题靠 `^##\s*(\S.*)$` 回溯定位，所以提示能说「报告有 2 章还是占位符：综合评价结论、问题与建议」，
+  而不是只说一个数字。
+- `problem_suggestion_coverage`：算出得分率 <60% 的三级指标名，看它们有没有出现在 `problems_analysis` /
+  `suggestions` 里。**只报聚合结论**（「12/26 个低分指标在「问题分析」里没有被点名：成本控制、进度管理、质量达标等」）——
+  167 个指标逐条报会让一份报告多出十几条提示，用户立刻学会忽略它。
+  字段不存在（步骤没跑）时**不报**：那是「还没写」，不是「写漏了」。
+  另外补一条 `SUGGESTION_WITHOUT_PROBLEM`：问题分析为空却有建议，读者看不出建议针对什么。
+
+`CHECKS` 由 4 项变 6 项，`check_consistency` 返回值新增 `blocking_count` / `exportable`。
+
+**3）导出闸门（`/workflow/export`）**
+
+```python
+if not request.force:
+    blockers = _export_blockers(session_id)
+    if blockers:
+        raise HTTPException(409, detail=..., headers={"X-Export-Blocked": "1"})
+elif _export_blockers(session_id):
+    logger.warning(...)   # 用户强制导出，留一条日志
+```
+
+- `force: bool = False` 加进 `ExportRequest`。**没有它，缺一章的会话就彻底导不出去了**——
+  那比缺章更糟，用户会去找别的办法（复制正文、分步导出），绕得更彻底。
+- `_export_blockers` **fail-open**：`_get_workflow_values` 抛 404（状态不存在）、
+  或 `check_consistency` 抛异常，一律返回 `[]` 放行。理由写在函数注释里：
+  **状态丢了就谁都不许导出，那是比缺章更糟的故障。**
+- 闸门放后端而不是前端：直接 `curl` 打接口就绕过前端判断了。
+
+**4）步骤 11 记账（`performance_agent.py`）**
+
+```python
+content, replaced = _strip_model_score_lines(content)   # 按行判定，返回被删的行
+...
+if replaced:
+    notes = state.setdefault("warnings", [])
+    notes.append(f"[步骤11] 模型自述的得分/等级已按程序汇总替换：{sample}{more}")
+```
+
+正则也收紧了：允许「为 / 是」与无冒号写法（「综合得分 88.5 分」），但**必须出现分数或等级词**。
+否则「各指标综合得分情况总体较好」这种叙述也会被当成断言删掉（第一版就删了，见变异第 14 条）。
+
+**5）前端三条路径**
+
+- 走 `shared/api.js` 的页面：`_send` 的 `!response.ok` 分支里识别 `X-Export-Blocked`，
+  `confirm()` 一次 → 带 `force` 重放**一次**（`forceRetried` 防循环）；
+- `report/index.html`、`workflow/index.html` 各有自己的 `authFetch`、**不加载 `api.js`**，
+  各自加 `exportWithForce(url, payload)` 助手（同样只重放一次）；
+- `client/index.html` 的一致性徽标加「⛔ N 项需处理完才能导出」，否则用户点导出被拦却不知道卡在哪。
+
+## B26.3 验证
+
+**红 → 绿**：新增 `tests/test_consistency_export_gate.py` 16 条，先写完跑出 **8 红**
+（其中 3 条是因为 fixture 自己就触发了覆盖缺口 —— 这恰恰说明新检查是活的），再改实现转绿。
+
+**全量回归**：`pytest tests` **488 → 504 passed**；`node --test tests/test_*.cjs` **45 → 48 pass**。
+
+**变异**：新增 `tests/_mutate_consistency_gate.py`，**15 个变异体 15/15 全抓**：
+
+| # | 变异 | 被哪条用例抓住 |
+|---|---|---|
+| 1 | `blocking` 永远 `False` | 缺章用例 |
+| 2 | `blocking` 永远 `True` | 干净状态可导出 |
+| 3 | `BLOCKING_CODES` 加进 `PARTIAL_SCORE_PRESENTED` | 干净状态可导出（口径提示不该拦） |
+| 4 | `id` 不带序号 | id 稳定性用例 |
+| 5 | `id` 用 `id()` 或随机 | 同上（同码两条必须 `#1`/`#2`） |
+| 6 | 缺章检查直接 `return []` | 缺章用例 |
+| 7 | 章节标题不回溯（只报数字） | 章节命名用例 |
+| 8 | `EMPTY_CHAPTER_MARKER` 带右括号 | 步骤失败占位句用例 |
+| 9 | 覆盖缺口逐条报（不聚合） | 聚合用例（断言恰好 1 条） |
+| 10 | 字段缺失也报覆盖缺口 | 「步骤没跑」用例 |
+| 11 | `LOW_SCORE_RATIO` 改 0.9 | 「点名后静默」用例 |
+| 12 | 删掉 `SUGGESTION_WITHOUT_PROBLEM` | 有建议无问题用例 |
+| 13 | 闸门永远放行 | 缺章 409 用例 |
+| 14 | `force` 分支失效 | force 放行用例 |
+| 15 | `_export_blockers` 不 fail-open | 状态缺失用例 |
+
+> 两条变异第一次漏网，修法都是**把用例写到真正的位置**，不是放松断言：
+> 「步骤没跑也要报覆盖缺口」原本被函数头的早退挡住，删掉早退后循环里的 `isinstance` 仍拦着 →
+> 把守卫简化到循环行，锚点改到那一行；
+> 「普通叙述被当得分行删掉」原本用的例句 `"各指标得分情况总体较好"` 根本不含「综合得分」四个字，
+> 换个正则也碰不到 → 例句改成 `"各指标综合得分情况总体较好，评价等级说明见附件"`。
+
+**真实服务**（`NO_PROXY` + 8000 端口）：
+
+| 检查 | 结果 |
+|---|---|
+| `test_all_apis.py` | **46/46** |
+| `frontend_e2e_check.py` | **75 通过 / 0 失败** |
+| `wf_e2e.py` | **47 项 / 0 失败** |
+| `tests/_smoke_export_gate.py` | 完整报告 **200** / 缺章 **409 + `X-Export-Blocked: 1`** / `force` **200** / `/status` 暴露 `exportable=False`、`blocking_count=2` |
+
+`wf_e2e.py` 有两处导出改成带 `force: True`：脚本存的是 30 字短桩报告，会被
+`REPORT_TOO_SHORT` 正当地拦下。`tests/test_engineering_regressions.py` 的导出用例同理
+（只验「导出→下载」链路，闸门本身由新用例覆盖）。
+
+## B26.4 回滚
+
+- 代码：`git revert` 本批 6 个提交即可。**唯一的行为变更就是导出闸门**，
+  回滚后导出恢复「一律放行」，其余（id / blocking / 新检查 / 记账）都是只增不改的返回值与 warnings。
+- 数据：**无需迁移**。一致性是现算的（`_get_workflow_values` → `check_consistency`），
+  结论不落备份，回滚后没有任何"旧格式"要处理。
+- 判据：回滚后 `pytest tests` 应回到 **488 passed**，`node` 回到 **45 pass**。
+
+## B26.5 剩余风险与未验证项（诚实列出）
+
+1. **闸门只管「整报导出」，`/workflow/export-step`（分步导出）不受约束。** 用户可以逐步骤导出再自己拼。
+   没改是刻意的——分步导出本来就没有"章节"概念，拦它会让正常的单步导出也失败；
+   但这确实意味着「缺章不许导出」只在整报路径上成立。
+2. **缺章检测绑在一个字符串上**（`EMPTY_CHAPTER_MARKER`）。有人改 `_assemble_final_report` 的文案，
+   检测就静默失效——用例锁的是这个字符串本身，改文案时必须同时改用例才有效，**它挡不住"忘了改"**。
+3. **覆盖缺口只做子串匹配。** 指标名 <3 字（「进度」「质量」）直接跳过；模型写「费用管控」而指标叫「成本控制」时算未命中。
+   167 个样本没有人工核对过那 78% 里有多少属于"换了个说法"→ **这个数字的上界是虚高的，方向可信、量级不可信。**
+4. **`LOW_SCORE_RATIO = 0.6` 是拍的。** 只回放过真实数据的分布，没有验证"60% 以下才该被点名"这个判断本身。
+   改这个值会同时改变提示数量与 `exportable` 结论以外的所有统计。
+5. **闸门读的是「当前状态」，不是「导出内容」。** 正常情况下两者一致；多 worker 场景下
+   `active_workflows` 拿不到、回退到磁盘投影时可能读到几分钟前的版本（与 C2 同源），
+   极端情况下会漏拦或误拦。
+6. **fail-open 的反面没有兜底。** 检查抛异常时确实放行并 `logger.exception`，但**放行这件事本身没有告警**——
+   只有翻日志才知道闸门没生效。没有指标、没有计数。
+7. **`force` 重放只试一次。** 后端若因其他原因（权限等）也带了这个响应头，用户会看到原始错误而不是再次询问。
+   这是刻意的（防循环），但错误提示会不如预期直白。
+8. **前端 confirm 依赖浏览器原生对话框。** 无头环境 / 被禁用弹窗的浏览器里 `typeof confirm !== 'function'`
+   时会直接抛错走原分支（用例覆盖了这条），但用户看到的就是一个没有"仍要导出"选项的报错。
