@@ -1,0 +1,57 @@
+name: CI
+
+# 批次 28 = C5。这里只做「不需要外部服务」的三件事：
+#   语法自检 → Python 单测 → 前端共享层单测。
+#
+# 故意**不放**进来：test_all_apis.py / wf_e2e.py / frontend_e2e_check.py /
+# tests/rag_eval。它们要真实 MySQL + 真实模型 + 8000 端口，放进 CI 会变成随机红，
+# 红了三次之后大家就开始忽略 CI —— 那比没有 CI 更糟。
+# 这些检查的手动跑法写在 README 的「验证」一节。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # 同一分支连续推送时取消上一次，省额度也省等待
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # 测试全部走 sqlite 夹具，这里显式指向一个不存在的 MySQL，
+      # 好让「偷偷连了真库」的用例在 CI 上立刻暴露，而不是在别人机器上才炸
+      MYSQL_HOST: 127.0.0.1
+      MYSQL_PORT: "1"
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: 安装测试依赖
+        run: python -m pip install --disable-pip-version-check -r requirements-dev.txt
+
+      - name: 语法自检（编译全部后端模块）
+        run: python -m compileall -q backend
+
+      - name: Python 单测
+        run: python -m pytest tests -q --ignore=tests/rag_eval
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 前端共享层单测
+        run: node --test tests/test_*.cjs
