@@ -638,16 +638,26 @@ def get_user_reports(current_user: User = Depends(get_current_user), db: Session
     ).order_by(WorkflowSession.updated_at.desc()).all()
 
     status_map = {"completed": "已完成", "running": "运行中", "awaiting_approval": "待审批", "cancelled": "已取消"}
-    result = [
-        {
+    from backend.services import quality
+
+    result = []
+    for r in records:
+        # 质量结论现算（读磁盘投影，按 (路径, mtime, 大小) 缓存）。
+        # 读不到备份 / 解析失败一律返回 unknown，不在这里抛 —— 一份坏掉的备份
+        # 不该让「我的报告」整页 500（`check_session` 内部已 fail-open）。
+        try:
+            review = quality.review_brief(quality.check_session(r.session_id))
+        except Exception:
+            logger.exception("读取报告质量结论失败: {}", r.session_id)
+            review = {"checked": False, "verdict": "unknown", "required": False, "reasons": []}
+        result.append({
             "session_id": r.session_id,
             "project_name": r.project_name,
             "status": status_map.get(r.status, r.status or "已完成"),
             "created_at": r.created_at.isoformat() if r.created_at else "",
             "updated_at": r.updated_at.isoformat() if r.updated_at else "",
-        }
-        for r in records
-    ]
+            "review": review,
+        })
 
     return {"success": True, "data": result}
 

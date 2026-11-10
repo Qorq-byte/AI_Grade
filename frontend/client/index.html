@@ -202,6 +202,7 @@
 .step-badge{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;width:90px;height:68px;background:#f8f9fa;border-radius:10px;border:1px solid #e2e8f0;font-size:13px;font-weight:700;color:#667eea;text-align:center;line-height:1.4;padding:4px}.step-badge span{font-size:10px;font-weight:400;color:#718096;margin-top:2px}
 .loading-hint{text-align:center;padding:40px;color:#a0aec0;font-size:14px}
 .status-tag{display:inline-block;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:500}.status-tag.completed{background:#f0fff4;color:#22543d}.status-tag.running{background:#ebf5ff;color:#2c5282}.status-tag.awaiting_approval{background:#fffaf0;color:#744210}
+.status-tag.review{background:#fff5f5;color:#9b2c2c;cursor:help}.status-tag.review-partial{background:#f7fafc;color:#4a5568;cursor:help}.status-tag.review-unknown{background:#f7fafc;color:#a0aec0;cursor:help}
 .empty-state{text-align:center;padding:48px 24px;grid-column:1/-1}.empty-state svg{margin-bottom:16px;opacity:.3}.empty-state h3{font-size:16px;color:#4a5568;margin-bottom:8px}.empty-state p{font-size:13px;color:#a0aec0;margin-bottom:12px}.empty-state .btn-primary{margin-top:8px}
 .likert-label{cursor:pointer;padding:6px 14px;border:1px solid #e2e8f0;border-radius:20px;font-size:13px;display:flex;align-items:center;gap:6px;transition:all .2s;background:white}
 .btn-delete{display:inline-flex;align-items:center;justify-content:center;padding:6px 12px;height:30px;border-radius:8px;border:1px solid #fed7d7;background:#fff5f5;color:#c53030;font-size:12px;font-weight:500;cursor:pointer;transition:all .2s}.btn-delete:hover{background:#fed7d7;border-color:#fc8181}.btn-delete:disabled{opacity:.5;cursor:not-allowed;background:#f7fafc;border-color:#e2e8f0;color:#a0aec0}
@@ -1454,7 +1455,17 @@ function renderReportList(data){
         h+='</div>';
         // 可折叠的参数区
         h+='<div class="card-detail" id="rdetail_'+sid+'">';
-        h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span class="status-tag '+tagCls+'">'+status+'</span>'+(d.score?'<span style="font-size:12px;color:#718096">得分：'+esc(String(d.score))+'</span>':'')+'</div>';
+        // 质量徽标：review=有命中项需要人看一眼；partial=能查的过了、有些项没台账；
+        // unknown=一条判据都没跑。三者都不能显示成「通过」——没数据不等于没问题。
+        var rv=d.review||null,rvBadge='';
+        if(rv&&rv.required){
+            rvBadge='<span class="status-tag review" title="'+esc((rv.reasons||[]).join('；'))+'">建议复核</span>';
+        }else if(rv&&rv.verdict==='partial'){
+            rvBadge='<span class="status-tag review-partial" title="能查的质量项都通过了，但有几项历史上没有台账，无从判断">部分项未验证</span>';
+        }else if(rv&&rv.verdict==='unknown'){
+            rvBadge='<span class="status-tag review-unknown" title="这份报告没有可用的状态快照，质量项一项都没能检查">质量未验证</span>';
+        }
+        h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span class="status-tag '+tagCls+'">'+status+'</span>'+rvBadge+(d.score?'<span style="font-size:12px;color:#718096">得分：'+esc(String(d.score))+'</span>':'')+'</div>';
         h+='<div style="font-size:11px;color:#a0aec0;margin-bottom:4px">生成时间：'+timeStr+'</div>';
         h+='</div>';
         h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px"><button class="btn-export" style="font-size:11px;padding:5px 10px;height:26px" onclick="event.stopPropagation();exportExistingReport(\''+sid+'\',\'word\',\''+pn+'\')">Word</button><button class="btn-primary" style="font-size:11px;padding:5px 10px;height:26px" onclick="event.stopPropagation();exportExistingReport(\''+sid+'\',\'pdf\',\''+pn+'\')">PDF</button><button class="btn-delete" style="font-size:11px;padding:5px 10px;height:26px" onclick="event.stopPropagation();deleteReport(\''+sid+'\',\''+pn+'\')">删除</button></div>';
