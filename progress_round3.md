@@ -4388,3 +4388,129 @@ flags   = [info NO_EVIDENCE_SCORED]  （24 项里 22 项落地、16 项按未取
    要等真实使用才知道。**
 7. **前端只做了列表徽标。** `GET /workflow/{id}/quality` 返回的每步事实（字数、缺失步骤、落地明细）
    **没有任何界面在读**，详情面板没做。接口先就位，界面留待有需求时接。
+
+---
+
+# 批次 28 = C5 最小 CI（2026-11-10）
+
+## B28.1 起点：531 条单测、48 条前端用例、16 个变异脚本，全靠「记得跑」
+
+这一轮的交付里出现过三次同类事故（坑表里记了两条）：
+改完实现忘了跑某个变异脚本、跑完变异脚本忘了 `git status` 复核、脚本锚点失效却当成"覆盖不足"。
+**资产不缺，缺的是让它们自动生效的机制。**
+
+动手前先确认三件事，否则 CI 会变成"随机红"：
+
+| 问题 | 结论 |
+|---|---|
+| 测试需要 MySQL 吗 | 不需要，全部走 sqlite 夹具（`create_engine("sqlite:///…")` + `monkeypatch SessionLocal`） |
+| 需要模型/网络吗 | 不需要，没有 API Key 时用例不触发真实调用 |
+| 需要 torch 那套吗 | 不需要：`sentence_transformers` 只在 `content_indexer` 的**函数体里**懒加载，测试不触发；`chromadb` / `faiss` / `onnxruntime` 全仓没有顶层 import |
+
+所以 CI 可以只装一个**不含推理栈**的依赖集：`requirements-dev.txt` = 当前环境 `pip freeze`
+里剔除 `torch` / `transformers` / `sentence-transformers` / `chromadb` / `faiss-cpu` /
+`onnxruntime` / `tokenizers` / `safetensors`，**205 个包全部 `==` 锁版本**。
+
+## B28.2 做法：三步 + 一条「不进 CI」的清单
+
+`.github/workflows/ci.yml`，单个 job，ubuntu-latest + Python 3.13 + Node 22：
+
+```yaml
+- run: python -m compileall -q backend                    # 语法
+- run: python -m pytest tests -q --ignore=tests/rag_eval  # 535 条
+- run: node --test tests/test_*.cjs                       # 48 条
+```
+
+三个细节值得说明：
+
+1. **`env` 里把 `MYSQL_PORT` 指到 `1`**（一个不可能有库的端口）。
+   这不是为了"让测试通过"，而是为了**让偷偷连真库的用例当场暴露**——见 B28.3 的真实收获。
+2. **装 `requirements-dev.txt` 而不是 `requirements.txt`**：后者是 `>=` 区间且含 torch（2 GB），
+   装它只为跑单测，既不必要也不可复现。
+3. **`concurrency` 取消同分支的旧任务**，省额度也省等待。
+
+**明确不进 CI 的清单**（写进 README 与一条契约测试里）：
+
+| 脚本 | 为什么不能进 |
+|---|---|
+| `test_all_apis.py`（47） | 要服务在 :8000 跑着 |
+| `frontend_e2e_check.py`（82） | 要真实 HTTP + 服务渲染的 HTML |
+| `wf_e2e.py`（47） | 要真实模型，4~5 分钟，按次计费 |
+| `verify_coverage_live.py` | 同上传真实资料 |
+| `tests/rag_eval` | 要嵌入模型（torch） |
+| `tests/_mutate_*.py`（16 个） | 会原地改写源码，串行才安全 |
+
+**没有加的东西**：ruff / mypy / 覆盖率门槛。不是因为不需要，而是**现在过不了**——
+一个从第一天就红的检查，只会训练人忽略它。要做就先单独一批把存量问题清干净，再开闸。
+
+## B28.3 验证：CI 抓到的第一个问题，是我自己的用例
+
+**干净环境复现**：新建 `.venv_ci`，只装 `requirements-dev.txt`（**不含 torch**），
+按 CI 顺序跑，并把 MySQL 指到不存在的端口：
+
+| 步骤 | 结果 | 耗时（本机 Windows） |
+|---|---|---|
+| `pip install -r requirements-dev.txt` | 205 个包成功 | **9 分 52 秒**（ubuntu runner 会明显更快，未实测） |
+| `compileall -q backend` | 0 | 0.5 s |
+| `pytest tests -q --ignore=tests/rag_eval` | **531 passed** | 42.6 s |
+| `node --test tests/test_*.cjs` | **48 passed** | 1.4 s |
+
+**第一次跑 `pytest` 是 1 红**：
+
+```
+FAILED tests/test_lifespan.py::test_startup_still_initializes_db
+```
+
+根因不是环境，是**用例本身**：它 `monkeypatch` 了 `backend.database.init_db`，
+但启动流程里紧接着 `SessionLocal()` 建会话，这一句没有替身 ——
+本机有 MySQL 时它真的连上了库，用例"通过"；CI 里端口指到 1 就连不上，
+`create_admin_if_not_exists` 没被调用，断言失败。
+
+**它测的一直是"我机器上有库"，而不是"启动顺序"。** 修法是把 `SessionLocal` 也替成哑对象，
+并把断言从"三件事都做了"收紧成**有顺序的三件事**（`init_db` → `admin` → `scheduler`）。
+—— 这是本批唯一改动的既有用例，也正是加 CI 的理由：**它替我发现了一条一直绿着的假用例。**
+
+**「能拦住问题」的两条负面验证**（只绿不算数）：
+
+| 故意制造的故障 | 期望 | 实测 |
+|---|---|---|
+| 往 `quality.py` 追加一行语法错误 | `compileall` 非 0 | **exit 1**，pytest 也在收集阶段报错 |
+| 放一条 `assert 1 == 2` 的用例 | pytest 非 0 | **exit 1** |
+| 删掉 CI 里的 pytest 步骤 | 契约测试红 | 抓住 |
+| 把 `wf_e2e.py` 塞进 CI | 契约测试红 | 抓住 |
+| `MYSQL_PORT` 改回 3306 | 契约测试红 | 抓住 |
+| 装 `requirements.txt` 而不是 dev | 契约测试红 | 抓住 |
+
+契约测试 `tests/test_ci_workflow.py`（4 条）+ 变异脚本 `tests/_mutate_ci_workflow.py`
+（4/4 全抓）把「哪些检查在 CI 里」这个**决定**写进了代码：以后有人顺手加一条 `wf_e2e.py`，
+会当场被拦下。
+
+**全量回归**：`pytest tests` **531 → 535 passed**；`node --test` **48 pass**。
+（本地 `pytest` 33 s，无数据库的干净环境 42.6 s —— 差在会话初始化重试。）
+
+## B28.4 回滚
+
+- 代码：删掉 `.github/workflows/ci.yml` 与 `requirements-dev.txt` 即可，**运行时零影响**。
+  两个文件都不被 `backend/` 引用。
+- `tests/test_ci_workflow.py` 在找不到 workflow 时会失败（这是有意的），回滚时要一起删。
+- 唯一有运行时含义的改动是 `tests/test_lifespan.py` 的那条用例：它变严了（加了顺序断言），
+  不会因为回滚 CI 而失效。
+
+## B28.5 剩余风险与未验证项（诚实列出）
+
+1. **GitHub 侧从来没跑过。** 本机代理打不开 Actions，也没有凭据去触发。
+   我能证明的只有「同样的命令、同样的依赖，在干净环境里本地全绿」，
+   **不能证明 ubuntu-latest 上一定绿**。可能的差异点：Python 3.13 的 wheel 可用性
+   （本机是 Windows 3.13.6，runner 是 Linux 3.13）、`node --test` 的 glob 展开（bash 展开，两边都是）。
+   第一次真实 push 之后要看一眼 Actions 的结论，红了按日志修。
+2. **`pip install` 在 runner 上的耗时未知。** 本机 9 分 52 秒（Windows、冷缓存），
+   ubuntu 通常 2–4 分钟，但没实测。`setup-python` 的 pip 缓存能省掉大部分。
+3. **没锁 Python 与 Node 的次版本**：`python-version: "3.13"` 会随 runner 漂移。
+   想彻底可复现得写 `.python-version` 或矩阵，但那就开始维护版本矩阵了，本批不做。
+4. **没有覆盖率与静态检查**。见 B28.2 最后一段：现在加了只会全红。
+   真要做得单开一批（先清存量），别顺手塞进 CI。
+5. **`requirements-dev.txt` 是从当前环境 `pip freeze` 出来的 205 个包**，
+   里面混着若干**间接依赖**（`Mako`、`Jinja2` 这类）。它保证"和现在一模一样"，
+   但下次升级某个包时会产生一堆连带变更。这是一次性的可复现性投资，不是长期维护方案。
+6. **CI 只覆盖"代码能不能跑"，不覆盖"功能对不对"**。47 个接口、82 条前端联通性、
+   真实 15 节点跑一遍——那三样仍然只有人工。这是取舍，不是遗漏。
