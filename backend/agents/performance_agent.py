@@ -157,6 +157,10 @@ def _ensure_step_control(state: PerformanceState) -> dict:
             "comparison_mode": ComparisonModeEnum.SINGLE.value,
             "temperature_profile": TemperatureProfileEnum.NORMAL.value,
             "language_style": "中立",
+            # 步骤 9 的漏项补全。**这一层默认关**：`_ensure_step_control` 也会被
+            # 恢复旧会话、跑单测时调用，默认开会让人莫名其妙多花一次模型钱。
+            # 真正的默认值在启动接口（`WorkflowStartRequest.critique_step9`，默认 True）。
+            "critique_step9": False,
         }
     return state["step_control"]
 
@@ -1235,6 +1239,9 @@ class PerformanceAgent:
                 # 于是 38 份存量备份里 0 份有值 —— 质量门禁对这一项永远「无从判断」。
                 # 这正是「备份是字段白名单」这个坑的第三次复发，别再漏。
                 "standard_purity",
+                # 批次 29：步骤 9 的漏项补全台账与补全前原文。
+                # 不含它们，重启后看不到"补了几个、为什么没补"，也 diff 不出改了什么
+                "step9_critique", "problems_analysis_pre_critique",
                 # 弱定位的行号校验依据。只存行数（几十字节），不存全文；
                 # 不含它则「重启/重放后同一份输入判出不同结果」，验收链条断裂
                 "raw_line_counts",
@@ -1663,6 +1670,80 @@ class PerformanceAgent:
         return state
 
     # Step 9
+    def _complete_missing_indicators(self, state: PerformanceState, step_number: int,
+                                     content: str) -> tuple:
+        """把「扣了分但正文没点名」的指标补进去，返回 (正文, 台账)。
+
+        为什么不是通用的 rubric 自评：批次 26 已经有确定性的口径 ——
+        `consistency.low_score_indicator_names` 能算出哪些三级指标得分率 <60%。
+        拿它跟正文做子串比对，"漏了谁"是**算出来的**，不是模型自己说漏了谁。
+        模型只负责一件事：把这几条补进已有的分析里。这比"先自评再改"少一次调用、
+        也少一个可以撒谎的环节。
+
+        只在真漏了才调模型（存量会话 78% 会漏，所以开关打开时基本都会触发一次）。
+        修订结果要过三道闸：不许把原本点过名的指标改没、长度不能塌也不能爆、
+        至少补进一个。任何一道不过就保留原文并记账 —— 宁可没补，不可改坏。
+        """
+        from backend.services import consistency
+
+        names = consistency.low_score_indicator_names(state)
+        missing = [name for name in names if name not in content]
+        ledger = {
+            "enabled": True, "step": step_number,
+            "low_score": len(names), "missing": missing,
+            "gained": [], "revised": False, "rejected": "",
+            "chars_before": len(content), "chars_after": len(content), "ratio": 1.0,
+        }
+        if not missing:
+            return content, ledger
+
+        bullets = "\n".join(f"- {name}" for name in missing)
+        messages = [
+            {"role": "system", "content": (
+                "你在做一份绩效评价报告的定稿校对。任务：把遗漏的扣分指标补进**已有的**"
+                "问题分析里。要求：\n"
+                "1. 只补写这些指标对应的问题与原因，插在语义最合适的段落或汇总表里；\n"
+                "2. 保持原文的结构（三个视角 + 汇总表）与语言风格，不要重写全文；\n"
+                "3. 每个指标都要写清「问题表现 + 原因」，不要只把名词塞进句子；\n"
+                "4. 不要新增原文没有的事实、数据或结论；\n"
+                "5. 直接输出修订后的完整正文，不要解释你改了什么。"
+            )},
+            {"role": "user", "content": (
+                f"以下是已扣分、但正文没有点名的指标：\n{bullets}\n\n"
+                f"## 当前正文\n{content}"
+            )},
+        ]
+        try:
+            revised = self._invoke_llm(messages, step_number, state,
+                                       timeout=180, stream=False) or ""
+        except Exception as exc:  # 补全是增强项，失败不能拖垮主流程
+            logger.warning(f"[Step 9] 指标补全调用失败：{exc}")
+            ledger["rejected"] = f"调用失败：{exc}"
+            return content, ledger
+
+        revised = revised.strip()
+        lost = [name for name in names if name in content and name not in revised]
+        ratio = (len(revised) / len(content)) if content else 0
+        if not revised:
+            ledger["rejected"] = "返回为空"
+        elif lost:
+            ledger["rejected"] = f"改丢了原本点名的指标：{'、'.join(lost[:3])}"
+        # 上限 2.0 而不是 1.6：A/B 实测正常补全落在 1.53–1.63 倍，
+        # 卡在 1.6 会把「补得比较充分」的那一次误判成改坏（宁可略长，不可白花钱）。
+        elif not (0.8 <= ratio <= 2.0):
+            ledger["rejected"] = f"长度异常（{ratio:.2f} 倍原文）"
+        elif not any(name in revised for name in missing):
+            ledger["rejected"] = "一个都没补进去"
+        else:
+            ledger["gained"] = [name for name in missing if name in revised]
+            ledger["revised"] = True
+            ledger["ratio"] = round(ratio, 3)
+            ledger["chars_after"] = len(revised)
+            logger.info(f"[Step 9] 已补全 {len(ledger['gained'])}/{len(missing)} 个遗漏指标")
+            return revised, ledger
+        logger.warning(f"[Step 9] 指标补全被拒：{ledger['rejected']}")
+        return content, ledger
+
     def _node_step9(self, state: PerformanceState) -> PerformanceState:
         logger.info("[Step 9] 分析问题及原因")
         # 自动从步骤7的指标分析中提取扣分点，传递给LLM作为参考
@@ -1677,6 +1758,17 @@ class PerformanceAgent:
                 for d in deduction_points[:10]
             ) if deduction_points else "（未检测到明确扣分项）"
         content = self._execute_step(state, 9)
+        # 批次 29：可选的一轮「漏项补全」。开关在 step_control.critique_step9，
+        # 默认关闭 —— 要先 A/B 证明它值得多花一次调用，再决定默认值。
+        if _ensure_step_control(state).get("critique_step9"):
+            original = content
+            content, ledger = self._complete_missing_indicators(state, 9, content)
+            state["step9_critique"] = ledger
+            if ledger.get("revised"):
+                # 原文留下来给 diff 看；不留的话"改了什么"只能靠猜
+                state["problems_analysis_pre_critique"] = original
+        else:
+            state["step9_critique"] = {"enabled": False, "step": 9}
         state["problems_analysis"] = content
         self._record_step_result(state, 9, content)
         return state
