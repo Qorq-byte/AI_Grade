@@ -145,6 +145,46 @@ def _strip_model_score_lines(content: str) -> tuple:
     return "\n".join(kept), removed
 
 
+#: 漏项补全的步骤规格：两步只差提示词，闸门与台账结构完全共用（批次 30）。
+#: `flag` 是 `step_control` 里的开关名，`ledger_field` / `pre_field` 进备份白名单。
+CRITIQUE_SPECS = {
+    9: {
+        "flag": "critique_step9",
+        "field": "problems_analysis",
+        "pre_field": "problems_analysis_pre_critique",
+        "ledger_field": "step9_critique",
+        "label": "问题分析",
+        "system": (
+            "你在做一份绩效评价报告的定稿校对。任务：把遗漏的扣分指标补进**已有的**"
+            "问题分析里。要求：\n"
+            "1. 只补写这些指标对应的问题与原因，插在语义最合适的段落或汇总表里；\n"
+            "2. 保持原文的结构（三个视角 + 汇总表）与语言风格，不要重写全文；\n"
+            "3. 每个指标都要写清「问题表现 + 原因」，不要只把名词塞进句子；\n"
+            "4. 不要新增原文没有的事实、数据或结论；\n"
+            "5. 直接输出修订后的完整正文，不要解释你改了什么。"
+        ),
+    },
+    10: {
+        "flag": "critique_step10",
+        "field": "suggestions",
+        "pre_field": "suggestions_pre_critique",
+        "ledger_field": "step10_critique",
+        "label": "改进建议",
+        "system": (
+            "你在做一份绩效评价报告的定稿校对。任务：为遗漏的扣分指标补写**改进建议**，"
+            "插进已有的建议章节或表格里。要求：\n"
+            "1. 每条建议必须写清「针对什么问题 + 具体做什么」，能落地、有时限或责任主体"
+            "（只在原文已有依据时写，不要编造）；\n"
+            "2. 禁止口号式写法（「加强管理」「提升水平」「高度重视」这类一律不要），"
+            "也不要只把指标名词塞进句子；\n"
+            "3. 保持原文的结构与语言风格，不要重写全文；\n"
+            "4. 不要新增原文没有的事实、数据或结论；\n"
+            "5. 直接输出修订后的完整正文，不要解释你改了什么。"
+        ),
+    },
+}
+
+
 def _ensure_step_control(state: PerformanceState) -> dict:
     if "step_control" not in state or not state.get("step_control"):
         state["step_control"] = {
@@ -157,10 +197,11 @@ def _ensure_step_control(state: PerformanceState) -> dict:
             "comparison_mode": ComparisonModeEnum.SINGLE.value,
             "temperature_profile": TemperatureProfileEnum.NORMAL.value,
             "language_style": "中立",
-            # 步骤 9 的漏项补全。**这一层默认关**：`_ensure_step_control` 也会被
-            # 恢复旧会话、跑单测时调用，默认开会让人莫名其妙多花一次模型钱。
-            # 真正的默认值在启动接口（`WorkflowStartRequest.critique_step9`，默认 True）。
+            # 漏项补全开关（步骤 9 / 10）。**这一层默认关**：`_ensure_step_control`
+            # 也会被恢复旧会话、跑单测时调用，默认开会让人莫名其妙多花一次模型钱。
+            # 真正的默认值在启动接口（`WorkflowRequest.critique_step9/10`，默认 True）。
             "critique_step9": False,
+            "critique_step10": False,
         }
     return state["step_control"]
 
@@ -1239,9 +1280,14 @@ class PerformanceAgent:
                 # 于是 38 份存量备份里 0 份有值 —— 质量门禁对这一项永远「无从判断」。
                 # 这正是「备份是字段白名单」这个坑的第三次复发，别再漏。
                 "standard_purity",
-                # 批次 29：步骤 9 的漏项补全台账与补全前原文。
+                # 批次 29/30：漏项补全的台账与补全前原文。
                 # 不含它们，重启后看不到"补了几个、为什么没补"，也 diff 不出改了什么
                 "step9_critique", "problems_analysis_pre_critique",
+                "step10_critique", "suggestions_pre_critique",
+                # 开关本身也必须落盘：批次 29 上线时漏了这一项，
+                # 表现是「重启后 critique_step9 悄悄变回 False」，用户什么都没动、功能自己关了。
+                # 这也是「备份是字段白名单」的又一次复发 —— 第四次。
+                "step_control",
                 # 弱定位的行号校验依据。只存行数（几十字节），不存全文；
                 # 不含它则「重启/重放后同一份输入判出不同结果」，验收链条断裂
                 "raw_line_counts",
@@ -1669,7 +1715,7 @@ class PerformanceAgent:
         self._record_step_result(state, 8, content)
         return state
 
-    # Step 9
+    # Step 9 / 10 共用：扣分指标漏项补全
     def _complete_missing_indicators(self, state: PerformanceState, step_number: int,
                                      content: str) -> tuple:
         """把「扣了分但正文没点名」的指标补进去，返回 (正文, 台账)。
@@ -1677,19 +1723,23 @@ class PerformanceAgent:
         为什么不是通用的 rubric 自评：批次 26 已经有确定性的口径 ——
         `consistency.low_score_indicator_names` 能算出哪些三级指标得分率 <60%。
         拿它跟正文做子串比对，"漏了谁"是**算出来的**，不是模型自己说漏了谁。
-        模型只负责一件事：把这几条补进已有的分析里。这比"先自评再改"少一次调用、
+        模型只负责一件事：把这几条补进已有的正文里。这比"先自评再改"少一次调用、
         也少一个可以撒谎的环节。
 
         只在真漏了才调模型（存量会话 78% 会漏，所以开关打开时基本都会触发一次）。
         修订结果要过三道闸：不许把原本点过名的指标改没、长度不能塌也不能爆、
         至少补进一个。任何一道不过就保留原文并记账 —— 宁可没补，不可改坏。
+
+        步骤 9（问题分析）与步骤 10（改进建议）的差别只在**提示词**：
+        一个要写"问题表现 + 原因"，一个要写"针对什么、做什么"，闸门完全共用。
         """
         from backend.services import consistency
 
+        spec = CRITIQUE_SPECS[step_number]
         names = consistency.low_score_indicator_names(state)
         missing = [name for name in names if name not in content]
         ledger = {
-            "enabled": True, "step": step_number,
+            "enabled": True, "step": step_number, "label": spec["label"],
             "low_score": len(names), "missing": missing,
             "gained": [], "revised": False, "rejected": "",
             "chars_before": len(content), "chars_after": len(content), "ratio": 1.0,
@@ -1699,15 +1749,7 @@ class PerformanceAgent:
 
         bullets = "\n".join(f"- {name}" for name in missing)
         messages = [
-            {"role": "system", "content": (
-                "你在做一份绩效评价报告的定稿校对。任务：把遗漏的扣分指标补进**已有的**"
-                "问题分析里。要求：\n"
-                "1. 只补写这些指标对应的问题与原因，插在语义最合适的段落或汇总表里；\n"
-                "2. 保持原文的结构（三个视角 + 汇总表）与语言风格，不要重写全文；\n"
-                "3. 每个指标都要写清「问题表现 + 原因」，不要只把名词塞进句子；\n"
-                "4. 不要新增原文没有的事实、数据或结论；\n"
-                "5. 直接输出修订后的完整正文，不要解释你改了什么。"
-            )},
+            {"role": "system", "content": spec["system"]},
             {"role": "user", "content": (
                 f"以下是已扣分、但正文没有点名的指标：\n{bullets}\n\n"
                 f"## 当前正文\n{content}"
@@ -1717,7 +1759,7 @@ class PerformanceAgent:
             revised = self._invoke_llm(messages, step_number, state,
                                        timeout=180, stream=False) or ""
         except Exception as exc:  # 补全是增强项，失败不能拖垮主流程
-            logger.warning(f"[Step 9] 指标补全调用失败：{exc}")
+            logger.warning(f"[Step {step_number}] 指标补全调用失败：{exc}")
             ledger["rejected"] = f"调用失败：{exc}"
             return content, ledger
 
@@ -1728,7 +1770,7 @@ class PerformanceAgent:
             ledger["rejected"] = "返回为空"
         elif lost:
             ledger["rejected"] = f"改丢了原本点名的指标：{'、'.join(lost[:3])}"
-        # 上限 2.0 而不是 1.6：A/B 实测正常补全落在 1.53–1.63 倍，
+        # 上限 2.0 而不是 1.6：批次 29 的 A/B 实测正常补全落在 1.53–1.63 倍，
         # 卡在 1.6 会把「补得比较充分」的那一次误判成改坏（宁可略长，不可白花钱）。
         elif not (0.8 <= ratio <= 2.0):
             ledger["rejected"] = f"长度异常（{ratio:.2f} 倍原文）"
@@ -1739,10 +1781,27 @@ class PerformanceAgent:
             ledger["revised"] = True
             ledger["ratio"] = round(ratio, 3)
             ledger["chars_after"] = len(revised)
-            logger.info(f"[Step 9] 已补全 {len(ledger['gained'])}/{len(missing)} 个遗漏指标")
+            logger.info(f"[Step {step_number}] 已补全 "
+                        f"{len(ledger['gained'])}/{len(missing)} 个遗漏指标")
             return revised, ledger
-        logger.warning(f"[Step 9] 指标补全被拒：{ledger['rejected']}")
+        logger.warning(f"[Step {step_number}] 指标补全被拒：{ledger['rejected']}")
         return content, ledger
+
+    def _apply_critique(self, state: PerformanceState, step_number: int,
+                        content: str) -> str:
+        """按开关决定要不要补全，并把台账写进状态。返回最终正文。"""
+        spec = CRITIQUE_SPECS[step_number]
+        if not _ensure_step_control(state).get(spec["flag"]):
+            state[spec["ledger_field"]] = {"enabled": False, "step": step_number}
+            return content
+        original = content
+        final, ledger = self._complete_missing_indicators(state, step_number, content)
+        state[spec["ledger_field"]] = ledger
+        if ledger.get("revised"):
+            # 原文留下来给 diff 看；不留的话"改了什么"只能靠猜
+            state[spec["pre_field"]] = original
+        return final
+
 
     def _node_step9(self, state: PerformanceState) -> PerformanceState:
         logger.info("[Step 9] 分析问题及原因")
@@ -1758,17 +1817,8 @@ class PerformanceAgent:
                 for d in deduction_points[:10]
             ) if deduction_points else "（未检测到明确扣分项）"
         content = self._execute_step(state, 9)
-        # 批次 29：可选的一轮「漏项补全」。开关在 step_control.critique_step9，
-        # 默认关闭 —— 要先 A/B 证明它值得多花一次调用，再决定默认值。
-        if _ensure_step_control(state).get("critique_step9"):
-            original = content
-            content, ledger = self._complete_missing_indicators(state, 9, content)
-            state["step9_critique"] = ledger
-            if ledger.get("revised"):
-                # 原文留下来给 diff 看；不留的话"改了什么"只能靠猜
-                state["problems_analysis_pre_critique"] = original
-        else:
-            state["step9_critique"] = {"enabled": False, "step": 9}
+        # 批次 29：可选的一轮「漏项补全」（批次 30 起与步骤 10 共用实现）
+        content = self._apply_critique(state, 9, content)
         state["problems_analysis"] = content
         self._record_step_result(state, 9, content)
         return state
@@ -1807,6 +1857,8 @@ class PerformanceAgent:
     def _node_step10(self, state: PerformanceState) -> PerformanceState:
         logger.info("[Step 10] 提出改进建议")
         content = self._execute_step(state, 10)
+        # 批次 30：改进建议同样有覆盖缺口（134/167 未点名），复用同一套补全与闸门
+        content = self._apply_critique(state, 10, content)
         state["suggestions"] = content
         self._record_step_result(state, 10, content)
         return state
