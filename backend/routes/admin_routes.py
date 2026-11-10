@@ -402,7 +402,9 @@ def admin_deactivate_user(user_id: int, db: Session = Depends(get_db)):
 
     # 问卷缓存
     try:
-        from backend.routes.agent_routes import _QUESTIONNAIRE_CACHE, active_workflows, _WORKFLOW_PROGRESS
+        from backend.routes import _shared_state
+        from backend.routes.agent_routes import active_workflows, _WORKFLOW_PROGRESS
+        _QUESTIONNAIRE_CACHE = _shared_state._QUESTIONNAIRE_CACHE
         for sid in session_ids:
             _QUESTIONNAIRE_CACHE.pop(sid, None)
             if sid in active_workflows:

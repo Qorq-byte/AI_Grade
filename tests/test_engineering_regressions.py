@@ -18,6 +18,7 @@ from backend.agents.tools.multi_model_compare import compare_models
 from backend.main import app
 from backend.middleware import auth_middleware as auth
 from backend.models.user_models import QuestionnaireAnswer, User, UserRole, WorkflowSession
+from backend.routes import _shared_state
 from backend.routes import agent_routes as agent
 
 
@@ -34,7 +35,8 @@ def isolated(tmp_path, monkeypatch):
     for module_name in ("backend.database", "backend.agents.base_agent"):
         monkeypatch.setattr(sys.modules[module_name], "SessionLocal", factory)
     monkeypatch.setattr(auth, "SECRET_KEY", "test-only-signing-key")
-    monkeypatch.setattr(agent, "_QUESTIONNAIRE_CACHE", {
+    # 批次 33：问卷缓存的所有权搬到 _shared_state（路由拆分时不复制状态）
+    monkeypatch.setattr(_shared_state, "_QUESTIONNAIRE_CACHE", {
         "owned": {"questions": [{"id": "q1"}], "project_name": "project"},
     })
     monkeypatch.setattr(performance_agent, "STATE_BACKUP_DIR", tmp_path / "backups")
@@ -83,7 +85,7 @@ def test_private_workflow(isolated, method, url, body, monkeypatch):
     assert stranger.status_code == 404
     with isolated.db() as db:
         assert db.query(WorkflowSession).one().final_report == "existing report"
-    assert "owned" in agent._QUESTIONNAIRE_CACHE
+    assert "owned" in _shared_state._QUESTIONNAIRE_CACHE
 
 
 @pytest.mark.parametrize("uid", [1, 3])
@@ -188,7 +190,7 @@ def test_questionnaire_delete_preserves_workflow(isolated):
         db.add(QuestionnaireAnswer(session_id="owned", question_id="q1", question_text="test"))
     agent.PerformanceAgent.update_state_backup("owned", {"final_report": "disk report"})
     assert isolated.client.delete(f"{base}/questionnaire/owned", headers=isolated.headers[1]).status_code == 200
-    agent._QUESTIONNAIRE_CACHE.clear()
+    _shared_state._QUESTIONNAIRE_CACHE.clear()
     assert isolated.client.get(f"{base}/owned/questionnaire").status_code == 404
     assert isolated.client.get(f"{base}/questionnaire/list", headers=isolated.headers[1]).json()["data"] == []
     with isolated.db() as db:
@@ -202,7 +204,7 @@ def test_manual_state_and_questionnaire_survive_snapshot_update(isolated):
     headers = isolated.headers[1]
     agent.PerformanceAgent.update_state_backup("owned", {
         "step_results": {"3": {"content": "legacy"}},
-        "questionnaire": agent._QUESTIONNAIRE_CACHE.pop("owned"),
+        "questionnaire": _shared_state._QUESTIONNAIRE_CACHE.pop("owned"),
     })
     response = isolated.client.post(f"{base}/export-style", headers=headers,
                                     json={"session_id": "owned", "font_size": 17})
