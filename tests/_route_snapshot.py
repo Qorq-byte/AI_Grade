@@ -53,3 +53,52 @@ def snapshot() -> list[dict]:
 
 def _key(item: dict) -> tuple:
     return item["path"], tuple(item["methods"])
+
+
+def diff(before: list[dict], after: list[dict]) -> list[str]:
+    issues = []
+    before_map = {_key(item): item for item in before}
+    after_map = {_key(item): item for item in after}
+    for key in before_map.keys() - after_map.keys():
+        issues.append(f"少了路由：{key[1]} {key[0]}")
+    for key in after_map.keys() - before_map.keys():
+        issues.append(f"多了路由：{key[1]} {key[0]}")
+    for key in before_map.keys() & after_map.keys():
+        old, new = before_map[key], after_map[key]
+        for field in ("name", "deps", "body", "response_model", "status_code"):
+            if old[field] != new[field]:
+                issues.append(f"{key[1]} {key[0]} 的 {field} 变了：{old[field]!r} → {new[field]!r}")
+    return issues
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--out", help="把当前路由快照写到这个文件")
+    parser.add_argument("--compare", help="与这个快照文件比对")
+    args = parser.parse_args()
+
+    rows = snapshot()
+    if args.out:
+        path = Path(args.out)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"已写入 {path}（{len(rows)} 条路由）")
+        return 0
+
+    if args.compare:
+        before = json.loads(Path(args.compare).read_text(encoding="utf-8"))
+        issues = diff(before, rows)
+        if issues:
+            print(f"FAIL 路由快照有 {len(issues)} 处差异：")
+            for line in issues:
+                print("  -", line)
+            return 1
+        print(f"PASS 路由快照零差异（{len(rows)} 条）")
+        return 0
+
+    print(json.dumps(rows, ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
