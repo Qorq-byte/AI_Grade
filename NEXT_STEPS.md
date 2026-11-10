@@ -6,7 +6,7 @@
 **新对话开场白（直接粘贴）：**
 
 ```
-读 D:/python/AI_Grade/NEXT_STEPS.md，从「批次 33」开始实施。
+读 D:/python/AI_Grade/NEXT_STEPS.md，从「批次 34」开始实施。
 动手前先按第 5 节取基线，改完按第 5 节的五段式交付。
 ```
 
@@ -16,8 +16,8 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `main` / 批次 32 提交，工作区干净 |
-| 已完成批次 | 第三轮 B1–B32（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
+| 分支 / HEAD | `main` / 批次 33 提交，工作区干净 |
+| 已完成批次 | 第三轮 B1–B33（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
 | 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），135 个端点 |
 | 前端 | 零构建，原生 HTML/CSS/JS + `frontend/shared/` |
 | 存储 | MySQL（库 `ai_grade_d`）+ `state_backups/*.json` 磁盘投影 |
@@ -26,7 +26,7 @@
 
 | 检查 | 命令 | 当前 |
 |---|---|---|
-| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **624 passed**（CI 也跑这一条） |
+| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **630 passed**（CI 也跑这一条） |
 | 前端共享层 / SSE | `node --test tests/test_*.cjs` | **48 pass**（5 个文件） |
 | 前端联通性 | `python frontend_e2e_check.py` | **98 通过 / 0 失败** |
 | 全接口 | `python test_all_apis.py` | **47/47** |
@@ -78,7 +78,7 @@
 
 | 编号 | 事项 | 现状 | 判定标准 |
 |---|---|---|---|
-| **C1** | 拆分 `agent_routes.py` | **3473 行**，仍是单文件；只解了循环依赖（`progress_bus`） | 按域拆成 workflow/report/questionnaire/export/scoring；**路径与响应完全不变**，靠 `test_all_apis` 46 + `frontend_e2e_check` 72 证明 |
+| **C1** | 拆 `agent_routes.py` | ⚠️ **批次 33 拆了第一个域（问卷）**：先抽 `_shared_state.py`（会话校验 + 问卷缓存 + 读取口径），再把 8 个问卷端点搬进 `questionnaire_routes.py`；3719 → 3369 行。`tests/_route_snapshot.py` 证明 148 条路由零差异（工具本身另有 6 条用例） | 见 `progress_round3.md` B33。**远未完成**：① 还剩约 127 个端点、8–10 个域；② 新模块仍从 `agent_routes` 导 6 个符号（应抽 `_workflow_deps`）；③ 快照不覆盖依赖内部行为与 OpenAPI schema；④ 每搬一次状态就有一批测试要改 patch 位置 |
 | **C2** | 进度 / 检查点持久化 | ❌ `REDIS_URL` 只在 config 里躺着；`MemorySaver` 仍是进程内 | 多 worker 与重启续跑成立；做不到就继续在启动日志与文档里**明确写单 worker** |
 | ~~**C3**~~ | ~~写放大治理~~ | ✅ **批次 25 已完成**：`step_results` 占备份体积 **64%**，其中 83% 是可证明的重复（`raw_outputs` 与 `content` 逐字相同占 47% 且无人读、`content` 与独立字段逐字相同占 37%）。新增 `backend/services/state_backup.py` 做「写时压缩 / 读时还原」，读入口单点 `load_state_backup` 返回形状不变、20+ 处调用方一行未改；存量 36 个会话 **22.1 MB → 9.7 MB（44%）**，备份/报告 **8.3x → 3.3x**，单会话总写入 **3,503 → 1,597 KB** | 见 `progress_round3.md` B25。**遗留**：①「≤ 报告 1.2 倍」不可达（其余 51% 是重启续跑必需的中间产物），判定标准应改为「可观测重复 == 0」；② 写放大**倍数**未降（5.7x → 6.3x，分子分母同步缩小），要降到 1.0x 得改增量/日志式落盘 |
 | **C4** | 可观测 | ❌ 无 `/metrics`；日志非结构化 | `/metrics` 覆盖步骤耗时/LLM 失败率/token/SSE 连接数；日志带 `request_id/session_id/step/user` |
@@ -252,23 +252,37 @@
 - **留给后续**：① 配额耗尽时重试是白等（无熔断）；② 退避无抖动；③ 设置是全局的；
   ④ 前端自由输入、填错到降级时才炸；⑤ 导出标注只在整报；⑥ 主/备判定靠首条尝试。
 
-### 批次 33 = C1 拆分 `agent_routes.py`（建议下一批做这个）
-- 现在 3,600+ 行、135 个端点在一个文件里。按域拆成 workflow / report / questionnaire / export / scoring。
-- **动手前先做快照**：把 `app.routes` 全量导出（路径 + 方法 + 参数名 + 依赖）成 JSON，
-  拆完逐项对比。没有这个快照，拆分就是"看起来没问题"。
-- **路径与响应必须完全不变**，靠 `test_all_apis 47` + `frontend_e2e 98` + `pytest 624` 证明。
-- **判定**：① 快照零差异；② 三套检查全绿；③ 单文件行数降到 800 行以内；
-  ④ 每个新模块有明确边界（谁在什么情况下被 import 不会成环）。
-- **风险**：这是纯重构，**没有任何行为收益**，一旦中途卡住就是半成品。
-  建议一次只拆一个域（先拆 questionnaire，它最独立），合入后再拆下一个。
-- **不要顺手改逻辑**：拆分提交里出现任何 `if` 条件变化，都应该单独拿出来。
+### 批次 33 = C1 拆第一个域（问卷） ✅ 已完成
+- 交付见 `progress_round3.md` 的 B33。先抽 `_shared_state.py`，再搬 8 个端点；
+  `agent_routes.py` 3719 → 3369，新增 `questionnaire_routes.py` 376 行。
+- **路由快照零差异**（148 条），工具用假快照自测过能抓「少路由 / 依赖变化」。
+- 回归：`pytest 624 → 630`、`test_all_apis 47/47`、`frontend_e2e 98/0`、`wf_e2e 47/0`。
+- **教训（已进坑表）**：可变状态不能按名字 import —— 测试 rebind 后新模块还拿旧 dict，
+  表现是"缓存里有数据、接口却 404"。
+- **留给后续**：① 还剩 127 个端点；② 应抽 `_workflow_deps.py` 断掉反向依赖；
+  ③ 快照不覆盖依赖内部行为/OpenAPI；④ `active_workflows` 迟早也要搬。
 
-### 批次 34（备选）：B4 refine 增强 / B5 AI 聊天升级
+### 批次 34 = C1 第二步：抽 `_workflow_deps` + 搬「导出」域（建议下一批做这个）
+- **为什么先抽依赖**：现在每个新域都要 `from backend.routes.agent_routes import ...` 六个符号。
+  不先断掉，拆到第 3 个域时 `agent_routes` 会变成"所有域的公共依赖库"，反而更乱。
+- **要做的**：
+  1. 新建 `backend/routes/_workflow_deps.py`：`AgentResponse`、`_get_workflow_values`、
+     `_persist_state`、`_require_body_workflow`、`_require_path_workflow`、`_require_workflow`、
+     `_owned_workflows`、`active_workflows`、`active_workflow_configs`、`_WORKFLOW_PROGRESS`；
+  2. 把 `active_workflows` 等**可变状态放 `_shared_state`**（按模块访问，别再按名字导入）；
+  3. 搬「导出」域（`/workflow/export`、`/workflow/export-step`、`/download/{file_name}`、
+     `_export_with_cache`、`_fallback_note`、`_safe_fallback_note`）到 `export_routes.py`。
+- **判定**：① 快照零差异（148 条）；② `pytest 630` 全绿；③ `rg "from backend.routes.agent_routes import" backend/routes/` 只剩 0–1 处；
+  ④ `agent_routes.py` 降到 2,600 行以内。
+- **风险**：`active_workflows` 搬迁会**再碰一次测试 patch 位置**（B33.5 第 5/7 条）。
+  搬之前先 `rg "agent.active_workflows"` 数一遍，别等到用例红了才发现有 10 处。
+
+### 批次 35（备选）：B4 refine 增强 / B5 AI 聊天升级
 - B4：现在只截 8000 字、无证据注入；`_apply_step_edit` 有 version 但 UI 没接。
 - B5：非流式、不引用用户报告、长对话全量塞。
 - 这两项都需要先想清楚「用户拿它做什么」，否则容易做成"又一个聊天框"。
 
-### 批次 35（备选，成本大）：B6 多模型对比择优
+### 批次 36（备选，成本大）：B6 多模型对比择优
 - 现状是并列展示，没有评审、没有落库 `selected_best`。
 - 有了 B31/B32 的 `build_llm_for` 与 `llm_attempts`，这一项的实现成本比之前低。
 
@@ -319,6 +333,7 @@ NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 98/0
 | **模型输出直接进报告 = 报告里会有机器格式** | 报告章节是「步骤原文直拼」的：`indicator_analysis` / `evaluation_table` 都是模型原始输出。只要那一步契约里有 JSON，JSON 就会出现在报告里（B21 清掉步骤 6 的副本、B22 才清掉步骤 7 的评分块，两次都是「先发现报告里有裸 JSON，再回头找谁拼的」）。新增任何「带结构化输出的步骤」时，**先确认它的原文会不会被拼进报告**，会的话落盘时就拆开 |
 | **后台任务要持引用，关闭时要 await** | `asyncio.create_task()` 返回的任务只被事件循环弱引用，不存起来就有被 GC 的风险；只 `cancel()` 不 `await` 等于把清理逻辑砍在半路。B23 的写法：模块级 `_CLEANUP_TASK` + 命名 + 幂等启动 + `cancel()` 后 `await`（吞掉 `CancelledError`），并放在 lifespan 的 `finally` 里 |
 | **备份是字段白名单（已复发三次）** | `_persist_state_backup` 只写 `fields` 里的键。新增状态字段必须同步加进白名单，否则重启后只看到症状、看不到原因。三次复发：`score_disposition`、`truncated_steps`、**`standard_purity`（批次 27 才发现，38 份备份 0 份有值）**。→ 新增字段时的检查项不是「我加了吗」，而是**「写一条落盘用例」**——三次都是靠用例才发现的 |
+| **可变状态别按名字 import** | 批次 33 新模块写 `from ..._shared_state import _QUESTIONNAIRE_CACHE`，绑定的是**当时的 dict 对象**；测试 `monkeypatch.setattr(_shared_state, "_QUESTIONNAIRE_CACHE", {...})` 重绑模块属性后，新模块手里还是旧的空 dict —— 表现是"缓存里有数据、接口却 404"。→ **可变对象（dict/list/set）一律按模块访问**（`mod.NAME`），函数/类才可以按名字导入 |
 | **补充说明类信息要 fail-open** | 批次 32 给导出件加降级脚注，直接调 `_get_workflow_values`，把「历史会话只有报告、没有状态快照」的导出变成了 404 —— 一条可选说明把主功能拦掉了。→ 任何**装饰性/补充性**逻辑（脚注、徽标、提示）都必须包在 try/except 里返回默认值；只有**判断性**逻辑（闸门、校验）才允许阻断 |
 | **LangGraph 的 state 是节点副本，累积型字段要存实例** | 批次 31 把每次模型调用追加进 `state["llm_attempts"]`，一轮 14 步跑完只剩 **1 条**：每个节点拿到的是状态副本，合并时"后写覆盖前写"。→ **追加型/计数器型字段**（尝试记录、耗时累计）必须存在 `self` 上，再镜像给 state；只有"覆盖型"字段（当前正文、当前结论）才适合直接写 state |
 | **依赖会先于处理函数判会话** | 批次 30 联调时想测「不支持的步骤 → 400」，用了不存在的 session，结果拿到 **404**：`_require_path_workflow` / `_require_body_workflow` 在进入处理函数前就把会话判掉了。同理，用**别人的 token** 去改一个真实会话也会先 404。→ 要测处理函数里的 400/422，必须给一个**该用户名下的真实会话**；写联调用例时先确认 token 与会话归属一致 |
