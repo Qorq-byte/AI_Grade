@@ -143,8 +143,10 @@ class WorkflowRequest(BaseModel):
     temperature_profile: Optional[str] = "normal"
     language_style: Optional[str] = "中立"
     indicator_type: Optional[str] = "项目支出指标体系"  # 指标体系类型（6种可选）
-    #: 步骤 9 的「漏项补全」：A/B 实测点名率 6% → 100%，代价是该步 token 2.3 倍（批次 29）
+    #: 漏项补全（步骤 9 问题分析 / 10 改进建议）。A/B 实测点名率 6% → 100%，
+    #: 代价是被补的那一步 token 约 2.3 倍（批次 29）；步骤 10 的 A/B 见批次 30
     critique_step9: bool = True
+    critique_step10: bool = True
 
 
 class ApproveRequest(BaseModel):
@@ -805,7 +807,8 @@ async def start_workflow_stream(request: WorkflowRequest, user: User = Depends(g
         "uploaded_files": [],
         "indicator_type": request.indicator_type or "项目支出指标体系",
         "step_control": {"language_style": request.language_style or "中立",
-                         "critique_step9": bool(getattr(request, "critique_step9", True))},
+                         "critique_step9": bool(getattr(request, "critique_step9", True)),
+                         "critique_step10": bool(getattr(request, "critique_step10", True))},
     }
 
     progress_bus.begin(session_id)
@@ -1097,7 +1100,8 @@ async def start_workflow(request: WorkflowRequest, user: User = Depends(get_curr
             "require_approval": request.require_approval,
             "indicator_type": request.indicator_type or "项目支出指标体系",
             "step_control": {"language_style": request.language_style or "中立",
-                         "critique_step9": bool(getattr(request, "critique_step9", True))},
+                         "critique_step9": bool(getattr(request, "critique_step9", True)),
+                         "critique_step10": bool(getattr(request, "critique_step10", True))},
         }
         _WORKFLOW_PROGRESS[session_id] = {"status": "running", "last_step": 0, "step_results": {}}
         try:
@@ -1188,9 +1192,20 @@ async def get_workflow_status(session_id: str, db: Session = Depends(get_db), af
         # 步骤 7 逐指标评分处置台账：区分「已落地 / 模型判定资料不足 / 引用无法定位 / 未提及」
         # 老会话（本字段上线前跑的）没有这项，返回空对象，前端不展示徽标
         "score_disposition": values.get("score_disposition", {}) or {},
-        # 步骤 9 的漏项补全台账（只有台账：名字列表 + 结果，约几百字节）。
-        # 前后两版正文走 `/workflow/{id}/step9-critique`，不进轮询接口。
+        # 漏项补全台账（只有台账：名字列表 + 结果，约几百字节）。
+        # 前后两版正文走 `/workflow/{id}/critique/{step}`，不进轮询接口。
         "step9_critique": values.get("step9_critique", {}) or {},
+        "step10_critique": values.get("step10_critique", {}) or {},
+        # 按步骤的统一视图（新前端用这个；上面两个旧键保留给老页面）
+        "critique": {
+            "9": values.get("step9_critique") or {},
+            "10": values.get("step10_critique") or {},
+        },
+        # 开关当前值：前端据此显示「开启/关闭」按钮，否则按钮只能猜
+        "critique_switches": {
+            "9": bool((values.get("step_control") or {}).get("critique_step9")),
+            "10": bool((values.get("step_control") or {}).get("critique_step10")),
+        },
     })
 
 
@@ -2818,23 +2833,33 @@ class LanguageStyleRequest(BaseModel):
 class CritiqueSwitchRequest(BaseModel):
     session_id: str
     enabled: bool = True
+    #: 只对哪一步生效。批次 29 只有步骤 9，默认值保持 9 是为了老调用方不用改
+    step: int = 9
+
+
+#: 允许开关补全的步骤（与 `CRITIQUE_SPECS` 同源，这里写死是为了不把 agent 模块拉进路由层）
+CRITIQUE_STEPS = (9, 10)
 
 
 @router.post("/workflow/set-critique", dependencies=[Depends(_require_body_workflow)])
 async def set_critique(req: CritiqueSwitchRequest):
-    """开关步骤 9 的「漏项补全」。
+    """开关某一版的「漏项补全」（步骤 9 问题分析 / 10 改进建议）。
 
-    默认是开的（启动接口里 `critique_step9=True`）：A/B 实测点名率 6% → 100%，
-    代价是该步 token 约 2.3 倍。关掉它的场景只有一个 —— 用户自己知道这份报告
-    不需要那么细，想省一半钱。
+    默认是开的（启动接口里 `critique_step9/10=True`）：A/B 实测点名率 6% → 100%，
+    代价是被补的那一步 token 约 2.3 倍。关掉它的场景只有一个 —— 用户自己知道
+    这份报告不需要那么细，想省这笔钱。
     """
+    if req.step not in CRITIQUE_STEPS:
+        raise HTTPException(status_code=400,
+                            detail=f"step 只能是 {list(CRITIQUE_STEPS)}，收到 {req.step}")
+    flag = f"critique_step{req.step}"
     try:
         values = _get_workflow_values(req.session_id)
         sc = values.get("step_control", {})
-        sc["critique_step9"] = bool(req.enabled)
+        sc[flag] = bool(req.enabled)
         _persist_state(req.session_id, {"step_control": sc})
-        return {"success": True, "data": {"critique_step9": bool(req.enabled)},
-                "message": f"步骤 9 漏项补全已{'开启' if req.enabled else '关闭'}"}
+        return {"success": True, "data": {flag: bool(req.enabled), "step": req.step},
+                "message": f"步骤 {req.step} 漏项补全已{'开启' if req.enabled else '关闭'}"}
     except HTTPException:
         raise
     except Exception as e:
@@ -2842,22 +2867,44 @@ async def set_critique(req: CritiqueSwitchRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/workflow/{session_id}/step9-critique", dependencies=[Depends(_require_path_workflow)])
-async def get_step9_critique(session_id: str):
-    """步骤 9 补全的台账 + 前后两版正文（前端做 diff 用）。
+def _critique_view(values: dict, step: int) -> dict:
+    """某一步的补全台账 + 前后两版正文。"""
+    pre_field = {9: "problems_analysis_pre_critique", 10: "suggestions_pre_critique"}[step]
+    ledger_field = {9: "step9_critique", 10: "step10_critique"}[step]
+    after_field = {9: "problems_analysis", 10: "suggestions"}[step]
+    ledger = values.get(ledger_field) or {}
+    return {
+        "ledger": ledger,
+        "before": values.get(pre_field) or "",
+        "after": values.get(after_field) or "",
+        "changed": bool(ledger.get("revised")),
+    }
+
+
+@router.get("/workflow/{session_id}/critique/{step}", dependencies=[Depends(_require_path_workflow)])
+async def get_critique(session_id: str, step: int):
+    """某一步补全的台账 + 前后两版正文（前端做对比用）。
 
     为什么不塞进 `/status`：`/status` 是轮询接口，每次多带 1 万字正文会把 5 秒一次的
     兜底轮询变成流量黑洞。要看 diff 的人主动调这一个即可。
     """
+    if step not in CRITIQUE_STEPS:
+        raise HTTPException(status_code=400,
+                            detail=f"step 只能是 {list(CRITIQUE_STEPS)}，收到 {step}")
     try:
-        values = _get_workflow_values(session_id)
-        ledger = values.get("step9_critique") or {}
-        return {"success": True, "data": {
-            "ledger": ledger,
-            "before": values.get("problems_analysis_pre_critique") or "",
-            "after": values.get("problems_analysis") or "",
-            "changed": bool(ledger.get("revised")),
-        }}
+        return {"success": True, "data": _critique_view(_get_workflow_values(session_id), step)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"读取漏项补全结果失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/workflow/{session_id}/step9-critique", dependencies=[Depends(_require_path_workflow)])
+async def get_step9_critique(session_id: str):
+    """批次 29 的旧路径，保留为别名（前端老版本仍在调）。"""
+    try:
+        return {"success": True, "data": _critique_view(_get_workflow_values(session_id), 9)}
     except HTTPException:
         raise
     except Exception as e:
