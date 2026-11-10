@@ -352,6 +352,18 @@ log("部分项未验证" in html, "质量徽标区分「部分项未验证」（
 log("质量未验证" in html, "质量徽标区分「质量未验证」（一条判据都没跑）")
 log("d.review" in html or "rv=d.review" in html, "报告卡片读取接口返回的 review 字段")
 
+# 批次 29：步骤 9 的漏项补全。徽标读 /status 里的台账，正文走单独接口。
+log("buildStep9CritiqueBadge" in html, "/client 服务出的 HTML 含步骤9漏项补全徽标")
+log("showStep9Critique" in html, "徽标可展开修订前后对比")
+log("step9-critique" in html, "对比面板调用 /step9-critique 接口")
+
+r = req("GET", "/api/agent/workflow/fe-no-such-session/step9-critique", token=user_token)
+log(r.status_code == 404, "GET 不存在会话的补全台账 → 404（不 500）", f"status={r.status_code}")
+
+r = req("POST", "/api/agent/workflow/set-critique", token=user_token,
+        json_body={"session_id": "fe-no-such-session", "enabled": True})
+log(r.status_code == 404, "POST 开关不存在的会话 → 404（不 500）", f"status={r.status_code}")
+
 r = req("GET", "/api/client/reports", token=user_token)
 rows = (r.json().get("data") or []) if r.status_code == 200 else []
 log(all(isinstance(row.get("review"), dict) for row in rows),
