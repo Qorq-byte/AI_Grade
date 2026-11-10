@@ -169,7 +169,11 @@ def test_saved_report_export_and_download(isolated, fmt, magic):
     assert result.status_code == 200
     assert isolated.client.get(f"{base}/owned/report", headers=headers).json()["data"]["content"] == "# revised"
     export = isolated.client.post(f"{base}/export", headers=headers,
-                                  json={"session_id": "owned", "format": fmt})
+                                  # 这份 fixture 的正文只有「# revised」，会被导出闸门
+                                  # 当成「报告过短」拦下（那是刻意的）；本用例只验
+                                  # 导出→下载链路，闸门本身由
+                                  # tests/test_consistency_export_gate.py 覆盖
+                                  json={"session_id": "owned", "format": fmt, "force": True})
     assert export.status_code == 200, export.text
     file_name = export.json()["data"]["file_name"]
     url = "/api/agent/download/" + file_name
@@ -364,7 +368,8 @@ def test_status_exposes_consistency_report(isolated):
     fresh = isolated.client.get("/api/agent/workflow/owned/status",
                                 headers=isolated.headers[1]).json()["data"]["consistency"]
     assert fresh["checked"] == ["indicator_allocation", "score_summary",
-                                "report_text", "steps_and_coverage"]
+                                "report_text", "chapters",
+                                "problem_suggestion_coverage", "steps_and_coverage"]
     assert "REPORT_TOO_SHORT" in [item["code"] for item in fresh["issues"]]
 
 

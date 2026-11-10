@@ -12,6 +12,13 @@
 
 本模块只做一件事：把这些说出来，附上出处步骤与两个数字，让人能判断。
 判定口径刻意保守——**只在两处数字确实对不上时报**，不猜测、不推断缺失内容。
+
+批次 26 起，结论多了两个字段，供「能不能导出」这类动作使用：
+
+- `id`：稳定编号（`CODE#序号`），日志、工单、前端提示都能引用同一条；
+- `blocking`：是否必须处理完才能导出。**只给结构性缺陷**（指标体系缺失、步骤没跑完、
+  报告过短、有章节还是占位符），分值口径不一致这类只提示、不拦人 ——
+  拦得太宽，用户会学会绕过它。
 """
 import re
 from typing import Any, Dict, List, Optional
@@ -31,9 +38,27 @@ MIN_REPORT_CHARS = 200
 # 分值校验的维度 4（产出+效益<60）是策略预警，不是硬错误，见 score_validator.allocation_valid
 POLICY_DIMENSIONS = (4,)
 
+#: `_assemble_final_report` 给空章节写的占位文案 —— 缺章的确定标记。
+#: 故意不带右括号：步骤失败时写的是「（本部分内容尚未生成，请检查AI模型配置后重新运行工作流）」，
+#: 那一句同样是缺章，不能漏。
+EMPTY_CHAPTER_MARKER = "（本部分内容尚未生成"
+#: 得分率低于这个值的指标，应当被问题分析与改进建议点名
+LOW_SCORE_RATIO = 0.6
+#: 指标名太短（「进度」「质量」）时子串匹配没有意义，跳过
+MIN_INDICATOR_NAME_CHARS = 3
+
+#: 必须处理完才能导出的问题。只放结构性缺陷，见模块文档最后一段
+BLOCKING_CODES = frozenset({
+    "INDICATOR_MISSING",
+    "REPORT_WITH_INCOMPLETE_STEPS",
+    "REPORT_TOO_SHORT",
+    "REPORT_CHAPTER_MISSING",
+})
+
 _SCORE_IN_TEXT = re.compile(r"(?:综合得分|总得分|综合评分)[：:\s]*([0-9]+(?:\.[0-9]+)?)\s*分")
 # 长词优先，避免「不合格」被截成「合格」
 _GRADE_IN_TEXT = re.compile(r"(?:评价等级|综合等级|评定等级)[：:\s]*(不合格|待核实|优秀|良好|合格)")
+_CHAPTER_LINE = re.compile(r"^##\s*(\S.*)$")
 _PENDING_WORD = "待核实"
 
 
@@ -257,23 +282,133 @@ def _check_steps_and_coverage(state: Dict[str, Any]) -> List[Dict[str, Any]]:
     return issues
 
 
-CHECKS = ("indicator_allocation", "score_summary", "report_text", "steps_and_coverage")
+CHECKS = ("indicator_allocation", "score_summary", "report_text", "chapters",
+          "problem_suggestion_coverage", "steps_and_coverage")
+
+
+def _missing_chapters(report: str) -> List[str]:
+    """报告里「只有占位符」的章节标题。
+
+    `_assemble_final_report` 对空章节不跳过、写一句 `EMPTY_CHAPTER_MARKER`，
+    所以这句话就是缺章的确定证据 —— 不用猜章节是否「内容太少」。
+    """
+    titles: List[str] = []
+    current = ""
+    for line in report.splitlines():
+        match = _CHAPTER_LINE.match(line.strip())
+        if match:
+            current = match.group(1).strip()
+            continue
+        if EMPTY_CHAPTER_MARKER in line and current and current not in titles:
+            titles.append(current)
+            current = ""
+    return titles
+
+
+def _check_chapters(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    report = state.get("final_report") or ""
+    if not report:
+        return []
+    count = report.count(EMPTY_CHAPTER_MARKER)
+    if not count:
+        return []
+    titles = _missing_chapters(report)
+    named = "、".join(titles[:5]) if titles else "（未能定位章节标题）"
+    return [_issue(
+        "REPORT_CHAPTER_MISSING", "error",
+        f"报告有 {count} 章还是占位符{named}；导出后这些章在 Word/PDF 里就只有这一句话",
+        [14], expected="每章都有正文", actual=f"{count} 章缺失",
+    )]
+
+
+def _low_score_leaves(state: Dict[str, Any]) -> List[str]:
+    """得分率低于阈值的三级指标名（只取名字够长的，子串匹配才有意义）。"""
+    system = state.get("indicator_system") or {}
+    scores = state.get("indicator_score_map") or {}
+    names: List[str] = []
+    for item in indicator_leaves(system.get("level1_indicators") or []):
+        name = (item.get("name") or "").strip()
+        if len(name) < MIN_INDICATOR_NAME_CHARS:
+            continue
+        full = score_number(item.get("score", item.get("max_score")))
+        actual = actual_indicator_score(item, scores)
+        if not full or actual is None:
+            continue
+        if actual / full < LOW_SCORE_RATIO:
+            names.append(name)
+    return names
+
+
+def _check_problem_suggestion_coverage(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """低分指标有没有被「问题分析」和「改进建议」点名。
+
+    只报**聚合结论**：36 份真实备份里 167 个低分指标有 131 个（78%）没被问题分析点名，
+    逐条报会让一份报告多出十几条提示，用户立刻学会忽略它。聚合之后一份报告最多两条，
+    指向「评分与叙述脱节」这个能被处理的事实。
+
+    字段不存在（步骤没跑）时不报 —— 那是「还没写」，不是「写漏了」。
+    """
+    problems = state.get("problems_analysis")
+    suggestions = state.get("suggestions")
+
+    issues: List[Dict[str, Any]] = []
+    names = _low_score_leaves(state)
+    threshold = int(LOW_SCORE_RATIO * 100)
+    for text, label, code, steps in (
+        (problems, "问题分析", "PROBLEM_COVERAGE_GAP", [7, 9]),
+        (suggestions, "改进建议", "SUGGESTION_COVERAGE_GAP", [7, 10]),
+    ):
+        if not isinstance(text, str) or not text.strip() or not names:
+            continue
+        missing = [name for name in names if name not in text]
+        if not missing:
+            continue
+        more = "等" if len(missing) > 3 else ""
+        issues.append(_issue(
+            code, "warning",
+            f"{len(missing)}/{len(names)} 个低分指标（得分率 <{threshold}%）"
+            f"在「{label}」里没有被点名：{'、'.join(missing[:3])}{more}",
+            steps, expected=f"逐个点名 {len(names)} 个低分指标", actual=f"未点名 {len(missing)} 个",
+        ))
+
+    # 「无主建议」：写了一大段建议，却没有任何问题分析。字段存在但为空才算 ——
+    # 字段缺失说明步骤 9 没跑，由 REPORT_WITH_INCOMPLETE_STEPS 负责
+    if isinstance(problems, str) and not problems.strip() \
+            and isinstance(suggestions, str) and suggestions.strip():
+        issues.append(_issue(
+            "SUGGESTION_WITHOUT_PROBLEM", "warning",
+            "写了改进建议，但问题分析章节是空的；读者看不出这些建议针对什么问题",
+            [9, 10], expected="先列问题，再给建议", actual="问题分析为空",
+        ))
+    return issues
 
 
 def check_consistency(state: Dict[str, Any]) -> Dict[str, Any]:
-    """返回 {issues, error_count, warning_count, score, checked}。"""
+    """返回 {issues, error_count, warning_count, blocking_count, exportable, score, checked}。"""
     state = state or {}
     issues: List[Dict[str, Any]] = []
     issues += _check_indicator_allocation(state)
     issues += _check_score_summary(state)
     issues += _check_report_text(state)
+    issues += _check_chapters(state)
+    issues += _check_problem_suggestion_coverage(state)
     issues += _check_steps_and_coverage(state)
 
+    counters: Dict[str, int] = {}
+    for item in issues:
+        item["blocking"] = item["code"] in BLOCKING_CODES
+        counters[item["code"]] = counters.get(item["code"], 0) + 1
+        item["id"] = f"{item['code']}#{counters[item['code']]}"
+
+    blocking = [item for item in issues if item["blocking"]]
     summary = state.get("score_summary") or {}
     return {
         "issues": issues,
         "error_count": sum(1 for item in issues if item["severity"] == "error"),
         "warning_count": sum(1 for item in issues if item["severity"] == "warning"),
+        "blocking_count": len(blocking),
+        # 导出闸门只看这一位；出现结构性缺陷时不允许静默导出
+        "exportable": not blocking,
         "score": {
             "total_score": summary.get("total_score"),
             "complete": summary.get("complete"),
