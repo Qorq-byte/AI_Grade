@@ -342,3 +342,40 @@ async def batch_delete_questionnaires(req: BatchDeleteQRequest, user: User = Dep
     return AgentResponse(success=True, data={"deleted": len(session_ids), "session_ids": session_ids},
                          message=f"成功删除 {len(session_ids)} 条问卷")
 
+class AddOpenQuestionRequest(BaseModel):
+    session_id: str
+    question_text: str
+    related_indicator_id: Optional[str] = None
+    related_indicator_name: Optional[str] = None
+
+@router.post("/workflow/questionnaire/add-open-question", dependencies=[Depends(_require_body_workflow)])
+async def add_open_ended_question(req: AddOpenQuestionRequest):
+    """
+    向已有问卷手动添加开放性问题（填空题）
+    操作者可以根据需要在里克特量表问卷基础上添加自定义开放性问题
+    """
+    try:
+        session_id = req.session_id
+
+        qcache = _published_questionnaire(session_id)
+        questions = list(qcache["questions"])
+        new_question = QuestionnaireGenerator().add_open_ended_question(questions, req.question_text)
+        new_question["related_indicator_id"] = req.related_indicator_id or ""
+        new_question["related_indicator_name"] = req.related_indicator_name or ""
+        updated = {**qcache, "questions": questions,
+                   "display_md": QuestionnaireGenerator().format_questionnaire_for_display(questions),
+                   "updated_at": datetime.now(timezone.utc).isoformat()}
+        PerformanceAgent.update_state_backup(session_id, {"questionnaire": updated})
+        _shared_state._QUESTIONNAIRE_CACHE[session_id] = updated
+
+        return {
+            "success": True,
+            "data": {"question": new_question, "total_questions": len(questions)},
+            "message": "开放性问题已添加"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"添加开放性问题失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
