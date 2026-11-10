@@ -6,7 +6,7 @@
 **新对话开场白（直接粘贴）：**
 
 ```
-读 D:/python/AI_Grade/NEXT_STEPS.md，从「批次 28」开始实施。
+读 D:/python/AI_Grade/NEXT_STEPS.md，从「批次 29」开始实施。
 动手前先按第 5 节取基线，改完按第 5 节的五段式交付。
 ```
 
@@ -16,8 +16,8 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `main` / 批次 27 提交，工作区干净 |
-| 已完成批次 | 第三轮 B1–B27（每批都有独立交付章节）+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
+| 分支 / HEAD | `main` / 批次 28 提交，工作区干净 |
+| 已完成批次 | 第三轮 B1–B28（每批都有独立交付章节）+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
 | 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），135 个端点 |
 | 前端 | 零构建，原生 HTML/CSS/JS + `frontend/shared/` |
 | 存储 | MySQL（库 `ai_grade_d`）+ `state_backups/*.json` 磁盘投影 |
@@ -26,12 +26,12 @@
 
 | 检查 | 命令 | 当前 |
 |---|---|---|
-| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **531 passed** |
+| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **535 passed**（CI 也跑这一条） |
 | 前端共享层 / SSE | `node --test tests/test_*.cjs` | **48 pass**（5 个文件） |
 | 前端联通性 | `python frontend_e2e_check.py` | **82 通过 / 0 失败** |
 | 全接口 | `python test_all_apis.py` | **47/47** |
 | 真实工作流 | `python wf_e2e.py` | **47 项 / 0 失败**（约 4~5 分钟，要真实模型） |
-| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
+| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
 | 检索基线 | `python -m tests.rag_eval.run --check` | Recall@3 **0.448**、MRR 0.391、P 0.161 |
 
 ---
@@ -82,7 +82,7 @@
 | **C2** | 进度 / 检查点持久化 | ❌ `REDIS_URL` 只在 config 里躺着；`MemorySaver` 仍是进程内 | 多 worker 与重启续跑成立；做不到就继续在启动日志与文档里**明确写单 worker** |
 | ~~**C3**~~ | ~~写放大治理~~ | ✅ **批次 25 已完成**：`step_results` 占备份体积 **64%**，其中 83% 是可证明的重复（`raw_outputs` 与 `content` 逐字相同占 47% 且无人读、`content` 与独立字段逐字相同占 37%）。新增 `backend/services/state_backup.py` 做「写时压缩 / 读时还原」，读入口单点 `load_state_backup` 返回形状不变、20+ 处调用方一行未改；存量 36 个会话 **22.1 MB → 9.7 MB（44%）**，备份/报告 **8.3x → 3.3x**，单会话总写入 **3,503 → 1,597 KB** | 见 `progress_round3.md` B25。**遗留**：①「≤ 报告 1.2 倍」不可达（其余 51% 是重启续跑必需的中间产物），判定标准应改为「可观测重复 == 0」；② 写放大**倍数**未降（5.7x → 6.3x，分子分母同步缩小），要降到 1.0x 得改增量/日志式落盘 |
 | **C4** | 可观测 | ❌ 无 `/metrics`；日志非结构化 | `/metrics` 覆盖步骤耗时/LLM 失败率/token/SSE 连接数；日志带 `request_id/session_id/step/user` |
-| **C5** | CI 与依赖 | ❌ 无 `.github/workflows`、无 `pyproject.toml`、无 `requirements-dev.txt` | CI = 编译检查 → 单测 → `test_all_apis` → 前端语法；依赖锁 `==` |
+| ~~**C5**~~ | ~~CI 与依赖~~ | ✅ **批次 28 已完成**：`.github/workflows/ci.yml` 三步（`compileall` → `pytest tests` → `node --test`）+ `requirements-dev.txt`（205 个包全锁 `==`，**剔除 torch/chromadb/faiss 那套推理栈**，实测干净环境 531 → 本批后 535 全绿）。`env` 里把 `MYSQL_PORT` 指到 `1`，专门暴露「偷偷连真库」的用例——它当场抓出 `test_startup_still_initializes_db` 是靠本机 MySQL 才绿的假用例（已修）。契约测试 `tests/test_ci_workflow.py` 4 条 + 变异 4/4 把「哪些检查不进 CI」写进代码 | 见 `progress_round3.md` B28。**遗留**：① **GitHub 侧从没跑过**（本机代理打不开 Actions），只能证明本地干净环境全绿；② `pip install` 在 runner 上的耗时未实测；③ 没锁 Python/Node 次版本；④ 无覆盖率/静态检查（现在加了只会全红）；⑤ `requirements-dev.txt` 混着间接依赖，是"一次性的可复现性投资" |
 | ~~**C6**~~ | ~~安全收尾~~ | ✅ **批次 24 已完成**：`api_key` 走 Fernet（`enc:v1:` 前缀，无密钥降级明文 + 启动告警）、列表接口改固定掩码（原来泄露前 8 位）、用户详情不再回显 `password_hash`；`users.must_change_password` 幂等 ALTER 加列 + 只给「仍用初始口令」的账号打标，未改密用户除白名单外一律 403（带 `X-Password-Change-Required` 供前端分流，否则会死循环）；`.env` 与 `*.sql` 历史泄露检查均为空，`.backup/` 补进 gitignore | 见 `progress_round3.md` B24。**遗留**：`admin` 仍是默认口令（已拦、未换）；`SECRET_ENCRYPTION_KEY` 未配 |
 
 ### P2 · 质量上限与前端剩余
@@ -199,25 +199,32 @@
 - **留给后续**：① 存量 21 份永久 `partial`；② 字数阈值不分项目类型；③ 抓不到"写得很空"；
   ④ 质量 warn 不参与导出闸门，「建议复核」仍只是建议；⑤ 详情面板没做。
 
-### 批次 28 = C5 最小 CI（建议下一批做这个）
-- **为什么是它**：现在有 **531 条单测 + 48 条前端用例 + 15 个变异脚本**，全靠"记得跑"。
-  这一轮里已经出现过三次「改了实现忘了跑某个脚本」的事故（坑表里记了两条）。
-  CI 是唯一能让这些资产**自动生效**的东西，成本半天。
-- **要做的**：`.github/workflows/ci.yml` + `requirements-dev.txt`（锁 `==`）：
-  `python -m compileall backend` → `pytest tests` → `node --test tests/test_*.cjs`。
-- **不要**把 `test_all_apis` / `wf_e2e` / `frontend_e2e_check` 放进 CI：
-  它们要真实 MySQL + 真实模型 + 8000 端口，会变成随机红，红了之后大家就开始忽略 CI。
-- **判定标准**：① 故意写一处语法错误能被拦下；② 故意让一条用例红能被拦下；
-  ③ CI 跑完的时间要贴出来（本地 pytest 约 40 s）；④ README 里写清楚「哪些检查不在 CI 里、怎么手动跑」。
-- **风险**：仓库在 GitHub 上，Actions 免费额度够用；但**本机无法验证 GitHub 侧的运行结果**
-  （代理打不开 raw，历史上 SVG 渲染也没验过）。只能做到"本地照 CI 顺序跑一遍全绿 + YAML 语法自检"，
-  这一点必须写进交付章节，不许声称"CI 已生效"。
+### 批次 28 = C5 最小 CI ✅ 已完成
+- 交付见 `progress_round3.md` 的 B28。`ci.yml` 三步（compileall → pytest → node --test），
+  `requirements-dev.txt` 锁 205 个包并剔除推理栈（torch/chromadb/faiss/onnx）。
+- **CI 抓到的第一件事就是自己的假用例**：`test_startup_still_initializes_db` 原来靠本机
+  真有 MySQL 才绿（`SessionLocal()` 没替身），CI 把 `MYSQL_PORT` 指到 1 之后立刻红。已修并加顺序断言。
+- 负面验证：语法错误 → `compileall` exit 1；故意红用例 → pytest exit 1；
+  契约测试 + 变异 4/4 守住「哪些检查在 CI 里」这个决定。
+- **留给后续**：① GitHub 侧从未跑过（只能证明本地干净环境全绿）；② runner 上安装耗时未知；
+  ③ 没锁 Python/Node 次版本；④ 不做覆盖率与静态检查（现在只会全红）。
 
-### 批次 29（备选，成本高）：B1 critique-revise
+### 批次 29 = B1 critique-revise（建议下一批做这个，但**先只做一步**）
 - 五个步骤（8/9/10/12/13）目前裸生成。rubric 自评 + 最多 1 轮修订，**成本翻倍**。
-- 动手前必须先答两个问题：① 修订真的提升质量吗（要 A/B，不能凭感觉）；
+- **动手前必须先答两个问题**：① 修订真的提升质量吗（要 A/B，不能凭感觉）；
   ② 成本翻倍换来的东西，用户愿不愿意等。
-- 若要做，先做一步（比如步骤 9 问题分析）跑 A/B，别一次上五步。
+- 建议做法：先只做步骤 9（问题分析）——它同时被 B26 的覆盖缺口检查依赖（低分指标有没有被点名），
+  改完可以用 `problem_suggestion_coverage` 的命中率做客观指标，不用靠人读。
+- 判定：同一份输入跑 6 次 A/B，看 ①低分指标点名率 ②字数 ③`no_evidence_scored` 占比 ④token 成本；
+  **四项都要贴数字**，不许只说"看起来更好"。
+- **风险**：critique-revise 很容易变成"用两倍成本换来更啰嗦的正文"。B20/B21/B22 三次都在删冗余，
+  这一批如果反向增加字数，要能解释为什么值得。
+
+### 批次 30（备选）：B7 模型调用韧性（降级链 + 分级超时）
+- 现状：usage 优先上游、无 usage 标 `estimated` 已完成；**降级链与分级超时未做**。
+- 判定：429/超时/5xx 按配置降级；每次调用记录 attempt/model/latency/tokens；普通 120 s、长文 300 s。
+- 这一项不能靠单测证明，要故障注入（改 base_url 指向一个必超时的地址）。
+
 
 
 ---
@@ -265,6 +272,7 @@ NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 82/0
 | **模型输出直接进报告 = 报告里会有机器格式** | 报告章节是「步骤原文直拼」的：`indicator_analysis` / `evaluation_table` 都是模型原始输出。只要那一步契约里有 JSON，JSON 就会出现在报告里（B21 清掉步骤 6 的副本、B22 才清掉步骤 7 的评分块，两次都是「先发现报告里有裸 JSON，再回头找谁拼的」）。新增任何「带结构化输出的步骤」时，**先确认它的原文会不会被拼进报告**，会的话落盘时就拆开 |
 | **后台任务要持引用，关闭时要 await** | `asyncio.create_task()` 返回的任务只被事件循环弱引用，不存起来就有被 GC 的风险；只 `cancel()` 不 `await` 等于把清理逻辑砍在半路。B23 的写法：模块级 `_CLEANUP_TASK` + 命名 + 幂等启动 + `cancel()` 后 `await`（吞掉 `CancelledError`），并放在 lifespan 的 `finally` 里 |
 | **备份是字段白名单（已复发三次）** | `_persist_state_backup` 只写 `fields` 里的键。新增状态字段必须同步加进白名单，否则重启后只看到症状、看不到原因。三次复发：`score_disposition`、`truncated_steps`、**`standard_purity`（批次 27 才发现，38 份备份 0 份有值）**。→ 新增字段时的检查项不是「我加了吗」，而是**「写一条落盘用例」**——三次都是靠用例才发现的 |
+| **用例会靠环境才绿** | `test_startup_still_initializes_db` 替掉了 `init_db` 却漏了紧接着的 `SessionLocal()`：本机有 MySQL 时它真连上了库、用例通过；CI 把 `MYSQL_PORT` 指到 1 之后立刻红。→ **凡是"启动/初始化"类用例，要替的不是一个函数，而是那条链路上所有会碰外部资源的东西**；判断办法只有一个：在一个没有该外部环境的机器（或容器）上跑一遍。批次 28 加 CI 之后，这类假绿会自动暴露 |
 | **`step_results` 的键在备份里是字符串** | 落盘 `json.dump` 把 int 键变成 str，`load_state_backup` 原样返回。按 int 直接 `.get(step)` 会**全部取不到**，而且不报错、只是静默返回空（批次 27 的探针第一版对 38 份备份一律输出「无样本」就是这个原因）。→ 遍历备份里的 `step_results` 必须 `int(key)`；`_get_workflow_values` 已经在做，新写的读取方别绕开它 |
 | **一个状态值不要覆盖两种事实** | 批次 27 初版把「有台账的项都过了、其余无从判断」和「一条判据都没跑」都叫 `unknown`，回放发现 55% 的存量落进前者——徽标对一半以上的报告等于没信息。→ 状态枚举按**用户下一步动作**分，不按内部逻辑分：`review`（要人看）/`partial`（部分没查）/`pass`（都查了）/`unknown`（啥也没查）。合并起来实现更省事，用起来等于没做 |
 | **块编号可被模型「猜中」** | 编号规则是 `P<文件>-<行>-1`，模型看得懂；未下发的编号（如 `P1-5-1`）它会按规则推出来。所以「编号真实存在」不等于「模型真引到了那一行」，台账要留 `cited_ids` 与 `anchor_reason` 备查 |
@@ -310,7 +318,8 @@ B3 质量门禁做完了（批次 27）。
   下一层是 base + append journal 的增量落盘，但会打破「一个会话一个 `*.json`」的约定
   （清理任务、问卷列表都在按 `*.json` 遍历），**要单独排期，不要顺手做**。
 - **C 类的大头（拆 `agent_routes.py`、多 worker）不要先做**，除非要上线；
-  但 **C5 最小 CI 很便宜**（半天），这就是批次 28 —— 531 条单测 + 15 个变异脚本现在全靠"记得跑"。
+  但 **C5 最小 CI 已经做完（批次 28）**：535 条单测 + 48 条前端用例由 GitHub Actions 自动跑，
+  16 个变异脚本仍靠人（它们会原地改源码，不能自动化，只能"记得跑 + 跑完验伤"）。
 
 **这一轮反复出现的同一个模式，值得记住**：每次「输出太长」都不是模型不会写短，而是
 **我们让它写了一份没人读的东西**（步骤 7 的正文冗余、步骤 6 的 JSON 副本、步骤 7 的 JSON 进正文）。
