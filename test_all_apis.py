@@ -105,6 +105,23 @@ if user_token:
         api("GET", "/api/client/token-stats", token=user_token)))
     test("报告列表 GET /api/client/reports", lambda: expect_success(
         api("GET", "/api/client/reports", token=user_token)))
+
+    def reports_carry_review():
+        """批次 27：每条报告都要带质量结论，且状态值只能是四态之一。"""
+        r = api("GET", "/api/client/reports", token=user_token)
+        if not r.ok:
+            return f"HTTP {r.status_code}"
+        for row in r.json().get("data", []):
+            review = row.get("review")
+            if not isinstance(review, dict):
+                return f"缺少 review 字段：{row.get('session_id')}"
+            if review.get("verdict") not in ("pass", "review", "partial", "unknown"):
+                return f"verdict 非法：{review.get('verdict')}"
+            if review.get("required") and not review.get("reasons"):
+                return f"标了建议复核却没给理由：{row.get('session_id')}"
+        return True
+
+    test("报告列表带质量结论", reports_carry_review)
     test("通知列表 GET /api/client/notifications", lambda: expect_success(
         api("GET", "/api/client/notifications", token=user_token)))
     test("可用模型 GET /api/client/ai/models", lambda: expect_success(

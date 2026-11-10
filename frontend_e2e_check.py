@@ -345,6 +345,22 @@ log("模型判定资料不足" in html, "徽标区分「模型判定资料不足
 log("引用可定位到原文行" in html, "徽标识别弱定位（引用只到原文行号）")
 log("不计入总分" in html, "弱定位文案说明不计入总分")
 
+# 批次 27：报告列表的质量徽标。三种状态必须在文案上分得开 ——
+# 若「部分项未验证」被显示成「通过」，用户会把没查过的报告当成查过了。
+log("建议复核" in html, "/client 服务出的 HTML 含「建议复核」徽标")
+log("部分项未验证" in html, "质量徽标区分「部分项未验证」（有台账项通过、其余无从判断）")
+log("质量未验证" in html, "质量徽标区分「质量未验证」（一条判据都没跑）")
+log("d.review" in html or "rv=d.review" in html, "报告卡片读取接口返回的 review 字段")
+
+r = req("GET", "/api/client/reports", token=user_token)
+rows = (r.json().get("data") or []) if r.status_code == 200 else []
+log(all(isinstance(row.get("review"), dict) for row in rows),
+    "报告列表每条都带 review 结论", f"{len(rows)} 条")
+log(all(row["review"].get("verdict") in ("pass", "review", "partial", "unknown")
+        for row in rows), "review.verdict 取值在四态之内")
+log(all(row["review"].get("reasons") for row in rows if row["review"].get("required")),
+    "标了建议复核的报告都给出了理由")
+
 print()
 print("=" * 66)
 print(f"结果: {PASS} 通过 / {FAIL} 失败")
