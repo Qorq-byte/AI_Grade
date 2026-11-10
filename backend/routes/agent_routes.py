@@ -60,11 +60,6 @@ active_workflows: Dict[str, PerformanceAgent] = {}
 # 存储每个session的初始化参数，用于approve后重建
 active_workflow_configs: Dict[str, dict] = {}
 
-def _validate_session_id(session_id: str) -> None:
-    if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", session_id):
-        raise HTTPException(status_code=400, detail="无效的会话 ID")
-
-
 def _owned_workflows(db: Session, user: User):
     query = db.query(WorkflowSession)
     if user.role != UserRole.ADMIN:
@@ -617,6 +612,7 @@ async def upload_files_batch(
 
 # 全局进度跟踪（用于SSE轮询模式）
 # 迁移到 progress_bus，agent 与 routes 共享同一字典，解除 agent → routes 反向依赖
+from backend.routes._shared_state import _validate_session_id
 from backend.services import progress_bus
 
 _WORKFLOW_PROGRESS = progress_bus.PROXY
