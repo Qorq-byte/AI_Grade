@@ -613,7 +613,7 @@ async def upload_files_batch(
 # 全局进度跟踪（用于SSE轮询模式）
 # 迁移到 progress_bus，agent 与 routes 共享同一字典，解除 agent → routes 反向依赖
 from backend.routes._shared_state import (
-    _QUESTIONNAIRE_CACHE, _validate_session_id,
+    _QUESTIONNAIRE_CACHE, _published_questionnaire, _validate_session_id,
 )
 from backend.services import progress_bus
 
@@ -1867,16 +1867,6 @@ class SubmitQuestionnaireRequest(BaseModel):
     session_id: str
     answers: List[QuestionnaireAnswerItem]
     questionnaire_version: str | None = None
-
-
-def _published_questionnaire(session_id: str) -> dict:
-    _validate_session_id(session_id)
-    data = _QUESTIONNAIRE_CACHE.get(session_id) or (
-        PerformanceAgent.load_state_backup(session_id).get("questionnaire") or {}
-    )
-    if not data.get("questions"):
-        raise HTTPException(status_code=404, detail="问卷不存在或尚未生成")
-    return data
 
 
 def _questionnaire_response(session_id, data):
