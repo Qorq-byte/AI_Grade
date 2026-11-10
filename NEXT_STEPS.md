@@ -6,7 +6,7 @@
 **新对话开场白（直接粘贴）：**
 
 ```
-读 D:/python/AI_Grade/NEXT_STEPS.md，从「批次 31」开始实施。
+读 D:/python/AI_Grade/NEXT_STEPS.md，从「批次 32」开始实施。
 动手前先按第 5 节取基线，改完按第 5 节的五段式交付。
 ```
 
@@ -16,8 +16,8 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `main` / 批次 30 提交，工作区干净 |
-| 已完成批次 | 第三轮 B1–B30（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
+| 分支 / HEAD | `main` / 批次 31 提交，工作区干净 |
+| 已完成批次 | 第三轮 B1–B31（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
 | 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），135 个端点 |
 | 前端 | 零构建，原生 HTML/CSS/JS + `frontend/shared/` |
 | 存储 | MySQL（库 `ai_grade_d`）+ `state_backups/*.json` 磁盘投影 |
@@ -26,12 +26,12 @@
 
 | 检查 | 命令 | 当前 |
 |---|---|---|
-| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **562 passed**（CI 也跑这一条） |
+| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **603 passed**（CI 也跑这一条） |
 | 前端共享层 / SSE | `node --test tests/test_*.cjs` | **48 pass**（5 个文件） |
 | 前端联通性 | `python frontend_e2e_check.py` | **93 通过 / 0 失败** |
 | 全接口 | `python test_all_apis.py` | **47/47** |
 | 真实工作流 | `python wf_e2e.py` | **47 项 / 0 失败**（约 4~5 分钟，要真实模型） |
-| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` / `_mutate_step9_critique.py` / `_mutate_critique_step10.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 / 10 / 7 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
+| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` / `_mutate_step9_critique.py` / `_mutate_critique_step10.py` / `_mutate_llm_resilience.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 / 10 / 7 / 11 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
 | 检索基线 | `python -m tests.rag_eval.run --check` | Recall@3 **0.448**、MRR 0.391、P 0.161 |
 
 ---
@@ -72,7 +72,7 @@
 | **B4** | refine 增强 | ❌ 未开始：现在只截 8000 字、无证据注入；`_apply_step_edit` 有 version 但 UI 没接 | 注入本步证据 + 相邻步骤上下文；返回 `diff`/`version`，前端支持预览→采用/丢弃→回滚 |
 | **B5** | AI 聊天升级 | ❌ 未开始：非流式、不引用用户报告、长对话全量塞 | 流式渲染复用现有 SSE 渲染层；回答「我这份报告扣分点在哪」能引用真实章节 |
 | **B6** | 多模型对比择优 | ❌ 未开始：现在是并列展示 | 评审调用给维度分与理由，或差异高亮 + 人工选择；落库 `selected_best`；禁止取第一个 |
-| **B7** | 模型调用韧性剩余 | ⚠️ 部分：usage 优先上游、无 usage 标 `estimated` 已完成；**降级链与分级超时未做** | 429/超时/5xx 按配置降级；每次调用记录 attempt/model/latency/tokens；普通 120s、长文 300s |
+| ~~**B7**~~ | ~~模型调用韧性剩余~~ | ✅ **批次 31 已完成**：分级超时（长文 5/6/7/9/10 给 300 s、其余 120 s，显式传参优先）+ 降级链（只对 transient：429/超时/5xx/连接；400/401/403 直接抛；备选去重上限 3 个，来自 `system_config.fallback_models` 或 `LLM_FALLBACK_MODELS`）+ 每次尝试记账 `llm_attempts`（成功也记，上限 200，进白名单）。真实 429 故障注入验证通过；真实一轮 15 条尝试覆盖 13 步、延迟 7.9–23.7 s | 见 `progress_round3.md` B31。**遗留**：① **备选模型没有配置入口**（默认部署下降级链是空的，能力等于没启用）；② 降级只写进 warnings，报告正文与导出件没标注；③ 分类靠异常类型名，SDK 改名会误判成 permanent；④ 没有同模型退避重试；⑤ 台账是实例级，多 worker 各记各的 |
 
 ### P1 · 工程底座（任务书阶段五剩余）
 
@@ -231,27 +231,37 @@
   ③ 备份每会话 +40 KB（可改存 unified diff）；④ `step_control` 整体落盘后，
   checkpoint 与备份不一致时以谁为准没有定义。
 
-### 批次 31 = B7 模型调用韧性（降级链 + 分级超时）（建议下一批做这个）
-- **为什么是它**：前面九批都在改"内容质量"，这条改的是**跑不跑得完**。
-  现状是单模型、单次调用、超时写死 300 s；一次 429 或网络抖动就让整步失败，
-  用户看到的是"步骤失败，请检查模型配置"——查不出到底哪一层坏了。
-- **要做的**：
-  1. 分级超时：普通步骤 120 s、长文步骤（5/6/7/9/10）300 s，写成表而不是散在调用点；
-  2. 降级链：主模型失败（429/超时/5xx）→ 按 `system_config` 里的备选依次重试，
-     记录 `attempt/model/latency/tokens`；
-  3. `/status` 或日志暴露"这一步用了几次、降级到谁"。
-- **判定**：① 故障注入——把 base_url 指向一个必超时的地址，验证会降级而不是直接失败；
-  ② 三个分支各有用例（429 / 超时 / 5xx）；③ `token_usage` 里能区分"正常"与"降级后成功"。
-- **风险**：降级会**悄悄改变报告的风格与分数**（同一输入换个模型，结论可能不同）。
-  必须在报告或台账里写明"本步由备选模型 X 完成"，否则读者以为全程一个模型。
+### 批次 31 = B7 分级超时 + 降级链 ✅ 已完成
+- 交付见 `progress_round3.md` 的 B31。分级超时 + 只对 transient 换模型 + 每次尝试记账。
+- 真实 429 故障注入：stub 返回 429 → `RateLimitError` → 降级到 deepseek → 拿到正文（201 ms / 1118 ms）。
+- 真实一轮 `29c816c6`：15 条尝试覆盖 13 步，延迟 7.9–23.7 s（**没有一步接近 120 s**）。
+- **第一轮暴露了台账只记 1 条的 bug**：`state` 在 LangGraph 里是节点副本，后写覆盖前写。
+  改成实例累积 + 镜像，补两条用例后第二轮 15 条。
+- 回归：`pytest 562 → 603`、变异 **11/11**、`test_all_apis 47/47`、`frontend_e2e 93/0`、`wf_e2e 47/0`。
+- **留给后续**：① **备选模型没有配置入口**；② 降级没进报告正文/导出件；③ 无同模型退避重试；
+  ④ 分类靠异常类型名；⑤ 台账多 worker 各记各的；⑥ 流式与外层降级两层重试没对着 SSE 测过。
 
-### 批次 32（备选，成本大）：C1 拆分 `agent_routes.py`
+### 批次 32 = B7 收尾：让降级真的可用（建议下一批做这个）
+- **为什么是它**：批次 31 的能力**默认是关的** —— 没有备选模型配置入口，链里只有主模型。
+  一个"写了但没启用"的韧性功能，和没写没区别（这条教训 B26/B29 都吃过）。
+- **要做的**：
+  1. 备选模型配置入口：管理后台的模型配置页加「备选模型（按顺序）」多选，
+     写进 `model_configs` 或 `system_config.fallback_models`；新建会话时带过去；
+  2. 同模型退避重试：429/超时先等 2 s 重试同一模型一次，再考虑换模型（现在的顺序反了）；
+  3. 降级标注：`warnings` 之外，在**报告导出件**的页脚/元信息里写「本报告第 N 步由备选模型 X 完成」。
+- **判定**：① 管理后台能配、能读回、能在新建会话里生效（用例 + 联调）；
+  ② 故障注入：先重试同模型（成功则不走备选）、再降级（两次都失败）；
+  ③ 导出件里能 grep 到降级标注。
+- **风险**：退避重试会把失败延迟从"立刻"变成"2 秒 + 一次完整调用"，对配额耗尽的场景是白等。
+  需要能分辨"瞬时 429"与"配额用完"——两者的状态码一样，只能靠退避次数兜底。
+
+### 批次 33（备选，成本大）：C1 拆分 `agent_routes.py`
 - 现在 3,500+ 行，135 个端点在一个文件里。按域拆成 workflow/report/questionnaire/export/scoring。
 - **路径与响应必须完全不变**，靠 `test_all_apis` 47 + `frontend_e2e` 93 证明。
 - 动手前先做一件事：把 `app.routes` 全量导出成快照（路径 + 方法 + 参数名），拆完对比。
   没有这个快照，拆分就是"看起来没问题"。
 
-### 批次 33（备选）：B4 refine 增强 / B5 AI 聊天升级
+### 批次 34（备选）：B4 refine 增强 / B5 AI 聊天升级
 - B4：现在只截 8000 字、无证据注入；`_apply_step_edit` 有 version 但 UI 没接。
 - B5：非流式、不引用用户报告、长对话全量塞。
 - 这两项都需要先想清楚「用户拿它做什么」，否则容易做成"又一个聊天框"。
@@ -303,6 +313,7 @@ NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 93/0
 | **模型输出直接进报告 = 报告里会有机器格式** | 报告章节是「步骤原文直拼」的：`indicator_analysis` / `evaluation_table` 都是模型原始输出。只要那一步契约里有 JSON，JSON 就会出现在报告里（B21 清掉步骤 6 的副本、B22 才清掉步骤 7 的评分块，两次都是「先发现报告里有裸 JSON，再回头找谁拼的」）。新增任何「带结构化输出的步骤」时，**先确认它的原文会不会被拼进报告**，会的话落盘时就拆开 |
 | **后台任务要持引用，关闭时要 await** | `asyncio.create_task()` 返回的任务只被事件循环弱引用，不存起来就有被 GC 的风险；只 `cancel()` 不 `await` 等于把清理逻辑砍在半路。B23 的写法：模块级 `_CLEANUP_TASK` + 命名 + 幂等启动 + `cancel()` 后 `await`（吞掉 `CancelledError`），并放在 lifespan 的 `finally` 里 |
 | **备份是字段白名单（已复发三次）** | `_persist_state_backup` 只写 `fields` 里的键。新增状态字段必须同步加进白名单，否则重启后只看到症状、看不到原因。三次复发：`score_disposition`、`truncated_steps`、**`standard_purity`（批次 27 才发现，38 份备份 0 份有值）**。→ 新增字段时的检查项不是「我加了吗」，而是**「写一条落盘用例」**——三次都是靠用例才发现的 |
+| **LangGraph 的 state 是节点副本，累积型字段要存实例** | 批次 31 把每次模型调用追加进 `state["llm_attempts"]`，一轮 14 步跑完只剩 **1 条**：每个节点拿到的是状态副本，合并时"后写覆盖前写"。→ **追加型/计数器型字段**（尝试记录、耗时累计）必须存在 `self` 上，再镜像给 state；只有"覆盖型"字段（当前正文、当前结论）才适合直接写 state |
 | **依赖会先于处理函数判会话** | 批次 30 联调时想测「不支持的步骤 → 400」，用了不存在的 session，结果拿到 **404**：`_require_path_workflow` / `_require_body_workflow` 在进入处理函数前就把会话判掉了。同理，用**别人的 token** 去改一个真实会话也会先 404。→ 要测处理函数里的 400/422，必须给一个**该用户名下的真实会话**；写联调用例时先确认 token 与会话归属一致 |
 | **断言"没泄漏"别对 JSON 字符串做** | 批次 29 的用例写成 `assert TEXT not in json.dumps(payload)`——JSON 会把换行转义成 `\n`，任何多行文本都"不在"序列化结果里，**这条断言永远为真**。变异测试把接口改成"把全文也吐出来"，用例照样绿。→ 要断言"某段内容没有出现在响应里"，必须递归查**解析后的值**（`_contains_text` 那种写法），或者直接断言"某个键不存在" |
 | **用例会靠环境才绿** | `test_startup_still_initializes_db` 替掉了 `init_db` 却漏了紧接着的 `SessionLocal()`：本机有 MySQL 时它真连上了库、用例通过；CI 把 `MYSQL_PORT` 指到 1 之后立刻红。→ **凡是"启动/初始化"类用例，要替的不是一个函数，而是那条链路上所有会碰外部资源的东西**；判断办法只有一个：在一个没有该外部环境的机器（或容器）上跑一遍。批次 28 加 CI 之后，这类假绿会自动暴露 |
