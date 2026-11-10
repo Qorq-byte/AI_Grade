@@ -209,3 +209,106 @@ async def generate_questionnaire(request: QuestionnaireRequest):
     _shared_state._QUESTIONNAIRE_CACHE[session_id] = published
     return _questionnaire_response(session_id, published)
 
+@router.get("/workflow/questionnaire/list", response_model=AgentResponse)
+async def list_questionnaires(user: User = Depends(get_current_user),
+                              db: Session = Depends(get_db)):
+    """
+    列出所有已有问卷的 WorkflowSession 记录
+    前端「问卷填写」Tab 调用此接口获取问卷列表
+    """
+    try:
+        allowed_ids = None
+        if user.role != UserRole.ADMIN:
+            allowed_ids = {sid for (sid,) in _owned_workflows(db, user).with_entities(
+                WorkflowSession.session_id
+            )}
+        results = []
+        for sid, data in _shared_state._QUESTIONNAIRE_CACHE.items():
+            if data.get("deleted") or (allowed_ids is not None and sid not in allowed_ids):
+                continue
+            results.append({
+                "session_id": sid,
+                "project_name": data.get("project_name", "未命名项目"),
+                "question_count": len(data.get("questions", [])),
+                "updated_at": data.get("updated_at", ""),
+            })
+
+        # 也检查 active_workflows 中有 indicator_system 的session（可生成问卷但尚未生成）
+        for sid, wf in active_workflows.items():
+            if (allowed_ids is not None and sid not in allowed_ids) or sid in _shared_state._QUESTIONNAIRE_CACHE:
+                continue
+            try:
+                config = {"configurable": {"thread_id": sid}}
+                state_obj = wf.get_state(config)
+                if state_obj and getattr(state_obj, 'values', None):
+                    indicator_system = state_obj.values.get("indicator_system", {})
+                    if indicator_system and indicator_system.get("level1_indicators"):
+                        results.append({
+                            "session_id": sid,
+                            "project_name": state_obj.values.get("project_name", "未命名项目"),
+                            "question_count": 0,
+                            "updated_at": str(datetime.now(timezone.utc)),
+                            "needs_generation": True,
+                        })
+            except Exception:
+                pass
+
+        # 也检查 active_workflow_configs 中的session（内存evict后从配置重建）
+        for sid in active_workflow_configs:
+            if allowed_ids is not None and sid not in allowed_ids:
+                continue
+            if sid in _shared_state._QUESTIONNAIRE_CACHE or any(r.get("session_id") == sid for r in results):
+                continue
+            try:
+                results.append({
+                    "session_id": sid,
+                    "project_name": active_workflow_configs[sid].get("project_name", "未命名项目"),
+                    "question_count": 0,
+                    "updated_at": str(datetime.now(timezone.utc)),
+                    "needs_generation": True,
+                })
+            except Exception:
+                pass
+
+        # 始终尝试从文件备份恢复问卷列表（服务器重启后内存数据丢失，磁盘备份是唯一数据源）
+        try:
+            backup_dir = performance_agent.STATE_BACKUP_DIR
+            if os.path.exists(backup_dir):
+                for fname in os.listdir(backup_dir):
+                    if not fname.endswith(".json"):
+                        continue
+                    sid = fname[:-5]
+                    if allowed_ids is not None and sid not in allowed_ids:
+                        continue
+                    # 跳过已在内存中的 session
+                    if any(r.get("session_id") == sid for r in results):
+                        continue
+                    try:
+                        # 必须走持锁的读入口：本循环可能与 update_state_backup 的
+                        # 原子替换并发，直接 open() 会让对方拿到 WinError 5
+                        backup = PerformanceAgent.load_state_backup(sid)
+                        if not backup:
+                            continue
+                        qdata = backup.get("questionnaire", {})
+                        if qdata.get("deleted"):
+                            continue
+                        indicator_system = backup.get("indicator_system", {})
+                        has_indicator = bool(indicator_system and indicator_system.get("level1_indicators"))
+                        results.append({
+                            "session_id": sid,
+                            "project_name": qdata.get("project_name", "") or backup.get("project_name", "未命名项目"),
+                            "question_count": len(qdata.get("questions", [])),
+                            "updated_at": qdata.get("updated_at", str(datetime.now(timezone.utc))),
+                            "needs_generation": not bool(qdata.get("questions")) and has_indicator,
+                        })
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        return AgentResponse(success=True, data=results,
+                             message=f"找到 {len(results)} 条问卷记录")
+    except Exception as e:
+        logger.error(f"获取问卷列表失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
