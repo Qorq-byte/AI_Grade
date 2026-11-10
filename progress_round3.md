@@ -5045,3 +5045,120 @@ LLM_RETRY_BACKOFF_SECONDS = 2.0      # 可用环境变量覆盖（测试里设 0
 7. **「设置 → 新会话链」只做了探针级验证**（真库 + 真函数），没有在完整一轮里
    让主模型真的失败再走备选；那需要把主模型指向一个必失败地址跑完整工作流，成本较高，
    本批用故障注入覆盖了同一段代码路径。
+
+---
+
+# 批次 33 = C1 拆分 `agent_routes.py`：第一个域（问卷）（2026-11-10）
+
+## B33.1 起点：3,719 行、135 个端点挤在一个文件里
+
+`agent_routes.py` 管着工作流、报告、问卷、导出、评分、语言风格、补全开关……
+任何一次改动都要在这个文件里导航。NEXT_STEPS 定的目标是把单文件降到 800 行以内。
+
+**先立规矩再动手**（这是纯重构，没有行为收益，返工成本全是白花的）：
+
+1. **先做快照**：把 `app.routes` 全量导出成 JSON（路径 + 方法 + 端点名 + 依赖名 +
+   请求体模型 + 响应模型 + 状态码），拆完逐项比对；
+2. **一次只拆一个域**：选最独立的问卷；
+3. **只搬代码，不改逻辑**：任何 `if` 条件变化都不许混在拆分提交里。
+
+## B33.2 做法：先抽共享状态，再搬端点
+
+**为什么不能直接把问卷端点复制到新文件**：它们用了 `_validate_session_id`、
+`_published_questionnaire`、`_QUESTIONNAIRE_CACHE`。如果新模块
+`from backend.routes.agent_routes import ...`，而 `agent_routes` 又需要使用问卷的读取函数
+（报告组装会读已发布问卷），就形成**双向依赖**。
+
+所以先抽出 `backend/routes/_shared_state.py`（43 行，零业务依赖）：
+
+| 成员 | 为什么是共享的 |
+|---|---|
+| `_validate_session_id` | 所有域都要校验会话 ID 格式 |
+| `_QUESTIONNAIRE_CACHE` | 问卷端点读写、报告的问卷章节读、管理端删除时清理 |
+| `_published_questionnaire` | 同上 |
+
+然后 `agent_routes` 与 `questionnaire_routes` **都从它拿**，谁也不用 import 谁。
+`agent_routes` 里保留同名导入，3000 多行里的引用一行都不用改。
+
+**搬到 `questionnaire_routes.py` 的东西**（376 行）：
+
+- 8 个端点：公开问卷、提交答卷、答卷查询、生成问卷、问卷列表、删除、批量删除、加开放题；
+- 3 个请求模型：`QuestionnaireRequest` / `SubmitQuestionnaireRequest` / `BatchDeleteQRequest`；
+- 2 个辅助：`_questionnaire_response`、`_delete_questionnaire_data`；
+- `main.py` 里新增一行 `include_router(..., prefix="/api/agent")`。
+
+**过程中被测试抓住的一个真问题（值得单独记）**：
+
+> 新模块一开始写的是 `from backend.routes._shared_state import _QUESTIONNAIRE_CACHE`。
+
+这行看起来没问题，但它绑定的是**当时的那个 dict 对象**。测试里
+`monkeypatch.setattr(_shared_state, "_QUESTIONNAIRE_CACHE", {...})` 重新绑定了模块属性，
+新模块手里还是旧 dict —— 于是"缓存里明明有问卷，接口却 404"。
+`test_public_questionnaire` 等 5 条用例当场红。
+
+改法：**可变状态一律按模块访问**（`_shared_state._QUESTIONNAIRE_CACHE`），
+函数对象才可以按名字导入。这条已写进坑表。
+
+## B33.3 验证：快照零差异 + 四套检查全绿
+
+**路由快照**（`tests/_route_snapshot.py`，148 条路由）：
+
+```
+PASS 路由快照零差异（148 条）
+```
+
+**工具自身也被验证过**（不是"永远 PASS"）：造假快照删掉一条路由、给另一条加个依赖：
+
+```
+FAIL 路由快照有 2 处差异：
+  - 多了路由：('POST',) /api/agent/workflow/questionnaire/submit
+  - ('GET',) /api/agent/workflow/questionnaire/list 的 deps 变了：['fake.dep'] → []
+```
+
+（"多了"是因为假快照里删掉了它 —— 从当前视角看就是多出来一条。方向反了，但确实抓到了。）
+另外补了 `tests/test_route_snapshot.py` 6 条用例，锁住 `diff()` 真能识别
+缺路由 / 多路由 / 依赖变化 / 请求体与响应模型变化 / 方法变化。
+
+**回归**：
+
+| 检查 | 结果 |
+|---|---|
+| `pytest tests` | **624 → 630 passed**（+6 条快照工具用例） |
+| `test_all_apis.py` | **47/47**（含问卷相关接口） |
+| `frontend_e2e_check.py` | **98 通过 / 0 失败** |
+| `wf_e2e.py` | **47 项 / 0 失败**（含步骤 6 问卷生成与问卷列表） |
+
+**行数变化**：
+
+```
+agent_routes.py          3719 → 3369   （−350）
+questionnaire_routes.py             376
+_shared_state.py                     43
+```
+
+## B33.4 回滚
+
+- 代码：`git revert` 本批三个提交。问卷端点回到 `agent_routes`，`_shared_state` 删除。
+- 数据：无。问卷缓存是进程内内存，重启即丢（磁盘备份才是数据源）。
+- 判据：回滚后 `pytest` 回到 624、路由快照仍与 `routes_before.json` 零差异。
+
+## B33.5 剩余风险与未验证项（诚实列出）
+
+1. **只完成了第一个域，离 800 行还很远**。3,369 行、约 127 个端点仍在原文件里；
+   按问卷这个体量估算，还需要 8–10 个批次才能到目标。**这一批不构成"拆完了"**。
+2. **反向依赖只减了一半**：`questionnaire_routes` 仍从 `agent_routes` 导入
+   `AgentResponse`、`_get_workflow_values`、`_require_*`、`_owned_workflows`、
+   `active_workflows` 等 6 个符号。下一步应把它们抽成 `_workflow_deps.py`，
+   否则每拆一个域都会重复这条依赖。
+3. **快照的粒度有限**：只记录依赖**函数名**，不记录依赖内部参数、中间件、
+   异常处理器、响应字段。依赖函数内部改了行为，快照看不出来 —— 那只能靠测试。
+4. **没有比对 OpenAPI schema**。理论上比快照更严格（含字段类型），本批没做；
+   如果后面拆分更激进，建议加一步 `app.openapi()` 的深比较。
+5. **测试里有 4 处白盒改动**（patch `_QUESTIONNAIRE_CACHE` 的位置）。
+   它们不是"改测试迁就实现"，而是**状态所有权确实搬家了**；但每搬一次状态，
+   都会有一批测试要跟着改，这是拆分的隐性成本。
+6. **`_shared_state` 目前只有 3 个成员**，边界靠约定而不是约束 ——
+   谁往里塞业务逻辑都能过。等成员多起来（比如抽 `_workflow_deps` 时）再定规矩。
+7. **`active_workflows` / `active_workflow_configs` 仍是 `agent_routes` 的模块级字典**，
+   新模块按名字导入了它们。当前没有测试 rebind 这两个名字，所以没出问题 ——
+   但它们迟早要进 `_shared_state`，届时会再碰一次"按模块访问"的坑。
