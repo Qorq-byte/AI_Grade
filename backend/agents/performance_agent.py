@@ -150,6 +150,53 @@ def _strip_model_score_lines(content: str) -> tuple:
 STEP_TIMEOUTS = {5: 300, 6: 300, 7: 300, 9: 300, 10: 300}
 DEFAULT_STEP_TIMEOUT = 120
 
+#: 同一模型的重试次数与退避基数（批次 32）。
+#: 429 往往是瞬时的，等 2 秒重试同一个模型比立刻换模型更省 —— 换模型会改文风，
+#: 而且备选模型通常更贵。基数可用环境变量覆盖（测试里设为 0）。
+LLM_RETRY_ATTEMPTS = 1
+LLM_RETRY_BACKOFF_SECONDS = 2.0
+
+
+def retry_backoff(attempt: int) -> float:
+    """第 `attempt` 次重试前等多久（线性退避，attempt 从 1 开始）。"""
+    raw = os.getenv("LLM_RETRY_BACKOFF_SECONDS", "")
+    try:
+        base = float(raw) if raw != "" else LLM_RETRY_BACKOFF_SECONDS
+    except ValueError:
+        base = LLM_RETRY_BACKOFF_SECONDS
+    return max(0.0, base) * max(0, attempt)
+
+
+def fallback_models_from_settings() -> List[str]:
+    """从管理后台的系统设置里读备选模型（批次 32）。
+
+    存法沿用项目已有的约定：`model_configs` 表里 `platform="system_config"` 那一行，
+    设置 JSON 塞在 `api_base_url` 字段里（AI 聊天开关、评分阈值也在这里）。
+    读失败一律返回空列表 —— 读不到设置不该让工作流起不来。
+    """
+    try:
+        import json as _json
+
+        from backend.database import SessionLocal
+        from backend.models.user_models import ModelConfig
+
+        db = SessionLocal()
+        try:
+            row = db.query(ModelConfig).filter(ModelConfig.platform == "system_config").first()
+            if not row or not row.api_base_url:
+                return []
+            data = _json.loads(row.api_base_url)
+        finally:
+            db.close()
+        models = data.get("fallback_models") or []
+        if isinstance(models, str):
+            models = models.split(",")
+        return [str(m).strip() for m in models if str(m).strip()][:2]
+    except Exception:  # noqa: BLE001
+        logger.debug("读取备选模型设置失败，按未配置处理")
+        return []
+
+
 #: 值得重试/降级的 HTTP 状态。4xx 里只有这几个是"过一会儿再来"，
 #: 401/403/400/404 重试多少次都一样，直接抛（否则会把配置错误拖成超时）。
 TRANSIENT_HTTP_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
@@ -257,6 +304,9 @@ def _ensure_system_config(state: PerformanceState):
             "default_model": state.get("model_name", "qwen-plus"),
             "rag_enabled": state.get("use_rag", False),
             "rag_collection_name": f"performance_{state.get('session_id', 'default')}",
+            # 批次 32：降级链的默认值来自管理后台的「备用模型」设置。
+            # 批次 31 只留了环境变量入口，默认部署里链是空的、能力等于没启用。
+            "fallback_models": fallback_models_from_settings(),
         }
 
 
@@ -994,33 +1044,50 @@ class PerformanceAgent:
             raise RuntimeError("没有可用模型：model_name 为空且未配置备选")
         attempts = state.setdefault("llm_attempts", [])
         last_error: Optional[BaseException] = None
+        attempt_no = 0
 
         for index, model in enumerate(chain):
-            started = time.perf_counter()
-            try:
-                llm = self._llm_for_step(step_number, model)
-                content = self._invoke_once(messages, step_number, state, timeout, stream, llm)
-                self._note_llm_attempt(state, attempts, step_number, model, index + 1,
-                                       started, "ok")
-                if index:
-                    hint = (f"步骤 {step_number} 主模型 {chain[0]} 调用失败，"
-                            f"已由备选模型 {model} 完成；该步文字风格与判断可能与其他步骤不一致")
-                    warnings = state.setdefault("warnings", [])
-                    if hint not in warnings:
-                        warnings.append(hint)
-                    logger.warning(f"[Step {step_number}] 已降级到 {model}")
-                return content
-            except Exception as exc:  # noqa: BLE001
-                kind = classify_llm_error(exc)
-                self._note_llm_attempt(state, attempts, step_number, model, index + 1,
-                                       started, "error", f"{kind}: {type(exc).__name__}")
-                last_error = exc
-                if kind == "permanent" or index == len(chain) - 1:
-                    raise
-                logger.warning(
-                    f"[Step {step_number}] {model} 调用失败（{kind}），尝试备选 "
-                    f"{chain[index + 1]}：{exc}"
-                )
+            for retry_index in range(1 + LLM_RETRY_ATTEMPTS):
+                attempt_no += 1
+                started = time.perf_counter()
+                try:
+                    llm = self._llm_for_step(step_number, model)
+                    content = self._invoke_once(messages, step_number, state, timeout, stream, llm)
+                    self._note_llm_attempt(state, attempts, step_number, model, attempt_no,
+                                           started, "ok")
+                    if index:
+                        hint = (f"步骤 {step_number} 主模型 {chain[0]} 调用失败，"
+                                f"已由备选模型 {model} 完成；"
+                                f"该步文字风格与判断可能与其他步骤不一致")
+                        warnings = state.setdefault("warnings", [])
+                        if hint not in warnings:
+                            warnings.append(hint)
+                        logger.warning(f"[Step {step_number}] 已降级到 {model}")
+                    return content
+                except Exception as exc:  # noqa: BLE001
+                    kind = classify_llm_error(exc)
+                    self._note_llm_attempt(state, attempts, step_number, model, attempt_no,
+                                           started, "error", f"{kind}: {type(exc).__name__}")
+                    last_error = exc
+                    if kind == "permanent":
+                        raise
+                    if retry_index < LLM_RETRY_ATTEMPTS:
+                        # 先重试同一个模型：429 常常 1-2 秒就好，换模型既改文风又更贵
+                        delay = retry_backoff(retry_index + 1)
+                        logger.warning(
+                            f"[Step {step_number}] {model} 调用失败（{kind}），"
+                            f"{delay:g}s 后重试同一模型（第 {retry_index + 1} 次）"
+                        )
+                        if delay:
+                            time.sleep(delay)
+                        continue
+                    if index == len(chain) - 1:
+                        raise
+                    logger.warning(
+                        f"[Step {step_number}] {model} 重试后仍失败（{kind}），尝试备选 "
+                        f"{chain[index + 1]}：{exc}"
+                    )
+                    break
         raise last_error or RuntimeError("模型调用失败")
 
     def _invoke_once(self, messages, step_number: int, state: PerformanceState,
@@ -1420,6 +1487,10 @@ class PerformanceAgent:
                 # 批次 31：每次模型调用的尝试台账（含降级）。不含它，
                 # 重启后就查不到「这一步到底试了几个模型、慢在哪」
                 "llm_attempts",
+                # 批次 32：会话级的模型配置（含降级链）。不含它，重启后续跑会用
+                # 当时的设置重新算一遍 —— 管理后台改过设置时，同一会话前后两步
+                # 可能用不同的备选链。这已是「备份是字段白名单」的第五次复发。
+                "system_config",
                 # 弱定位的行号校验依据。只存行数（几十字节），不存全文；
                 # 不含它则「重启/重放后同一份输入判出不同结果」，验收链条断裂
                 "raw_line_counts",
