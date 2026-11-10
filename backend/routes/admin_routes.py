@@ -1022,11 +1022,14 @@ def admin_get_settings(db: Session = Depends(get_db)):
     cfg = db.query(ModelConfig).filter(ModelConfig.platform == "system_config").first()
     ai_chat_enabled = True
     rating_thresholds = {"excellent": 90.0, "good": 75.0, "pass": 60.0}
+    fallback_models = []
     if cfg and cfg.api_base_url:
         try:
             saved = json.loads(cfg.api_base_url)
             ai_chat_enabled = saved.get("ai_chat_enabled", True)
             rating_thresholds = saved.get("rating_thresholds", rating_thresholds)
+            # 批次 32：降级链的备选模型（按顺序，最多 2 个）
+            fallback_models = saved.get("fallback_models", []) or []
         except Exception:
             pass
     return {
@@ -1034,8 +1037,54 @@ def admin_get_settings(db: Session = Depends(get_db)):
         "data": {
             "ai_chat_enabled": ai_chat_enabled,
             "rating_thresholds": rating_thresholds,
+            "fallback_models": fallback_models,
         }
     }
+
+
+class FallbackModelsRequest(BaseModel):
+    models: list[str] = []
+
+
+def _system_config_row(db: Session) -> ModelConfig:
+    """取（或建）`platform="system_config"` 那一行。
+
+    设置都塞在 `api_base_url` 的 JSON 里 —— 沿用项目已有约定，不新增列。
+    """
+    cfg = db.query(ModelConfig).filter(ModelConfig.platform == "system_config").first()
+    if cfg is None:
+        cfg = ModelConfig(platform="system_config", model_name="system_config",
+                          api_base_url="{}")
+        db.add(cfg)
+    return cfg
+
+
+@router.post("/settings/fallback-models")
+def admin_set_fallback_models(req: FallbackModelsRequest, db: Session = Depends(get_db)):
+    """设置降级链的备选模型（按顺序，最多 2 个）。
+
+    留空 = 关闭降级。为什么限 2 个：一次调用最多试 主 + 2 备选 = 3 次，
+    再多的降级不只是烧钱，报告已经是"另一个模型写的"、可信度说不清。
+    """
+    cleaned: list[str] = []
+    for name in req.models:
+        text = str(name or "").strip()
+        if text and text not in cleaned:
+            cleaned.append(text)
+    if len(cleaned) > 2:
+        raise HTTPException(status_code=400, detail="备选模型最多 2 个")
+    cfg = _system_config_row(db)
+    current = {}
+    if cfg.api_base_url:
+        try:
+            current = json.loads(cfg.api_base_url)
+        except Exception:
+            current = {}
+    current["fallback_models"] = cleaned
+    cfg.api_base_url = json.dumps(current, ensure_ascii=False)
+    db.commit()
+    message = ("备选模型已设置为：" + " → ".join(cleaned)) if cleaned else "备选模型已清空（降级关闭）"
+    return {"success": True, "data": {"fallback_models": cleaned}, "message": message}
 
 
 @router.post("/settings/ai-chat-toggle")

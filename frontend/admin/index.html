@@ -654,6 +654,13 @@ async function loadSettings(){
         '<div class="card" style="margin-bottom:16px"><h3 style="margin-bottom:14px">🤖 AI聊天功能</h3>'+
         '<div style="display:flex;align-items:center;gap:16px"><label class="toggle-switch"><input type="checkbox" id="ai-chat-toggle" '+(s.ai_chat_enabled?'checked':'')+' onchange="toggleAIChat(this.checked)"><span class="toggle-slider"></span></label>'+
         '<div><div style="font-weight:600">'+(s.ai_chat_enabled?'已启用':'已禁用')+'</div><div style="font-size:0.8rem;color:var(--muted)">客户端AI助手功能</div></div></div></div>'+
+        '<div class="card" style="margin-bottom:16px"><h3 style="margin-bottom:14px">🛟 备用模型（降级链）</h3>'+
+        '<p style="font-size:0.85rem;color:var(--muted);margin-bottom:10px">主模型遇到 429/超时/5xx 时，先重试一次，仍失败则按顺序换用下面的模型。留空表示不降级。最多 2 个。</p>'+
+        '<div style="display:flex;gap:10px;align-items:flex-end;max-width:560px">'+
+        '<div style="flex:1"><label style="font-size:0.82rem;color:var(--muted);display:block;margin-bottom:4px">模型名（英文逗号分隔，按优先级）</label>'+
+        '<input id="fallbackModels" class="input-field" placeholder="例如 deepseek-chat,qwen-plus" value="'+esc((s.fallback_models||[]).join(','))+'"></div>'+
+        '<button class="btn btn-primary" onclick="saveFallbackModels()">💾 保存</button></div>'+
+        '<div style="font-size:0.78rem;color:var(--muted);margin-top:8px">提示：降级会改变报告措辞，导出件会自动注明哪一步换了模型。</div></div>'+
         '<div class="card" style="margin-bottom:16px"><h3 style="margin-bottom:14px">🔒 修改管理员密码</h3>'+
         '<div style="display:flex;flex-direction:column;gap:12px;max-width:360px">'+
         '<div><label style="font-size:0.82rem;color:var(--muted);display:block;margin-bottom:4px">旧密码</label><input type="password" id="adminOldPassword" class="input-field" placeholder="输入旧密码"></div>'+
@@ -666,6 +673,14 @@ async function loadSettings(){
         '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:14px"><div><label>优秀 ≥</label><input id="rt-excellent" type="number" min="0" max="100" step="0.1" value="'+(s.rating_thresholds.excellent||90)+'"></div><div><label>良好 ≥</label><input id="rt-good" type="number" min="0" max="100" step="0.1" value="'+(s.rating_thresholds.good||75)+'"></div><div><label>合格 ≥</label><input id="rt-pass" type="number" min="0" max="100" step="0.1" value="'+(s.rating_thresholds.pass||60)+'"></div></div>'+
         '<button class="btn btn-primary" onclick="saveRatingThresholds()">💾 保存阈值</button></div>';
 }
+async function saveFallbackModels(){
+    var raw=(document.getElementById('fallbackModels').value||'').split(',');
+    var models=[];for(var i=0;i<raw.length;i++){var v=raw[i].trim();if(v&&models.indexOf(v)<0)models.push(v)}
+    if(models.length>2){showToast('最多 2 个备选模型','error');return}
+    var r=await api(API_BASE+'/settings/fallback-models','POST',{models:models});
+    if(r&&r.success){showToast(r.message);loadSettings()}else{showToast(r&&r.detail||'保存失败','error')}
+}
+
 async function toggleAIChat(e){var r=await api(API_BASE+'/settings/ai-chat-toggle','POST',{ai_chat_enabled:e});if(r&&r.success)showToast(r.message);else showToast('操作失败','error')}
 async function saveRatingThresholds(){
     var e=parseFloat(document.getElementById('rt-excellent').value)||90,g=parseFloat(document.getElementById('rt-good').value)||75,p=parseFloat(document.getElementById('rt-pass').value)||60;
