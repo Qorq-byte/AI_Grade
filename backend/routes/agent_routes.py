@@ -1853,40 +1853,6 @@ async def export_step_content(request: ExportStepRequest, user: User = Depends(g
 #  工作流 - 问卷答案提交
 # ═══════════════════════════════════════════════════════
 
-def _delete_questionnaire_data(session_id: str, db: Session) -> None:
-    from backend.models.user_models import QuestionnaireAnswer
-
-    deleted = {"questions": [], "deleted": True}
-    PerformanceAgent.update_state_backup(session_id, {"questionnaire": deleted, "questionnaire_history": []})
-    _QUESTIONNAIRE_CACHE[session_id] = deleted
-    db.query(QuestionnaireAnswer).filter(QuestionnaireAnswer.session_id == session_id).delete()
-
-
-@router.delete("/workflow/questionnaire/{session_id}", response_model=AgentResponse,
-               dependencies=[Depends(_require_path_workflow)])
-async def delete_questionnaire(session_id: str, db: Session = Depends(get_db)):
-    _delete_questionnaire_data(session_id, db)
-    db.commit()
-    return AgentResponse(success=True, data={"session_id": session_id}, message="问卷已删除")
-
-
-class BatchDeleteQRequest(BaseModel):
-    session_ids: list[str]
-
-
-@router.post("/workflow/questionnaire/batch-delete", response_model=AgentResponse)
-async def batch_delete_questionnaires(req: BatchDeleteQRequest, user: User = Depends(get_current_user),
-                                      db: Session = Depends(get_db)):
-    session_ids = list(dict.fromkeys(req.session_ids))
-    for session_id in session_ids:
-        _require_workflow(session_id, user, db)
-    for session_id in session_ids:
-        _delete_questionnaire_data(session_id, db)
-    db.commit()
-    return AgentResponse(success=True, data={"deleted": len(session_ids), "session_ids": session_ids},
-                         message=f"成功删除 {len(session_ids)} 条问卷")
-
-
 @router.post("/workflow/{session_id}/perspective", response_model=AgentResponse, dependencies=[Depends(_require_path_workflow)])
 async def analyze_perspective(session_id: str, request: Dict[str, Any]):
     """
