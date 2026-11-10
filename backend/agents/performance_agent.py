@@ -145,6 +145,45 @@ def _strip_model_score_lines(content: str) -> tuple:
     return "\n".join(kept), removed
 
 
+#: 分级超时（秒）。长文步骤（评分标准 / 评价表 / 指标分析 / 问题 / 建议）给 300，
+#: 其余 120 —— 原来所有步骤都写死 300，短步骤失败时要干等 5 分钟才报错（批次 31）。
+STEP_TIMEOUTS = {5: 300, 6: 300, 7: 300, 9: 300, 10: 300}
+DEFAULT_STEP_TIMEOUT = 120
+
+#: 值得重试/降级的 HTTP 状态。4xx 里只有这几个是"过一会儿再来"，
+#: 401/403/400/404 重试多少次都一样，直接抛（否则会把配置错误拖成超时）。
+TRANSIENT_HTTP_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+
+
+def step_timeout(step_number: int) -> int:
+    """该步骤该等多久。显式传 `timeout=` 的调用方仍然以传参为准。"""
+    try:
+        return STEP_TIMEOUTS.get(int(step_number), DEFAULT_STEP_TIMEOUT)
+    except (TypeError, ValueError):
+        return DEFAULT_STEP_TIMEOUT
+
+
+def classify_llm_error(exc: BaseException) -> str:
+    """把异常分成 `transient`（值得换模型再试）与 `permanent`（换谁都白搭）。
+
+    保守原则：**认不出来的一律当 permanent**。把编程错误当 transient 会让同一次
+    失败重复烧两遍 token，还掩盖真正的 bug；而真正的网络抖动有明确的类型/状态码。
+    """
+    status = getattr(exc, "status_code", None)
+    if not isinstance(status, int):
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+    if isinstance(status, int):
+        if status in TRANSIENT_HTTP_STATUS or status >= 500:
+            return "transient"
+        if 400 <= status < 500:
+            return "permanent"
+    name = type(exc).__name__
+    if any(hint in name for hint in ("Timeout", "Connection", "RateLimit", "Overloaded")):
+        return "transient"
+    return "permanent"
+
+
 #: 漏项补全的步骤规格：两步只差提示词，闸门与台账结构完全共用（批次 30）。
 #: `flag` 是 `step_control` 里的开关名，`ledger_field` / `pre_field` 进备份白名单。
 CRITIQUE_SPECS = {
@@ -839,27 +878,6 @@ class PerformanceAgent:
             return "".join(parts)
         return ""
 
-    def _llm_for_step(self, step_number: int):
-        """按步骤取模型实例：配了输出预算的步骤，绑一份带预算的副本。
-
-        DeepSeek 必须走 `extra_body.max_tokens`——langchain 1.x 把 `max_tokens`
-        发成 `max_completion_tokens`，DeepSeek 把它当未知字段丢掉（详见
-        STEP_OUTPUT_BUDGETS 的注释）。绑不上就退回默认实例，不能让调用直接失败。
-        """
-        llm = self.base_agent.llm
-        budget = step_output_budget(step_number)
-        if not budget or llm is None:
-            return llm
-        kwargs = {"max_tokens": budget}
-        model_name = getattr(self, "model_name", "") or getattr(self.base_agent, "model_name", "")
-        if get_model_provider(model_name) == "deepseek":
-            kwargs["extra_body"] = {"max_tokens": budget}
-        try:
-            return llm.bind(**kwargs)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"步骤 {step_number} 的输出预算绑定失败，沿用模型默认上限：{exc}")
-            return llm
-
     def _note_truncation(self, state: PerformanceState, step_number: int,
                          finish_reason: Optional[str], chars: int) -> bool:
         """输出被长度上限砍断时记账：状态、告警、日志三处都要留痕。
@@ -890,15 +908,126 @@ class PerformanceAgent:
         )
         return True
 
-    def _invoke_llm(self, messages, step_number: int, state: PerformanceState,
-                    timeout: int = 300, stream: Optional[bool] = None) -> str:
-        """调用模型；有 SSE 消费者时走流式，逐块推送 token_delta 后拼成完整结果。
+    def _bind_budget(self, llm, step_number: int, model_name: str):
+        """给某个客户端绑上该步的输出预算（DeepSeek 走 `extra_body`）。"""
+        budget = step_output_budget(step_number)
+        if not budget or llm is None:
+            return llm
+        kwargs = {"max_tokens": budget}
+        if get_model_provider(model_name) == "deepseek":
+            kwargs["extra_body"] = {"max_tokens": budget}
+        try:
+            return llm.bind(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"步骤 {step_number} 的输出预算绑定失败，沿用模型默认上限：{exc}")
+            return llm
 
-        stream=False 用于「修复重试」这类内部补调：不希望把第二份输出混进前端的逐字流。
+    def _llm_for_step(self, step_number: int, model_name: Optional[str] = None):
+        """按步骤取模型实例：配了输出预算的步骤，绑一份带预算的副本。
+
+        `model_name` 为空或等于主模型时复用 `base_agent.llm`；
+        降级时才现场造一个客户端（`build_llm_for`），不重连库、不建会话。
         """
+        primary = getattr(self, "model_name", "") or getattr(self.base_agent, "model_name", "")
+        target = model_name or primary
+        if not target or target == primary:
+            return self._bind_budget(self.base_agent.llm, step_number, primary)
+        from backend.agents.base_agent import build_llm_for
+
+        llm = build_llm_for(target, self.temperature, self.top_p,
+                            getattr(self.base_agent, "max_tokens", 8192))
+        return self._bind_budget(llm, step_number, target)
+
+    def _model_chain(self, state: PerformanceState) -> List[str]:
+        """主模型 + 备选链。备选来自 `system_config.fallback_models` 或环境变量。
+
+        上限 3 个（主 + 2 个备选）：再多的降级不只是烧钱，结果也已经不可信了。
+        """
+        primary = getattr(self, "model_name", "") or getattr(self.base_agent, "model_name", "")
+        chain = [primary] if primary else []
+        raw = (state.get("system_config") or {}).get("fallback_models")
+        if not raw:
+            raw = os.getenv("LLM_FALLBACK_MODELS", "")
+        items = raw if isinstance(raw, (list, tuple)) else str(raw).split(",")
+        for item in items:
+            name = str(item).strip()
+            if name and name not in chain:
+                chain.append(name)
+        return chain[:3]
+
+    def _note_llm_attempt(self, state: PerformanceState, attempts: List[Dict[str, Any]],
+                          step_number: int, model: str, attempt: int,
+                          started: float, outcome: str, detail: str = "") -> None:
+        """记一次调用尝试（成功也记 —— 否则「降级了几次」只能靠日志猜）。
+
+        **必须存在实例上再镜像进 state**：LangGraph 每个节点拿到的是状态副本，
+        同一份 `state["llm_attempts"]` 各改各的、最后按"后写覆盖"合并 ——
+        实测一轮 14 步跑完只剩最后一步的 1 条。存在 `self._llm_attempts`（跨节点存活），
+        再镜像给当前 state，才能既累积又落盘。
+        """
+        if getattr(self, "_llm_attempts", None) is None:
+            # 续跑时把备份里已有的接上，别从零开始
+            self._llm_attempts = list(state.get("llm_attempts") or [])
+        self._llm_attempts.append({
+            "step": int(step_number), "model": model, "attempt": attempt,
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+            "outcome": outcome, "detail": detail,
+        })
+        # 长会话会累积几千条；只留最近 200 条，够复盘又不撑爆备份
+        if len(self._llm_attempts) > 200:
+            del self._llm_attempts[:-200]
+        state["llm_attempts"] = list(self._llm_attempts)
+
+    def _invoke_llm(self, messages, step_number: int, state: PerformanceState,
+                    timeout: Optional[int] = None, stream: Optional[bool] = None) -> str:
+        """调用模型，失败时按备选链降级。
+
+        - 超时：`timeout` 显式传入优先，否则按 `STEP_TIMEOUTS` 分级（批次 31）
+        - 降级：仅对 transient 错误（429/超时/5xx/连接）换下一个模型；
+          400/401/403/404 这类认死理的错误直接抛
+        - 留痕：每次尝试进 `state["llm_attempts"]`；降级成功时写一条 warning，
+          因为**换个模型会改变文字风格与判断**，读者有权知道
+        """
+        timeout = timeout or step_timeout(step_number)
+        chain = self._model_chain(state)
+        if not chain:
+            raise RuntimeError("没有可用模型：model_name 为空且未配置备选")
+        attempts = state.setdefault("llm_attempts", [])
+        last_error: Optional[BaseException] = None
+
+        for index, model in enumerate(chain):
+            started = time.perf_counter()
+            try:
+                llm = self._llm_for_step(step_number, model)
+                content = self._invoke_once(messages, step_number, state, timeout, stream, llm)
+                self._note_llm_attempt(state, attempts, step_number, model, index + 1,
+                                       started, "ok")
+                if index:
+                    hint = (f"步骤 {step_number} 主模型 {chain[0]} 调用失败，"
+                            f"已由备选模型 {model} 完成；该步文字风格与判断可能与其他步骤不一致")
+                    warnings = state.setdefault("warnings", [])
+                    if hint not in warnings:
+                        warnings.append(hint)
+                    logger.warning(f"[Step {step_number}] 已降级到 {model}")
+                return content
+            except Exception as exc:  # noqa: BLE001
+                kind = classify_llm_error(exc)
+                self._note_llm_attempt(state, attempts, step_number, model, index + 1,
+                                       started, "error", f"{kind}: {type(exc).__name__}")
+                last_error = exc
+                if kind == "permanent" or index == len(chain) - 1:
+                    raise
+                logger.warning(
+                    f"[Step {step_number}] {model} 调用失败（{kind}），尝试备选 "
+                    f"{chain[index + 1]}：{exc}"
+                )
+        raise last_error or RuntimeError("模型调用失败")
+
+    def _invoke_once(self, messages, step_number: int, state: PerformanceState,
+                     timeout: int, stream: Optional[bool], llm) -> str:
+        """单次调用（原 `_invoke_llm` 的实现）：有 SSE 消费者时走流式，否则非流式。"""
         from backend.services import progress_bus
 
-        llm = self._llm_for_step(step_number)
         sid = getattr(self, "session_id", "")
         allow_stream = hasattr(llm, "stream") if stream is None else bool(stream)
         stream_enabled = bool(sid) and allow_stream and hasattr(llm, "stream") and progress_bus.has_consumer(sid)
@@ -1288,6 +1417,9 @@ class PerformanceAgent:
                 # 表现是「重启后 critique_step9 悄悄变回 False」，用户什么都没动、功能自己关了。
                 # 这也是「备份是字段白名单」的又一次复发 —— 第四次。
                 "step_control",
+                # 批次 31：每次模型调用的尝试台账（含降级）。不含它，
+                # 重启后就查不到「这一步到底试了几个模型、慢在哪」
+                "llm_attempts",
                 # 弱定位的行号校验依据。只存行数（几十字节），不存全文；
                 # 不含它则「重启/重放后同一份输入判出不同结果」，验收链条断裂
                 "raw_line_counts",
