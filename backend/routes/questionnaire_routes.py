@@ -3,8 +3,8 @@
 拆分原则：**只搬代码，不改逻辑**。路径、方法、依赖、响应模型一字不动，
 由 `tests/_route_snapshot.py` 前后比对来证明。
 
-跨域共享的东西（会话校验、路由级依赖、`active_workflows`）仍从 `agent_routes`
-导入 —— 这一步只是把"问卷"这个最独立的域搬出去；把共享状态抽成独立模块是下一步。
+跨域共享的东西不再来自 `agent_routes`：依赖与状态读写走 `_workflow_deps`，
+可变状态走 `_shared_state`（按模块访问，避免绑定导入时的旧 dict）。
 """
 from __future__ import annotations
 
@@ -29,13 +29,10 @@ from backend.database import get_db
 from backend.middleware.auth_middleware import get_current_user
 from backend.models.user_models import User, UserRole, WorkflowSession
 from backend.routes import _shared_state
-from backend.routes import agent_routes as agent_routes_module
-from backend.routes._shared_state import (
-    _published_questionnaire, _validate_session_id,
-)
-from backend.routes.agent_routes import (
+from backend.routes._shared_state import _published_questionnaire
+from backend.routes._workflow_deps import (
     AgentResponse, _get_workflow_values, _owned_workflows, _require_body_workflow,
-    _require_path_workflow, _require_workflow, active_workflow_configs, active_workflows,
+    _require_path_workflow, _require_workflow,
 )
 
 router = APIRouter()
@@ -223,8 +220,8 @@ async def list_questionnaires(user: User = Depends(get_current_user),
                 "updated_at": data.get("updated_at", ""),
             })
 
-        # 也检查 active_workflows 中有 indicator_system 的session（可生成问卷但尚未生成）
-        for sid, wf in active_workflows.items():
+        # 也检查 _shared_state.active_workflows 中有 indicator_system 的session（可生成问卷但尚未生成）
+        for sid, wf in _shared_state.active_workflows.items():
             if (allowed_ids is not None and sid not in allowed_ids) or sid in _shared_state._QUESTIONNAIRE_CACHE:
                 continue
             try:
@@ -243,8 +240,8 @@ async def list_questionnaires(user: User = Depends(get_current_user),
             except Exception:
                 pass
 
-        # 也检查 active_workflow_configs 中的session（内存evict后从配置重建）
-        for sid in active_workflow_configs:
+        # 也检查 _shared_state.active_workflow_configs 中的session（内存evict后从配置重建）
+        for sid in _shared_state.active_workflow_configs:
             if allowed_ids is not None and sid not in allowed_ids:
                 continue
             if sid in _shared_state._QUESTIONNAIRE_CACHE or any(r.get("session_id") == sid for r in results):
@@ -252,7 +249,7 @@ async def list_questionnaires(user: User = Depends(get_current_user),
             try:
                 results.append({
                     "session_id": sid,
-                    "project_name": active_workflow_configs[sid].get("project_name", "未命名项目"),
+                    "project_name": _shared_state.active_workflow_configs[sid].get("project_name", "未命名项目"),
                     "question_count": 0,
                     "updated_at": str(datetime.now(timezone.utc)),
                     "needs_generation": True,

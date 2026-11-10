@@ -322,6 +322,9 @@ app.include_router(agent_routes.router, prefix="/api/agent", tags=["Agent"])
 # 批次 33：问卷域单独一个模块（从 agent_routes 拆出，路径与依赖不变）
 from backend.routes.questionnaire_routes import router as questionnaire_router
 app.include_router(questionnaire_router, prefix="/api/agent", tags=["问卷"])
+# 批次 34：导出域单独一个模块（同上，只搬代码不改逻辑）
+from backend.routes.export_routes import router as export_router
+app.include_router(export_router, prefix="/api/agent", tags=["导出"])
 from backend.routes.auth_routes import router as auth_router
 app.include_router(auth_router)
 

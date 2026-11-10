@@ -25,6 +25,7 @@ from backend.models.memory_models import (
     UserSession, ShortTermMemory, LongTermMemory, ConversationSummary,
 )
 from backend.config import settings
+from backend.routes import _shared_state
 
 router = APIRouter(prefix="/api/client", tags=["客户端功能"])
 
@@ -664,7 +665,7 @@ def get_user_reports(current_user: User = Depends(get_current_user), db: Session
 
 def _delete_report_records(session_id: str, user_id: int, db: Session) -> None:
     from backend.models.memory_models import ShortTermMemory, LongTermMemory, ConversationSummary
-    from backend.routes.agent_routes import _validate_session_id, _WORKFLOW_PROGRESS
+    from backend.routes._shared_state import _validate_session_id
 
     _validate_session_id(session_id)
     record = db.query(WorkflowSession).filter(
@@ -672,7 +673,7 @@ def _delete_report_records(session_id: str, user_id: int, db: Session) -> None:
     ).first()
     if record is None or record.session_id != session_id:
         raise HTTPException(status_code=404, detail="报告不存在")
-    if session_id in _WORKFLOW_PROGRESS:
+    if session_id in _shared_state._WORKFLOW_PROGRESS:
         raise HTTPException(status_code=409, detail="工作流正在执行")
     for model in (ShortTermMemory, LongTermMemory, ConversationSummary, QuestionnaireAnswer):
         db.query(model).filter(model.session_id == session_id).delete(synchronize_session=False)
@@ -681,11 +682,10 @@ def _delete_report_records(session_id: str, user_id: int, db: Session) -> None:
 
 def _remove_report_snapshot(session_id: str) -> None:
     from backend.agents import performance_agent
-    from backend.routes.agent_routes import active_workflows, active_workflow_configs, _QUESTIONNAIRE_CACHE
 
-    workflow = active_workflows.pop(session_id, None)
-    active_workflow_configs.pop(session_id, None)
-    _QUESTIONNAIRE_CACHE.pop(session_id, None)
+    workflow = _shared_state.active_workflows.pop(session_id, None)
+    _shared_state.active_workflow_configs.pop(session_id, None)
+    _shared_state._QUESTIONNAIRE_CACHE.pop(session_id, None)
     if workflow:
         try:
             workflow.close()

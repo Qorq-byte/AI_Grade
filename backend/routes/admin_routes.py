@@ -403,15 +403,14 @@ def admin_deactivate_user(user_id: int, db: Session = Depends(get_db)):
     # 问卷缓存
     try:
         from backend.routes import _shared_state
-        from backend.routes.agent_routes import active_workflows, _WORKFLOW_PROGRESS
         _QUESTIONNAIRE_CACHE = _shared_state._QUESTIONNAIRE_CACHE
         for sid in session_ids:
             _QUESTIONNAIRE_CACHE.pop(sid, None)
-            if sid in active_workflows:
-                try: active_workflows[sid].close()
+            if sid in _shared_state.active_workflows:
+                try: _shared_state.active_workflows[sid].close()
                 except Exception: pass
-                active_workflows.pop(sid, None)
-            _WORKFLOW_PROGRESS.pop(sid, None)
+                _shared_state.active_workflows.pop(sid, None)
+            _shared_state._WORKFLOW_PROGRESS.pop(sid, None)
     except Exception:
         pass
 
@@ -525,7 +524,7 @@ def admin_list_workflows(
     db: Session = Depends(get_db),
 ):
     """管理员查看所有工作流"""
-    from backend.routes.agent_routes import _WORKFLOW_PROGRESS
+    from backend.routes import _shared_state
 
     q = db.query(WorkflowSession)
     if status:
@@ -549,7 +548,7 @@ def admin_list_workflows(
                     "user_id": w.user_id,
                     "project_name": w.project_name,
                     "status": w.status,
-                    "current_step": _WORKFLOW_PROGRESS.get(w.session_id, {}).get("last_step", w.current_step),
+                    "current_step": _shared_state._WORKFLOW_PROGRESS.get(w.session_id, {}).get("last_step", w.current_step),
                     "model_name": w.model_name,
                     "token_used": w.token_used,
                     "created_at": w.created_at.isoformat(),
