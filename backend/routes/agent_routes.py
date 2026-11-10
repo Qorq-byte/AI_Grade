@@ -612,15 +612,14 @@ async def upload_files_batch(
 
 # 全局进度跟踪（用于SSE轮询模式）
 # 迁移到 progress_bus，agent 与 routes 共享同一字典，解除 agent → routes 反向依赖
-from backend.routes._shared_state import _validate_session_id
+from backend.routes._shared_state import (
+    _QUESTIONNAIRE_CACHE, _validate_session_id,
+)
 from backend.services import progress_bus
 
 _WORKFLOW_PROGRESS = progress_bus.PROXY
 SSE_HEARTBEAT_SECONDS = 15
 SSE_POLL_INTERVAL = 0.1
-
-# 问卷缓存（用于 list 端点和跨请求访问）
-_QUESTIONNAIRE_CACHE: Dict[str, Dict] = {}
 
 _NODE_TO_STEP = {
     "init": 0, "step1_cost_list": 1, "step2_effective_data": 2,

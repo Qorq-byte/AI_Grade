@@ -31,3 +31,6 @@ def _validate_session_id(session_id: str) -> None:
 #: 进程内缓存，重启后从磁盘备份恢复 —— 所以它是"加速器"而不是"唯一数据源"。
 _QUESTIONNAIRE_CACHE: Dict[str, Dict] = {}
 
+#: 问卷内存缓存（用于 list 端点和跨请求访问）。
+#: 进程内缓存，重启后从磁盘备份恢复 —— 所以它是"加速器"而不是"唯一数据源"。
+_QUESTIONNAIRE_CACHE: Dict[str, Dict] = {}
