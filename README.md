@@ -340,26 +340,43 @@ AI_Grade/
 
 ## Tests
 
-```bash
-# Python unit + regression (no server, no model)
-.venv/Scripts/python -m pytest tests/ -q --ignore=tests/rag_eval    # 274 passed
+### Runs in CI (`.github/workflows/ci.yml`)
 
-# Shared frontend layer / SSE protocol (node:test, no server)
-node --test tests/test_shared_frontend.cjs tests/test_workflow_sse.cjs \
-            tests/test_client_modules.cjs tests/test_error_routing.cjs \
-            tests/test_score_disposition_badge.cjs
-
-# Retrieval baseline (no server, no model)
-.venv/Scripts/python -m tests.rag_eval.run --check    # exits 1 if below baseline.json
-```
-
-Checks that need a real model:
+Three steps, none of them needs a database, a model, or a running server:
 
 ```bash
-.venv/Scripts/python frontend_e2e_check.py   # front-end connectivity (72 checks)
-.venv/Scripts/python wf_e2e.py               # real 15-node run (47 checks, 4–5 min)
-.venv/Scripts/python verify_coverage_live.py # 42k-character coverage verification
+python -m compileall -q backend                    # syntax
+python -m pytest tests -q --ignore=tests/rag_eval  # 531 passed
+node --test tests/test_*.cjs                       # 48 passed (5 files)
 ```
+
+CI pins its dependencies with `requirements-dev.txt` (all `==`), which deliberately
+**excludes the heavy inference stack** (`torch` / `transformers` /
+`sentence-transformers` / `chromadb` / `faiss` / `onnxruntime`). Those are imported
+lazily inside `content_indexer` and are never touched by the test suite; pulling
+2 GB of `torch` to run 531 unit tests is not worth it. Use `requirements.txt` when
+you actually need retrieval.
+
+### Not in CI — run these by hand
+
+They need real MySQL, a real model key, or port 8000, so putting them in CI would
+produce random red builds. A red CI that everyone ignores is worse than no CI.
+
+```bash
+# with the service running on :8000
+python test_all_apis.py          # 47 endpoints
+python frontend_e2e_check.py     # 82 checks (served HTML + real HTTP)
+python wf_e2e.py                 # real 15-node run, 47 checks, 4–5 min, costs tokens
+python verify_coverage_live.py   # 42k-character coverage verification
+
+# no server, no model
+python -m tests.rag_eval.run --check   # exits 1 if below baseline.json
+```
+
+Mutation scripts (`tests/_mutate_*.py`, 16 files, 208 mutants) are also manual by
+design: they rewrite the source tree in place. **Run them one at a time** — two
+scripts writing `performance_agent.py` at once will corrupt each other and report
+false "survived" mutants. After a run, always check `git status --short`.
 
 Current retrieval baseline: Recall@3 = **0.448**, MRR = **0.391**, precision = **0.161**
 (7 documents / 271 chunks / 9,925 characters, 29 samples). Run it before and after touching
