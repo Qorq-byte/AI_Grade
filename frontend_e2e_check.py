@@ -397,6 +397,28 @@ r = req("POST", "/api/agent/workflow/set-critique", token=admin_token,
 log(bool(_adm_sid) and r.status_code == 400, "开关不支持的步骤 → 400",
     f"status={r.status_code}")
 
+# 批次 32：备用模型（降级链）的配置入口 —— 能配、能读回，且跑完把原值放回去
+r = req("GET", "/admin", timeout=15)
+admin_html = r.text if r.status_code == 200 else ""
+log("备用模型（降级链）" in admin_html, "/admin 服务出的 HTML 含「备用模型（降级链）」卡片")
+log("saveFallbackModels" in admin_html, "卡片带保存函数")
+
+_before = (req("GET", "/api/admin/settings", token=admin_token).json() or {}).get("data", {})
+_origin = _before.get("fallback_models") or []
+r = req("POST", "/api/admin/settings/fallback-models", token=admin_token,
+        json_body={"models": ["e2e-probe-model"]})
+log(r.status_code == 200 and (r.json().get("data") or {}).get("fallback_models") == ["e2e-probe-model"],
+    "POST 备用模型 → 读回一致", f"status={r.status_code}")
+r = req("GET", "/api/admin/settings", token=admin_token)
+log((r.json().get("data") or {}).get("fallback_models") == ["e2e-probe-model"],
+    "GET 系统设置能看到备用模型")
+r = req("POST", "/api/admin/settings/fallback-models", token=admin_token,
+        json_body={"models": ["a", "b", "c"]})
+log(r.status_code == 400, "超过 2 个备用模型 → 400", f"status={r.status_code}")
+# 还原成跑之前的值，别给开发库留副作用
+req("POST", "/api/admin/settings/fallback-models", token=admin_token,
+    json_body={"models": _origin})
+
 r = req("GET", "/api/client/reports", token=user_token)
 rows = (r.json().get("data") or []) if r.status_code == 200 else []
 log(all(isinstance(row.get("review"), dict) for row in rows),

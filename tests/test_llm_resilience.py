@@ -18,6 +18,12 @@ import pytest
 from backend.agents import performance_agent as pa
 
 
+@pytest.fixture(autouse=True)
+def _no_wait(monkeypatch):
+    """测试里不真的 sleep：退避基数为 0（行为仍走同一条代码路径）。"""
+    monkeypatch.setenv("LLM_RETRY_BACKOFF_SECONDS", "0")
+
+
 # ═══════════════════════════════════════════════════════
 #  分级超时
 # ═══════════════════════════════════════════════════════
@@ -128,14 +134,76 @@ def test_transient_failure_falls_back_and_returns_the_second_answer(monkeypatch)
     content = agent._invoke_llm([{"role": "user", "content": "hi"}], 9, state)
 
     assert content == "备选模型写的内容"
-    assert len(fakes["primary-model"].calls) == 1
+    # 批次 32 起先重试同一模型一次，仍失败才换备选 → 主模型 2 次、备选 1 次
+    assert len(fakes["primary-model"].calls) == 2
     assert len(fakes["backup-model"].calls) == 1
     attempts = state["llm_attempts"]
-    assert [item["model"] for item in attempts] == ["primary-model", "backup-model"]
-    assert [item["outcome"] for item in attempts] == ["error", "ok"]
+    assert [item["model"] for item in attempts] == [
+        "primary-model", "primary-model", "backup-model"]
+    assert [item["outcome"] for item in attempts] == ["error", "error", "ok"]
     assert attempts[0]["detail"].startswith("transient")
     # 降级必须留痕：换模型会改变文字风格与判断
     assert any("备选模型 backup-model" in w for w in state["warnings"])
+
+
+class _FlakyLLM:
+    """前 N 次抛 429，之后成功 —— 用来验证「先重试同一模型」。"""
+
+    def __init__(self, failures, content="重试后的正文"):
+        self.failures = failures
+        self.content = content
+        self.calls = 0
+
+    def invoke(self, messages, config=None):
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise _StatusError(429)
+        return _Resp(self.content)
+
+
+def test_retry_saves_the_day_without_switching_models(monkeypatch):
+    """429 常常 1-2 秒就好：重试同一模型成功时，不换模型、不写降级警告。"""
+    agent, state, _ = _agent(monkeypatch, {}, fallbacks=["backup-model"])
+    flaky = _FlakyLLM(failures=1)
+    backup = _FakeLLM("不该被调用")
+    fakes = {"primary-model": flaky, "backup-model": backup}
+    monkeypatch.setattr(agent, "_llm_for_step",
+                        lambda step, model=None: fakes[model or "primary-model"])
+
+    content = agent._invoke_llm([{"role": "user", "content": "hi"}], 9, state)
+
+    assert content == "重试后的正文"
+    assert flaky.calls == 2
+    assert backup.calls == []
+    assert [item["outcome"] for item in state["llm_attempts"]] == ["error", "ok"]
+    assert not [w for w in state["warnings"] if "备选模型" in w]
+
+
+def test_retry_count_is_configurable(monkeypatch):
+    """重试次数为 0 时行为回到批次 31：失败立刻换模型。"""
+    monkeypatch.setattr(pa, "LLM_RETRY_ATTEMPTS", 0)
+    agent, state, fakes = _agent(
+        monkeypatch,
+        {"primary-model": _StatusError(429), "backup-model": "备选"},
+        fallbacks=["backup-model"],
+    )
+
+    content = agent._invoke_llm([{"role": "user", "content": "hi"}], 9, state)
+
+    assert content == "备选"
+    assert len(fakes["primary-model"].calls) == 1
+    assert [item["model"] for item in state["llm_attempts"]] == [
+        "primary-model", "backup-model"]
+
+
+def test_backoff_is_linear_and_env_configurable(monkeypatch):
+    monkeypatch.delenv("LLM_RETRY_BACKOFF_SECONDS", raising=False)
+    assert pa.retry_backoff(1) == 2.0
+    assert pa.retry_backoff(2) == 4.0
+    monkeypatch.setenv("LLM_RETRY_BACKOFF_SECONDS", "0.5")
+    assert pa.retry_backoff(2) == 1.0
+    monkeypatch.setenv("LLM_RETRY_BACKOFF_SECONDS", "junk")
+    assert pa.retry_backoff(1) == 2.0
 
 
 def test_permanent_failure_does_not_burn_the_backup_model(monkeypatch):
@@ -178,7 +246,8 @@ def test_all_models_failing_raises_the_last_error(monkeypatch):
         agent._invoke_llm([{"role": "user", "content": "hi"}], 9, state)
 
     assert info.value.status_code == 502
-    assert len(state["llm_attempts"]) == 2
+    # 两个模型各重试一次 → 4 次尝试
+    assert len(state["llm_attempts"]) == 4
     assert {item["outcome"] for item in state["llm_attempts"]} == {"error"}
 
 

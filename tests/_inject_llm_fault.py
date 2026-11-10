@@ -19,11 +19,29 @@ from backend.agents import performance_agent as pa
 
 
 class _Stub429(BaseHTTPRequestHandler):
-    """永远 429，模拟配额/限流。"""
+    """前 `fail_times` 次返回 429，之后返回一句正常回复（模拟限流恢复）。"""
+
+    fail_times = 10 ** 6
+    calls = 0
 
     def do_POST(self):  # noqa: N802 - http.server 的约定
         length = int(self.headers.get("Content-Length") or 0)
         self.rfile.read(length)
+        type(self).calls += 1
+        if type(self).calls > type(self).fail_times:
+            body = json.dumps({
+                "id": "chatcmpl-stub", "object": "chat.completion", "created": 0,
+                "model": "stub-model",
+                "choices": [{"index": 0, "finish_reason": "stop",
+                             "message": {"role": "assistant", "content": "收到"}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         body = json.dumps({
             "error": {"message": "rate limited by stub", "type": "rate_limit_error",
                       "code": "rate_limit_exceeded"},
@@ -38,17 +56,13 @@ class _Stub429(BaseHTTPRequestHandler):
         return
 
 
-def main() -> int:
-    server = HTTPServer(("127.0.0.1", 0), _Stub429)
-    port = server.server_address[1]
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    print(f"stub 429 已在 127.0.0.1:{port}")
-
+def _agent_for(stub_port: int):
+    """主模型指向 stub，备选指向真实 DeepSeek。"""
     from langchain_openai import ChatOpenAI
+    from types import SimpleNamespace
 
     stub_llm = ChatOpenAI(model="stub-model", api_key="stub-key",
-                          base_url=f"http://127.0.0.1:{port}/v1", max_retries=0)
-
+                          base_url=f"http://127.0.0.1:{stub_port}/v1", max_retries=0)
     agent = pa.PerformanceAgent.__new__(pa.PerformanceAgent)
     agent.session_id = "fault-injection"
     agent.model_name = "stub-model"
@@ -56,7 +70,6 @@ def main() -> int:
     agent.top_p = 0.9
     agent.base_agent = SimpleNamespace(llm=stub_llm, model_name="stub-model", max_tokens=256)
 
-    fallback = "deepseek-chat"
     built = {}
 
     def fake_llm_for_step(step_number, model_name=None):
@@ -69,33 +82,66 @@ def main() -> int:
         return built[target]
 
     agent._llm_for_step = fake_llm_for_step
+    return agent
 
-    state = {"session_id": "fault-injection", "warnings": [],
-             "system_config": {"fallback_models": [fallback]}}
 
-    try:
-        text = agent._invoke_llm(
-            [{"role": "user", "content": "只回复两个字：收到"}], 12, state, timeout=60)
-    except Exception as exc:  # noqa: BLE001
-        print(f"FAIL 没有降级，直接失败：{type(exc).__name__}: {exc}")
-        server.shutdown()
-        return 1
+def _state(fallbacks):
+    return {"session_id": "fault-injection", "warnings": [],
+            "system_config": {"fallback_models": fallbacks}}
 
+
+def _show(title, state, text):
     attempts = state.get("llm_attempts") or []
-    print(f"返回正文：{text.strip()[:40]!r}")
+    print(f"\n[{title}] 返回正文：{text.strip()[:40]!r}")
     for item in attempts:
         print(f"  attempt#{item['attempt']} {item['model']} -> {item['outcome']} "
               f"({item['detail'] or 'ok'}, {item['latency_ms']} ms)")
-    warnings = [w for w in state.get("warnings") or [] if "备选模型" in w]
-    print(f"降级告警：{warnings}")
+    warns = [w for w in state.get("warnings") or [] if "备选模型" in w]
+    print(f"  降级告警：{'有' if warns else '无'}")
+    return attempts, warns
+
+
+def main() -> int:
+    import os
+
+    os.environ["LLM_RETRY_BACKOFF_SECONDS"] = "0"   # 别真等 2 秒
+    server = HTTPServer(("127.0.0.1", 0), _Stub429)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    print(f"stub 已在 127.0.0.1:{port}")
+
+    # ── 场景 A：只失败一次 → 重试同一模型成功，不该换模型 ──
+    _Stub429.calls = 0
+    _Stub429.fail_times = 1
+    agent = _agent_for(port)
+    state_a = _state(["deepseek-chat"])
+    text_a = agent._invoke_llm([{"role": "user", "content": "只回复两个字：收到"}], 12,
+                               state_a, timeout=60)
+    attempts_a, warns_a = _show("A 重试成功", state_a, text_a)
+    ok_a = (len(attempts_a) == 2
+            and [a["model"] for a in attempts_a] == ["stub-model", "stub-model"]
+            and [a["outcome"] for a in attempts_a] == ["error", "ok"]
+            and not warns_a)
+
+    # ── 场景 B：一直失败 → 重试一次后降级到真实模型 ──
+    _Stub429.calls = 0
+    _Stub429.fail_times = 10 ** 6
+    agent_b = _agent_for(port)
+    state_b = _state(["deepseek-chat"])
+    text_b = agent_b._invoke_llm([{"role": "user", "content": "只回复两个字：收到"}], 12,
+                                 state_b, timeout=60)
+    attempts_b, warns_b = _show("B 重试后降级", state_b, text_b)
+    ok_b = (len(attempts_b) == 3
+            and [a["model"] for a in attempts_b] == ["stub-model", "stub-model", "deepseek-chat"]
+            and [a["outcome"] for a in attempts_b] == ["error", "error", "ok"]
+            and bool(warns_b))
 
     server.shutdown()
 
-    ok = (text.strip() and len(attempts) == 2
-          and attempts[0]["outcome"] == "error" and attempts[0]["detail"].startswith("transient")
-          and attempts[1]["outcome"] == "ok" and warnings)
-    print("结论：", "PASS 真实 429 触发了降级并拿到正文" if ok else "FAIL 与预期不符")
-    return 0 if ok else 1
+    print()
+    print("场景 A（重试成功、不换模型）：", "PASS" if ok_a else "FAIL")
+    print("场景 B（重试后降级、写告警）：", "PASS" if ok_b else "FAIL")
+    return 0 if (ok_a and ok_b) else 1
 
 
 if __name__ == "__main__":
