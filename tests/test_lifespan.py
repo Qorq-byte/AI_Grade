@@ -218,12 +218,26 @@ def _fake_settings():
 
 
 def test_startup_still_initializes_db(monkeypatch):
+    """启动时会依次做 init_db → 建管理员 → 起清理任务。
+
+    注意 `SessionLocal()` 也得替掉：它藏在 `from backend.database import SessionLocal`
+    里面，不替的话这条用例会去**真连 MySQL**——本机有库时它照样通过，
+    在 CI（把 MYSQL_PORT 指到 1）上就报 AssertionError。批次 28 加 CI 时被抓出来的，
+    属于"用例靠环境才绿"的典型：它测的是"我机器上有库"。
+    """
     calls = []
 
+    class _DummySession:
+        def close(self):
+            calls.append("db_close")
+
     monkeypatch.setattr("backend.database.init_db", lambda: calls.append("init_db"))
-    monkeypatch.setattr(main, "_start_cleanup_scheduler", lambda: calls.append("scheduler"))
+    monkeypatch.setattr("backend.database.SessionLocal", lambda: _DummySession())
     monkeypatch.setattr("backend.services.auth_service.create_admin_if_not_exists",
                         lambda db: calls.append("admin"))
+    monkeypatch.setattr("backend.services.auth_service.mark_default_password_users",
+                        lambda db: calls.append("mark"))
+    monkeypatch.setattr(main, "_start_cleanup_scheduler", lambda: calls.append("scheduler"))
     monkeypatch.setattr(main, "settings", _fake_settings())
 
     asyncio.run(main._on_startup())
@@ -231,6 +245,8 @@ def test_startup_still_initializes_db(monkeypatch):
     assert "init_db" in calls
     assert "admin" in calls
     assert "scheduler" in calls
+    # 顺序：先建表、再建管理员、最后起清理任务
+    assert calls.index("init_db") < calls.index("admin") < calls.index("scheduler")
 
 
 def test_startup_skips_scheduler_when_db_fails(monkeypatch):
