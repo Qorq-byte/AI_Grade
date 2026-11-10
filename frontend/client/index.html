@@ -442,7 +442,7 @@
         var currentUserData=null,isChatEnabled=true,isCollapsed=false,isMobileOpen=false,currentConversationId=null,conversations=[],isRecording=false,recordingTimer=null,recordingSeconds=0,currentMode='',speechRecognition=null,chatStatusPollTimer=null,notificationPollTimer=null;
 
         // ====== WF State ======
-        var wfSessionId=null,wfRunning=false,wfCurrentStep=0,wfStatus="",wfStatusController=null,wfCoverage=null,wfConsistency=null,wfDispo=null,wfVersions={},wfEvidence={},wfReviewSteps=[],wfCompletedSteps=[],wfStepContents={},wfApprovalStep=null,wfUploadedFiles=[],wfAbortController=null
+        var wfSessionId=null,wfRunning=false,wfCurrentStep=0,wfStatus="",wfStatusController=null,wfCoverage=null,wfConsistency=null,wfDispo=null,wfCritique=null,wfVersions={},wfEvidence={},wfReviewSteps=[],wfCompletedSteps=[],wfStepContents={},wfApprovalStep=null,wfUploadedFiles=[],wfAbortController=null
 
         function initWfStepper(){var l=document.getElementById('wfStepperList');if(!l)return;l.innerHTML='';for(var i=1;i<=14;i++){(function(sn){var div=document.createElement('div');div.className='wf-step';div.id='wfStep'+sn;div.innerHTML='<div class="wf-step-dot">'+sn+'</div><span class="wf-step-name">'+C.STEP_NAMES[sn]+'</span>';div.onclick=function(){selectWfStep(sn)};l.appendChild(div)})(i)}}
 
@@ -456,6 +456,7 @@
     inner+=buildCoverageBadge();
     if(sn===14)inner+=buildConsistencyBadge();
     if(sn===7)inner+=buildScoreDispositionBadge();
+    if(sn===9)inner+=buildStep9CritiqueBadge();
     if(!txt&&st!=='done'){
         inner+='<div class="wf-empty"><h3>'+C.STEP_NAMES[sn]+'</h3><p>'+(st==='done'?'该步骤已完成，但内容尚未加载。':'该步骤尚未执行或内容生成中。')+'</p></div>';
     }else{
@@ -522,6 +523,56 @@ function buildConsistencyBadge(){
 }
 
 /* 步骤7评分落地台账：区分「模型看过资料说没法评」与「系统把评分丢了」 */
+/* 步骤 9 的漏项补全：批次 29。台账只有几十到几百字节，放 /status 里没问题；
+   前后两版正文不进轮询，点「看修订前版本」才去拉。 */
+function buildStep9CritiqueBadge(){
+    var d=wfCritique;
+    if(!d||!d.enabled)return '';
+    var low=Number(d.low_score||0),miss=(d.missing||[]).length,gained=(d.gained||[]).length;
+    var head,cls;
+    if(d.revised){
+        head='✅ 已补全 '+gained+' 个扣分指标（共 '+low+' 个低分指标，原文漏了 '+miss+' 个）';
+        cls='ok';
+    }else if(d.rejected){
+        head='⚠️ 漏项补全未生效：'+esc(d.rejected)+'（已保留原文）';
+        cls='warn';
+    }else if(!miss){
+        head='✅ '+low+' 个低分指标在正文里都有点名';
+        cls='ok';
+    }else{
+        head='⚠️ 有 '+miss+' 个低分指标未被点名';
+        cls='warn';
+    }
+    var html='<div class="wb-dispo '+(cls==='ok'?'ok':'warn')+'" role="status">'+head;
+    if(typeof d.chars_before==='number'&&typeof d.chars_after==='number'&&d.revised){
+        html+='<span class="wb-dispo-chip">'+Number(d.chars_before)+' 字 → '+Number(d.chars_after)+' 字</span>';
+    }
+    if(d.revised){
+        html+=' <a href="javascript:void(0)" onclick="showStep9Critique()" style="color:#3182ce;font-size:12px">看修订前版本</a>';
+    }
+    html+='</div><div id="wfCritiqueDiff" style="display:none"></div>';
+    return html;
+}
+
+function showStep9Critique(){
+    var box=document.getElementById('wfCritiqueDiff');
+    if(!box||!wfSessionId)return;
+    if(box.style.display!=='none'){box.style.display='none';return}
+    box.style.display='block';box.innerHTML='加载中...';
+    api('GET','/api/agent/workflow/'+encodeURIComponent(wfSessionId)+'/step9-critique')
+        .then(function(r){
+            var d=(r&&r.data)||{};
+            var before=d.before||'',after=d.after||'';
+            /* 不做逐字 diff：两版都是几千字的 Markdown，逐字红绿块在窄面板里读不了。
+               并排放原文与现文，靠目录结构对比即可。 */
+            box.innerHTML='<div style="display:flex;gap:12px;align-items:flex-start">'
+                +'<div style="flex:1;min-width:0"><div style="font-size:12px;color:#718096;margin-bottom:4px">修订前（'+before.length+' 字）</div><pre style="white-space:pre-wrap;max-height:360px;overflow:auto;font-size:12px;background:#f7fafc;padding:8px;border-radius:6px">'+esc(before)+'</pre></div>'
+                +'<div style="flex:1;min-width:0"><div style="font-size:12px;color:#718096;margin-bottom:4px">修订后（'+after.length+' 字）</div><pre style="white-space:pre-wrap;max-height:360px;overflow:auto;font-size:12px;background:#f0fff4;padding:8px;border-radius:6px">'+esc(after)+'</pre></div>'
+                +'</div>';
+        })
+        .catch(function(e){box.innerHTML='<div style="color:#c53030;font-size:12px">加载失败：'+esc(e.message||'未知错误')+'</div>'});
+}
+
 function buildScoreDispositionBadge(){
     var d=wfDispo;
     if(!d||!d.total)return '';
@@ -1180,7 +1231,7 @@ function refineStepContent(stepNum, msgText, isApprovalReject){
             // 重置状态，准备新评价
             wfStatusController?.abort();
             wfSessionId=newWorkflowSession();sessionStorage.setItem(workflowSessionKey,wfSessionId);
-            wfCompletedSteps=[];wfStepContents={};wfVersions={};wfEvidence={};wfReviewSteps=[];wfApprovalStep=null;wfCurrentStep=0;wfStatus='running';wfCoverage=null;wfConsistency=null;wfDispo=null;
+            wfCompletedSteps=[];wfStepContents={};wfVersions={};wfEvidence={};wfReviewSteps=[];wfApprovalStep=null;wfCurrentStep=0;wfStatus='running';wfCoverage=null;wfConsistency=null;wfDispo=null;wfCritique=null;
             document.getElementById('wfRetryBtn').hidden=true;
             window._currentQuestionData=null;  // 清空问卷缓存，确保下次切换Tab重新加载
             initWfStepper();document.getElementById('wfLayout').style.display='flex';
@@ -1315,6 +1366,7 @@ var body={session_id:wfSessionId,use_rag:document.getElementById("wfUseRag").che
                 if (data.document_coverage && data.document_coverage.total_chars) wfCoverage = data.document_coverage;
                 wfConsistency = (data.consistency && data.consistency.checked) ? data.consistency : null;
                 wfDispo = (data.score_disposition && data.score_disposition.total) ? data.score_disposition : null;
+                wfCritique = (data.step9_critique && data.step9_critique.enabled) ? data.step9_critique : null;
                 wfApprovalStep = null;
                 if (data.requires_approval) {
                     handleSSEEvent({event:'waiting_approval', session_id:wfSessionId, approval_step:data.approval_step});
