@@ -18,6 +18,82 @@ from backend.database import SessionLocal
 from backend.utils.llm_helper import get_model_provider, validate_api_key
 
 
+def build_llm_for(model_name: str, temperature: float = 0.7, top_p: float = 0.9,
+                  max_tokens: int = 8192) -> BaseLanguageModel:
+    """按模型名造一个客户端（批次 31：降级链要能临时换模型）。
+
+    从 `BaseAgent._initialize_llm` 抽出来的 —— 降级时不可能去 new 一个 BaseAgent
+    （它会连库、建记忆会话），所以把"按名字选 provider"这段单独提出来。
+    `_initialize_llm` 仍走这里，保证两处规则只有一份。
+    """
+    model_lower = model_name.lower()
+    provider = get_model_provider(model_name)
+
+    # 通义千问系列
+    if provider == "qwen":
+        if not validate_api_key("通义千问", settings.DASHSCOPE_API_KEY):
+            raise ValueError("通义千问API密钥未配置或无效")
+        logger.info(f"使用通义千问模型: {model_name}")
+        return ChatTongyi(
+            model=model_name,
+            temperature=temperature,
+            top_p=top_p,
+            dashscope_api_key=settings.DASHSCOPE_API_KEY,
+        )
+
+    # DeepSeek系列
+    if provider == "deepseek":
+        if not validate_api_key("DeepSeek", settings.DEEPSEEK_API_KEY):
+            raise ValueError("DeepSeek API密钥未配置或无效")
+        logger.info(f"使用DeepSeek模型: {model_name}")
+        return ChatOpenAI(
+            model=model_name,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            openai_api_key=settings.DEEPSEEK_API_KEY,
+            openai_api_base=settings.DEEPSEEK_BASE_URL,
+        )
+
+    # OpenAI系列
+    if provider == "openai":
+        if not validate_api_key("OpenAI", settings.OPENAI_API_KEY):
+            raise ValueError("OpenAI API密钥未配置或无效")
+        logger.info(f"使用OpenAI模型: {model_name}")
+        return ChatOpenAI(
+            model=model_name,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            openai_api_key=settings.OPENAI_API_KEY,
+        )
+
+    # Anthropic系列
+    if provider == "anthropic":
+        if not validate_api_key("Anthropic", settings.ANTHROPIC_API_KEY):
+            raise ValueError("Anthropic API密钥未配置或无效")
+        logger.info(f"使用Anthropic模型: {model_name}")
+        return ChatAnthropic(
+            model=model_name,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            anthropic_api_key=settings.ANTHROPIC_API_KEY,
+        )
+
+    # 默认使用OpenAI
+    if not validate_api_key("OpenAI", settings.OPENAI_API_KEY):
+        raise ValueError("OpenAI API密钥未配置或无效")
+    logger.warning(f"未知模型类型，使用OpenAI默认模型: {model_name}")
+    return ChatOpenAI(
+        model=model_name,
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
+        openai_api_key=settings.OPENAI_API_KEY,
+    )
+
+
 class BaseAgent(ABC):
     """
     Agent基类
@@ -67,96 +143,19 @@ class BaseAgent(ABC):
         logger.info(f"BaseAgent初始化完成: session_id={self.session_id}, model={self.model_name}")
     
     def _initialize_llm(self) -> BaseLanguageModel:
-        """
-        初始化语言模型
-        根据model_name选择不同的LLM提供商
-        
-        支持的模型：
-        - OpenAI: gpt-3.5-turbo, gpt-4, gpt-4-turbo
-        - Anthropic: claude-3-opus, claude-3-sonnet, claude-3-haiku
-        - 通义千问: qwen-turbo, qwen-plus, qwen-max, qwen-long
-        - DeepSeek: deepseek-chat, deepseek-coder
+        """初始化语言模型（按 `model_name` 选 provider）。
+
+        批次 31 起具体构造在模块级 `build_llm_for` —— 降级链要在运行期临时换模型，
+        不能为此再 new 一个 BaseAgent（那会连库、建记忆会话）。
         """
         try:
-            model_lower = self.model_name.lower()
-            provider = get_model_provider(self.model_name)
-            
-            # 通义千问系列
-            if provider == "qwen":
-                if not validate_api_key("通义千问", settings.DASHSCOPE_API_KEY):
-                    raise ValueError("通义千问API密钥未配置或无效")
-                
-                llm = ChatTongyi(
-                    model=self.model_name,
-                    temperature=self.temperature,
-                    top_p=self.top_p,
-                    dashscope_api_key=settings.DASHSCOPE_API_KEY
-                )
-                logger.info(f"使用通义千问模型: {self.model_name}")
-            
-            # DeepSeek系列
-            elif provider == "deepseek":
-                if not validate_api_key("DeepSeek", settings.DEEPSEEK_API_KEY):
-                    raise ValueError("DeepSeek API密钥未配置或无效")
-                
-                llm = ChatOpenAI(
-                    model=self.model_name,
-                    temperature=self.temperature,
-                    top_p=self.top_p,
-                    max_tokens=self.max_tokens,
-                    openai_api_key=settings.DEEPSEEK_API_KEY,
-                    openai_api_base=settings.DEEPSEEK_BASE_URL
-                )
-                logger.info(f"使用DeepSeek模型: {self.model_name}")
-            
-            # OpenAI系列
-            elif provider == "openai":
-                if not validate_api_key("OpenAI", settings.OPENAI_API_KEY):
-                    raise ValueError("OpenAI API密钥未配置或无效")
-                
-                llm = ChatOpenAI(
-                    model=self.model_name,
-                    temperature=self.temperature,
-                    top_p=self.top_p,
-                    max_tokens=self.max_tokens,
-                    openai_api_key=settings.OPENAI_API_KEY
-                )
-                logger.info(f"使用OpenAI模型: {self.model_name}")
-            
-            # Anthropic系列
-            elif provider == "anthropic":
-                if not validate_api_key("Anthropic", settings.ANTHROPIC_API_KEY):
-                    raise ValueError("Anthropic API密钥未配置或无效")
-                
-                llm = ChatAnthropic(
-                    model=self.model_name,
-                    temperature=self.temperature,
-                    top_p=self.top_p,
-                    max_tokens=self.max_tokens,
-                    anthropic_api_key=settings.ANTHROPIC_API_KEY
-                )
-                logger.info(f"使用Anthropic模型: {self.model_name}")
-            
-            else:
-                # 默认使用OpenAI
-                if not validate_api_key("OpenAI", settings.OPENAI_API_KEY):
-                    raise ValueError("OpenAI API密钥未配置或无效")
-                
-                llm = ChatOpenAI(
-                    model=self.model_name,
-                    temperature=self.temperature,
-                    top_p=self.top_p,
-                    max_tokens=self.max_tokens,
-                    openai_api_key=settings.OPENAI_API_KEY
-                )
-                logger.warning(f"未知模型类型，使用OpenAI默认模型: {self.model_name}")
-            
-            return llm
-            
+            return build_llm_for(
+                self.model_name, self.temperature, self.top_p, self.max_tokens,
+            )
         except Exception as e:
             logger.error(f"LLM初始化失败: {str(e)}")
             raise
-    
+
     def _ensure_session(self):
         """确保会话存在"""
         session = self.memory_service.get_session(self.session_id)
