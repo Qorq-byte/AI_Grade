@@ -507,6 +507,10 @@ function buildConsistencyBadge(){
     }
     var head=errs?('❌ '+errs+' 项数字对不上'+(warns?'，另有 '+warns+' 项提示':''))
                   :('⚠️ '+warns+' 项需要留意');
+    /* 结构性缺陷（缺章/步骤没跑完）会拦住导出 —— 先在徽标上说清楚，
+       别等用户点了导出才被 409 挡回来 */
+    var blockedN=Number(r.blocking_count||0);
+    if(blockedN)head+=' · ⛔ '+blockedN+' 项需处理完才能导出';
     var html='<div class="wb-consistency '+(errs?'err':'warn')+'" role="status" aria-label="'+esc(head)+'"><strong>'+esc(head)+'</strong><ul>';
     for(var i=0;i<issues.length;i++){
         var it=issues[i];

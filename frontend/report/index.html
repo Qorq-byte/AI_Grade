@@ -400,6 +400,25 @@
         refreshPreview();
     }
 
+    /* 导出闸门（批次 26）：报告有缺章/步骤没跑完时后端返回 409 + X-Export-Blocked。
+       问一次「仍要导出」，确认后带 force 重导 —— 否则缺一章就彻底导不出去。 */
+    async function exportWithForce(url, payload) {
+        const post = (body) => authFetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        let resp = await post(payload);
+        if (resp.status === 409 && resp.headers.get('X-Export-Blocked') === '1') {
+            const blocked = await resp.json();
+            const ok = confirm((blocked.detail || '报告还不能导出')
+                + '\n\n仍要导出吗？缺失的章节会原样保留为一句占位说明。');
+            if (!ok) return blocked;
+            resp = await post(Object.assign({}, payload, { force: true }));
+        }
+        return resp.json();
+    }
+
     async function exportEditedReport(format) {
         if (!sessionId) {
             showToast('未关联工作流', 'error');
@@ -407,16 +426,11 @@
         }
         showToast('导出中...');
         try {
-            const resp = await authFetch(`${API}/workflow/export`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ session_id: sessionId, format }),
-            });
-            const data = await resp.json();
+            const data = await exportWithForce(`${API}/workflow/export`, { session_id: sessionId, format });
             if (data.success) {
                 showToast(`导出成功: ${data.data.file_name}`);
             } else {
-                showToast('导出失败', 'error');
+                showToast(data.detail || '导出失败', 'error');
             }
         } catch (e) {
             showToast('导出失败: ' + e.message, 'error');

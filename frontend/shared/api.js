@@ -70,6 +70,15 @@
        否则用户改不了密、也进不了系统，被死循环踢出。 */
     var PWD_CHANGE_HEADER = 'X-Password-Change-Required';
 
+    /* 导出闸门：报告有缺章/步骤没跑完时后端返回 409 + 该响应头。
+       前端在这里问一次「仍要导出」，确认后带 force 重放 —— 否则缺一章的会话
+       会彻底导不出去，用户只能干看着。 */
+    var EXPORT_BLOCKED_HEADER = 'X-Export-Blocked';
+
+    function isExportBlocked(response) {
+        try { return response.headers.get(EXPORT_BLOCKED_HEADER) === '1'; } catch (e) { return false; }
+    }
+
     function isPasswordChangeRequired(response) {
         try { return response.headers.get(PWD_CHANGE_HEADER) === '1'; } catch (e) { return false; }
     }
@@ -220,7 +229,19 @@
                 }
                 if (!response.ok) {
                     var message = (data && (data.detail || data.message)) || ('请求失败：' + response.status);
-                    throw ApiError(typeof message === 'string' ? message : JSON.stringify(message), {
+                    if (typeof message !== 'string') message = JSON.stringify(message);
+                    /* 导出闸门：先问一次「仍要导出」，用户确认后带 force 重放一次。
+                       只重放一次（forceRetried），避免后端持续 409 时打成循环。 */
+                    if (response.status === 409 && isExportBlocked(response)
+                        && !opts.forceRetried
+                        && body && typeof body === 'object' && !(body instanceof FormData)
+                        && body.force === undefined
+                        && typeof confirm === 'function'
+                        && confirm(message + '\n\n仍要导出吗？缺失的章节会原样保留为一句占位说明。')) {
+                        return self._send(method, url, Object.assign({}, body, { force: true }),
+                            timeout, Object.assign({}, opts, { forceRetried: true }));
+                    }
+                    throw ApiError(message, {
                         code: 'http_' + response.status,
                         status: response.status,
                         retryable: !!RETRYABLE_STATUS[response.status],

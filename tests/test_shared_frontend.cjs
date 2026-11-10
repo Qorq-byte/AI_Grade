@@ -72,7 +72,7 @@ function loadApi(fetchImpl, opts = {}) {
     const ctx = {
         console, Promise, Date, JSON, Object, Math, setTimeout, clearTimeout,
         fetch: fetchImpl, AbortController, TextDecoder, FormData, sessionStorage: storage, localStorage: memoryStorage(),
-        location, URL, encodeURIComponent,
+        location, URL, encodeURIComponent, confirm: opts.confirm,
         APP_CONFIG: Object.assign({
             api: { timeout: 200, longTimeout: 400, maxRetries: 2, retryBaseDelay: 5, retryMaxDelay: 20, refreshPath: '/api/auth/refresh' },
             routes: { login: '/login' },
@@ -222,4 +222,56 @@ test('4xx 终端错误不重试', async () => {
         return true;
     });
     assert.equal(calls, 1);
+});
+
+/* 导出闸门（批次 26）：后端用 409 + X-Export-Blocked 表示「报告还不能导出」。
+   前端必须问一次再带 force 重放，否则缺一章的会话彻底导不出去。 */
+
+test('导出被拦截时先询问，确认后带 force 重放一次', async () => {
+    const bodies = [];
+    const { Api } = loadApi(async (url, init) => {
+        bodies.push(JSON.parse(init.body));
+        if (bodies.length === 1) {
+            return jsonResponse({ detail: '报告还不能导出：REPORT_CHAPTER_MISSING#1 报告有 1 章还是占位符' },
+                409, { 'X-Export-Blocked': '1' });
+        }
+        return jsonResponse({ success: true, data: { file_name: 'a.docx' } });
+    }, { confirm: () => true });
+
+    const res = await new Api().post('/api/agent/workflow/export', { session_id: 's1', format: 'word' });
+
+    assert.equal(res.data.file_name, 'a.docx');
+    assert.equal(bodies.length, 2);
+    assert.equal(bodies[0].force, undefined);
+    assert.equal(bodies[1].force, true);
+    assert.equal(bodies[1].session_id, 's1');
+});
+
+test('用户取消时如实抛出被拦原因，且不重放', async () => {
+    let calls = 0;
+    const { Api } = loadApi(async () => {
+        calls++;
+        return jsonResponse({ detail: '报告还不能导出：缺 1 章' }, 409, { 'X-Export-Blocked': '1' });
+    }, { confirm: () => false });
+
+    await assert.rejects(new Api().post('/api/agent/workflow/export', { session_id: 's1' }), err => {
+        assert.equal(err.status, 409);
+        assert.match(err.message, /缺 1 章/);
+        return true;
+    });
+    assert.equal(calls, 1);
+});
+
+test('普通 409（无导出标记）不会被当成导出闸门反复询问', async () => {
+    let calls = 0;
+    let asked = 0;
+    const { Api } = loadApi(async () => {
+        calls++;
+        return jsonResponse({ detail: '工作流正在执行' }, 409);
+    }, { confirm: () => { asked++; return true; } });
+
+    await assert.rejects(new Api().post('/api/agent/workflow/export', { session_id: 's1' }),
+        err => err.status === 409);
+    assert.equal(calls, 1);
+    assert.equal(asked, 0);
 });
