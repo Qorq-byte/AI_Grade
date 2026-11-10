@@ -1614,6 +1614,54 @@ async def download_export_file(file_name: str, user: User = Depends(get_current_
     )
 
 
+def _safe_fallback_note(session_id: str) -> str:
+    """取降级标注；读不到状态就返回空串。
+
+    脚注是「补充说明」，**绝不能因为它把导出拦掉** —— 历史会话只留了报告、
+    没有状态快照时会抛 404；批次 32 第一版直接调 `_get_workflow_values`，
+    把本来能导的报告变成了 404（被 `test_engineering_regressions` 抓到）。
+    """
+    try:
+        return _fallback_note(_get_workflow_values(session_id))
+    except HTTPException:
+        return ""
+    except Exception:  # noqa: BLE001
+        logger.exception(f"读取降级标注失败，按无标注导出: {session_id}")
+        return ""
+
+
+def _fallback_note(values: dict) -> str:
+    """导出件的降级标注（批次 32）。
+
+    批次 31 只在 `warnings` 里留一句「已由备选模型 X 完成」，而 warnings 是要去翻的。
+    导出件是给外部看的，**必须自己说清楚哪一步换了模型** —— 换个模型会改变措辞与判断，
+    不标注等于让读者以为全程一个模型。
+
+    从 `llm_attempts` 里取「非首个模型且成功」的记录（比解析 warning 文本可靠）。
+    """
+    attempts = values.get("llm_attempts") or []
+    primary = ""
+    for item in attempts:
+        if isinstance(item, dict) and item.get("model"):
+            primary = item["model"]
+            break
+    hits = []
+    for item in attempts:
+        if not isinstance(item, dict):
+            continue
+        if item.get("outcome") != "ok" or item.get("model") == primary:
+            continue
+        step = item.get("step")
+        pair = (step, item.get("model"))
+        if pair not in hits:
+            hits.append(pair)
+    if not hits:
+        return ""
+    steps = "、".join(f"步骤 {step}（{model}）" for step, model in sorted(hits))
+    return (f"> 说明：本报告以下步骤由备选模型完成 —— {steps}。\n"
+            f"> 主模型不可用时系统自动降级，该部分措辞与判断可能与其余章节存在差异。")
+
+
 def _export_blockers(session_id: str) -> list:
     """导出前必须处理的问题（缺章、步骤没跑完、报告过短……）。
 
@@ -1691,6 +1739,18 @@ async def export_workflow_report(request: ExportRequest, user: User = Depends(ge
                                     headers={"X-Export-Blocked": "1"})
         elif _export_blockers(session_id):
             logger.warning(f"报告存在结构性缺陷，用户强制导出: {session_id}")
+
+        # 脚注是「补充说明」，读不到状态就不写 —— 绝不能因为它把导出拦掉
+        # （历史会话只留了报告、没有状态快照时就会走到这里）
+        try:
+            note = _fallback_note(_get_workflow_values(session_id))
+        except HTTPException:
+            note = ""
+        except Exception:
+            logger.exception(f"读取降级标注失败，按无标注导出: {session_id}")
+            note = ""
+        if note:
+            report_content = f"{report_content.rstrip()}\n\n---\n\n{note}\n"
 
         file_path, reused = _export_with_cache(
             user=user, session_id=session_id, target="report",
