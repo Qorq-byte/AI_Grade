@@ -165,13 +165,6 @@ class ExportRequest(BaseModel):
     force: bool = False
 
 
-class QuestionnaireRequest(BaseModel):
-    """问卷生成请求"""
-    session_id: str
-    max_questions: int = Field(default=30, ge=1, le=100)
-    custom_indicator_ids: Optional[List[str]] = None
-
-
 @router.post("/chat", response_model=AgentResponse)
 async def chat_with_agent(request: AgentRequest, user: User = Depends(get_current_user),
                           db: Session = Depends(get_db)):
@@ -2536,6 +2529,10 @@ async def get_module_contents(session_id: str):
 
 # ═══════════════════════════════════════════════════════
 #  问卷 - 开放性问题添加
+# ═══════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════
+#  语言风格更新
 # ═══════════════════════════════════════════════════════
 
 class LanguageStyleRequest(BaseModel):

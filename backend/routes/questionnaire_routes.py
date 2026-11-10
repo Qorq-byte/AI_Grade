@@ -64,20 +64,6 @@ class SubmitQuestionnaireRequest(BaseModel):
     questionnaire_version: str | None = None
 
 
-class QuestionnaireAnswerItem(BaseModel):
-    question_id: str
-    question_text: Optional[str] = None
-    question_type: str = "likert"
-    related_indicator_id: Optional[str] = None
-    related_indicator_name: Optional[str] = None
-    selected_level_index: Optional[int] = None
-    text_answer: Optional[str] = None
-
-class SubmitQuestionnaireRequest(BaseModel):
-    session_id: str
-    answers: List[QuestionnaireAnswerItem]
-    questionnaire_version: str | None = None
-
 def _questionnaire_response(session_id, data):
     return AgentResponse(success=True, data={
         "session_id": session_id, "questionnaire": data["questions"],
@@ -85,9 +71,11 @@ def _questionnaire_response(session_id, data):
         "total_questions": len(data["questions"]), "questionnaire_version": data.get("version"),
     })
 
+
 @router.get("/workflow/{session_id}/questionnaire", response_model=AgentResponse)
 async def get_public_questionnaire(session_id: str):
     return _questionnaire_response(session_id, _published_questionnaire(session_id))
+
 
 @router.post("/workflow/questionnaire/submit")
 async def submit_questionnaire_answers(req: SubmitQuestionnaireRequest, db: Session = Depends(get_db)):
@@ -133,6 +121,7 @@ async def submit_questionnaire_answers(req: SubmitQuestionnaireRequest, db: Sess
     db.add_all(rows)
     db.commit()
     return {"success": True, "data": {"saved": len(rows), "errors": []}, "message": "答卷已保存"}
+
 
 @router.get("/workflow/{session_id}/questionnaire/answers", dependencies=[Depends(_require_path_workflow)])
 async def get_questionnaire_answers(session_id: str):
@@ -208,6 +197,7 @@ async def generate_questionnaire(request: QuestionnaireRequest):
     PerformanceAgent.update_state_backup(session_id, {"questionnaire": published, "questionnaire_history": history})
     _shared_state._QUESTIONNAIRE_CACHE[session_id] = published
     return _questionnaire_response(session_id, published)
+
 
 @router.get("/workflow/questionnaire/list", response_model=AgentResponse)
 async def list_questionnaires(user: User = Depends(get_current_user),
@@ -312,6 +302,7 @@ async def list_questionnaires(user: User = Depends(get_current_user),
         logger.error(f"获取问卷列表失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 def _delete_questionnaire_data(session_id: str, db: Session) -> None:
     from backend.models.user_models import QuestionnaireAnswer
 
@@ -320,6 +311,7 @@ def _delete_questionnaire_data(session_id: str, db: Session) -> None:
     _shared_state._QUESTIONNAIRE_CACHE[session_id] = deleted
     db.query(QuestionnaireAnswer).filter(QuestionnaireAnswer.session_id == session_id).delete()
 
+
 @router.delete("/workflow/questionnaire/{session_id}", response_model=AgentResponse,
                dependencies=[Depends(_require_path_workflow)])
 async def delete_questionnaire(session_id: str, db: Session = Depends(get_db)):
@@ -327,8 +319,10 @@ async def delete_questionnaire(session_id: str, db: Session = Depends(get_db)):
     db.commit()
     return AgentResponse(success=True, data={"session_id": session_id}, message="问卷已删除")
 
+
 class BatchDeleteQRequest(BaseModel):
     session_ids: list[str]
+
 
 @router.post("/workflow/questionnaire/batch-delete", response_model=AgentResponse)
 async def batch_delete_questionnaires(req: BatchDeleteQRequest, user: User = Depends(get_current_user),
@@ -342,11 +336,13 @@ async def batch_delete_questionnaires(req: BatchDeleteQRequest, user: User = Dep
     return AgentResponse(success=True, data={"deleted": len(session_ids), "session_ids": session_ids},
                          message=f"成功删除 {len(session_ids)} 条问卷")
 
+
 class AddOpenQuestionRequest(BaseModel):
     session_id: str
     question_text: str
     related_indicator_id: Optional[str] = None
     related_indicator_name: Optional[str] = None
+
 
 @router.post("/workflow/questionnaire/add-open-question", dependencies=[Depends(_require_body_workflow)])
 async def add_open_ended_question(req: AddOpenQuestionRequest):
@@ -378,4 +374,3 @@ async def add_open_ended_question(req: AddOpenQuestionRequest):
     except Exception as e:
         logger.error(f"添加开放性问题失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
