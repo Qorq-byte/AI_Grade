@@ -6,7 +6,7 @@
 **新对话开场白（直接粘贴）：**
 
 ```
-读 D:/python/AI_Grade/NEXT_STEPS.md，从「批次 29」开始实施。
+读 D:/python/AI_Grade/NEXT_STEPS.md，从「批次 30」开始实施。
 动手前先按第 5 节取基线，改完按第 5 节的五段式交付。
 ```
 
@@ -16,8 +16,8 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `main` / 批次 28 提交，工作区干净 |
-| 已完成批次 | 第三轮 B1–B28（每批都有独立交付章节）+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
+| 分支 / HEAD | `main` / 批次 29 提交，工作区干净 |
+| 已完成批次 | 第三轮 B1–B29（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
 | 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），135 个端点 |
 | 前端 | 零构建，原生 HTML/CSS/JS + `frontend/shared/` |
 | 存储 | MySQL（库 `ai_grade_d`）+ `state_backups/*.json` 磁盘投影 |
@@ -26,12 +26,12 @@
 
 | 检查 | 命令 | 当前 |
 |---|---|---|
-| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **535 passed**（CI 也跑这一条） |
+| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **551 passed**（CI 也跑这一条） |
 | 前端共享层 / SSE | `node --test tests/test_*.cjs` | **48 pass**（5 个文件） |
-| 前端联通性 | `python frontend_e2e_check.py` | **82 通过 / 0 失败** |
+| 前端联通性 | `python frontend_e2e_check.py` | **87 通过 / 0 失败** |
 | 全接口 | `python test_all_apis.py` | **47/47** |
 | 真实工作流 | `python wf_e2e.py` | **47 项 / 0 失败**（约 4~5 分钟，要真实模型） |
-| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
+| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` / `_mutate_step9_critique.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 / 10 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
 | 检索基线 | `python -m tests.rag_eval.run --check` | Recall@3 **0.448**、MRR 0.391、P 0.161 |
 
 ---
@@ -66,7 +66,7 @@
 
 | 编号 | 事项 | 现状 | 判定标准 |
 |---|---|---|---|
-| **B1** | critique-revise（步骤 8/9/10/12/13） | ❌ 未开始。这些步骤目前裸生成 | rubric 自评 + 最多 1 轮修订；**UI 可开关、可看 diff**；成本翻倍要记录 |
+| **B1** | critique-revise（步骤 8/9/10/12/13） | ⚠️ **批次 29 做了步骤 9（换了个做法）**：不用 rubric 自评，改成**确定性漏项补全** —— `consistency.low_score_indicator_names` 算漏了谁、只在真漏时补一次调用、修订过三道闸（不许改丢已点名指标 / 长度 0.8–2.0 / 至少补进一个）。A/B：点名率 **5.9% → 100%**，该步 token **2.33 倍**；真实一轮 14 个低分指标补了 11 个、字数只涨 13.5%。开关 `critique_step9`（启动默认开）、`POST /workflow/set-critique`、`GET /workflow/{id}/step9-critique` 看前后两版。**步骤 8/10/12/13 仍未做** | 见 `progress_round3.md` B29。**遗留**：① 点名率是子串口径，没用自动化判「分析质量」；② 只测了该步成本，全流程总量未测；③ 前端只有徽标与对比面板、**没有开关按钮**；④ 补全可能与既有段落重复，未做去重 |
 | ~~**B2**~~ | ~~步骤间一致性**从「检测」升级为「拦截」**~~ | ✅ **批次 26 已完成**：每条 issue 带 `id`（`CODE#序号`）与 `blocking`，`BLOCKING_CODES` 只放 4 类结构性缺陷（拦太宽用户会学会绕过）；新增 `chapters`（占位句回溯到章节标题）与 `problem_suggestion_coverage`（低分指标未点名，**聚合**一条）两项检查，`CHECKS` 4 → 6；`/workflow/export` 按 `blocking` 拦 409 + `X-Export-Blocked`，`force` 放行且记日志，读不到状态时 **fail-open**；步骤 11 的得分替换从静默 `re.sub` 改为按行判定 + 写入 `warnings` | 见 `progress_round3.md` B26。**遗留**：① 分步导出（`/workflow/export-step`）不受闸门约束；② 覆盖缺口只做子串匹配，78% 这个数字方向可信、量级虚高；③ `LOW_SCORE_RATIO=0.6` 是拍的 |
 | ~~**B3**~~ | ~~质量门禁 `GET /workflow/{id}/quality`~~ | ✅ **批次 27 已完成**：新增 `backend/services/quality.py`，输出「每步字数事实 + 可解释 flags + 无从判断项」，**刻意不打 0–100 分**（取证发现台账一半缺失、一半恒满分，分数既不能排序也不改变行为）。判据：缺步骤/字数低于该步中位数 20%/落地率 <0.5（样本≥5）/标准夹带结论；缺章等结构性缺陷复用 `consistency` 的 blocking，不另起一套。四态 `review`/`partial`/`pass`/`unknown`，不变量 `verified ∩ unavailable == ∅`。`/client/reports` 每条带 `review`（现算 1.2 ms/份 + mtime 缓存，失败降级 `unknown`），`/client` 卡片按四态显示徽标；顺带修掉 `standard_purity` 未落盘（白名单第三次复发） | 见 `progress_round3.md` B27。**遗留**：① 存量 21 份永久 `partial`（历史未落盘）；② 字数阈值是经验值、不分项目类型；③ 只抓"断在半截"，抓不到"写得很空"；④ 质量 warn **不参与导出闸门**，仍是"建议"；⑤ 详情面板没做，接口的每步事实无界面在读 |
 | **B4** | refine 增强 | ❌ 未开始：现在只截 8000 字、无证据注入；`_apply_step_edit` 有 version 但 UI 没接 | 注入本步证据 + 相邻步骤上下文；返回 `diff`/`version`，前端支持预览→采用/丢弃→回滚 |
@@ -209,18 +209,31 @@
 - **留给后续**：① GitHub 侧从未跑过（只能证明本地干净环境全绿）；② runner 上安装耗时未知；
   ③ 没锁 Python/Node 次版本；④ 不做覆盖率与静态检查（现在只会全红）。
 
-### 批次 29 = B1 critique-revise（建议下一批做这个，但**先只做一步**）
-- 五个步骤（8/9/10/12/13）目前裸生成。rubric 自评 + 最多 1 轮修订，**成本翻倍**。
-- **动手前必须先答两个问题**：① 修订真的提升质量吗（要 A/B，不能凭感觉）；
-  ② 成本翻倍换来的东西，用户愿不愿意等。
-- 建议做法：先只做步骤 9（问题分析）——它同时被 B26 的覆盖缺口检查依赖（低分指标有没有被点名），
-  改完可以用 `problem_suggestion_coverage` 的命中率做客观指标，不用靠人读。
-- 判定：同一份输入跑 6 次 A/B，看 ①低分指标点名率 ②字数 ③`no_evidence_scored` 占比 ④token 成本；
-  **四项都要贴数字**，不许只说"看起来更好"。
-- **风险**：critique-revise 很容易变成"用两倍成本换来更啰嗦的正文"。B20/B21/B22 三次都在删冗余，
-  这一批如果反向增加字数，要能解释为什么值得。
+### 批次 29 = B1 步骤 9 的漏项补全 ✅ 已完成
+- 交付见 `progress_round3.md` 的 B29。**做法与交接文档不同**：不是 rubric 自评，
+  而是「程序算漏了谁 → 只在真漏时补一次 → 三道闸」。
+- A/B（2 轮，deepseek-chat）：点名率 **5.9% → 100%**、字数 1.53 倍、该步 token **2.33 倍**、0 次被拒。
+  人工抽检确认不是"名字刷分"：17 个指标名各出现 2–4 次，最多 1 次在汇总表里。
+- 真实端到端（`b5429ee4`）：14 个低分指标**补了 11 个**，字数只涨 **13.5%**（缺口小时膨胀也小）。
+- 回归：`pytest 531 → 551`、`frontend_e2e 82 → 87`、变异 **10/10**（第一轮 9/1，
+  漏的那条是我的断言把 JSON 转义当成了"没泄漏"，已改成递归查数据）。
+- **留给后续**：① 点名率是子串口径；② 全流程成本未测；③ **前端没有开关按钮**；
+  ④ 补全内容可能与既有段落重复（未做去重）；⑤ 步骤 10 同样有覆盖缺口（134/167）。
 
-### 批次 30（备选）：B7 模型调用韧性（降级链 + 分级超时）
+### 批次 30 = 步骤 10 复用同一机制 + 补上开关按钮（建议下一批做这个）
+- **为什么是它**：批次 29 的机制是通用的（算漏项 → 补一次 → 过闸），步骤 10 的
+  `SUGGESTION_COVERAGE_GAP` 就是同一个缺口（134/167 未点名）。复用成本很低。
+- **要做的**：
+  1. 把 `_complete_missing_indicators` 参数化到步骤 9/10（文案与提示词分开，闸门共用）；
+  2. 前端在步骤 9/10 面板加**开关按钮**（调 `set-critique`），把 B29.5 第 5 条闭环；
+  3. `/status` 里 `step9_critique` 改成按步骤的 `critique` 字典（**向后兼容**：保留旧键）。
+- **判定**：① 步骤 10 的 A/B 四项指标（点名率/字数/token/被拒）与 B29 同表格式；
+  ② 开关按钮点一下能把 `critique_step10` 真正关掉（用例 + 联调各一条）；
+  ③ 步骤 9 的既有用例全绿，证明参数化没改坏。
+- **风险**：建议正文的"点名"比问题分析更容易变成口号（「加强成本控制」配指标名）。
+  若 A/B 显示字数涨得多而人读着空，就要**回退这一步**，别为了覆盖率把建议写成套话。
+
+### 批次 31（备选）：B7 模型调用韧性（降级链 + 分级超时）
 - 现状：usage 优先上游、无 usage 标 `estimated` 已完成；**降级链与分级超时未做**。
 - 判定：429/超时/5xx 按配置降级；每次调用记录 attempt/model/latency/tokens；普通 120 s、长文 300 s。
 - 这一项不能靠单测证明，要故障注入（改 base_url 指向一个必超时的地址）。
@@ -251,7 +264,7 @@ NO_PROXY='*' .venv/Scripts/python.exe -c "import backend.main"                  
 ```bash
 NO_PROXY='*' HTTP_PROXY= HTTPS_PROXY= .venv/Scripts/python.exe -m uvicorn backend.main:app --port 8000
 NO_PROXY='*' .venv/Scripts/python.exe test_all_apis.py        # 47/47
-NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 82/0
+NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 87/0
 ```
 
 ---
@@ -272,6 +285,7 @@ NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 82/0
 | **模型输出直接进报告 = 报告里会有机器格式** | 报告章节是「步骤原文直拼」的：`indicator_analysis` / `evaluation_table` 都是模型原始输出。只要那一步契约里有 JSON，JSON 就会出现在报告里（B21 清掉步骤 6 的副本、B22 才清掉步骤 7 的评分块，两次都是「先发现报告里有裸 JSON，再回头找谁拼的」）。新增任何「带结构化输出的步骤」时，**先确认它的原文会不会被拼进报告**，会的话落盘时就拆开 |
 | **后台任务要持引用，关闭时要 await** | `asyncio.create_task()` 返回的任务只被事件循环弱引用，不存起来就有被 GC 的风险；只 `cancel()` 不 `await` 等于把清理逻辑砍在半路。B23 的写法：模块级 `_CLEANUP_TASK` + 命名 + 幂等启动 + `cancel()` 后 `await`（吞掉 `CancelledError`），并放在 lifespan 的 `finally` 里 |
 | **备份是字段白名单（已复发三次）** | `_persist_state_backup` 只写 `fields` 里的键。新增状态字段必须同步加进白名单，否则重启后只看到症状、看不到原因。三次复发：`score_disposition`、`truncated_steps`、**`standard_purity`（批次 27 才发现，38 份备份 0 份有值）**。→ 新增字段时的检查项不是「我加了吗」，而是**「写一条落盘用例」**——三次都是靠用例才发现的 |
+| **断言"没泄漏"别对 JSON 字符串做** | 批次 29 的用例写成 `assert TEXT not in json.dumps(payload)`——JSON 会把换行转义成 `\n`，任何多行文本都"不在"序列化结果里，**这条断言永远为真**。变异测试把接口改成"把全文也吐出来"，用例照样绿。→ 要断言"某段内容没有出现在响应里"，必须递归查**解析后的值**（`_contains_text` 那种写法），或者直接断言"某个键不存在" |
 | **用例会靠环境才绿** | `test_startup_still_initializes_db` 替掉了 `init_db` 却漏了紧接着的 `SessionLocal()`：本机有 MySQL 时它真连上了库、用例通过；CI 把 `MYSQL_PORT` 指到 1 之后立刻红。→ **凡是"启动/初始化"类用例，要替的不是一个函数，而是那条链路上所有会碰外部资源的东西**；判断办法只有一个：在一个没有该外部环境的机器（或容器）上跑一遍。批次 28 加 CI 之后，这类假绿会自动暴露 |
 | **`step_results` 的键在备份里是字符串** | 落盘 `json.dump` 把 int 键变成 str，`load_state_backup` 原样返回。按 int 直接 `.get(step)` 会**全部取不到**，而且不报错、只是静默返回空（批次 27 的探针第一版对 38 份备份一律输出「无样本」就是这个原因）。→ 遍历备份里的 `step_results` 必须 `int(key)`；`_get_workflow_values` 已经在做，新写的读取方别绕开它 |
 | **一个状态值不要覆盖两种事实** | 批次 27 初版把「有台账的项都过了、其余无从判断」和「一条判据都没跑」都叫 `unknown`，回放发现 55% 的存量落进前者——徽标对一半以上的报告等于没信息。→ 状态枚举按**用户下一步动作**分，不按内部逻辑分：`review`（要人看）/`partial`（部分没查）/`pass`（都查了）/`unknown`（啥也没查）。合并起来实现更省事，用起来等于没做 |
