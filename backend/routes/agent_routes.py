@@ -162,6 +162,8 @@ class ExportRequest(BaseModel):
     project_name: Optional[str] = None
     step_number: Optional[int] = None
     step_content: Optional[str] = None
+    #: 用户已知报告有缺章仍要导出时置 True（导出闸门放行，但记录一条日志）
+    force: bool = False
 
 
 class QuestionnaireRequest(BaseModel):
@@ -1570,6 +1572,29 @@ async def download_export_file(file_name: str, user: User = Depends(get_current_
     )
 
 
+def _export_blockers(session_id: str) -> list:
+    """导出前必须处理的问题（缺章、步骤没跑完、报告过短……）。
+
+    读不到工作流状态时返回空 —— 闸门只对「能看见状态」的会话生效，
+    不能因为状态丢了就谁都不许导出（那是比缺章更糟的故障）。
+    """
+    from backend.services import consistency
+
+    try:
+        values = _get_workflow_values(session_id)
+    except HTTPException:
+        return []
+    except Exception:
+        logger.exception(f"导出前一致性检查失败，放行: {session_id}")
+        return []
+    try:
+        report = consistency.check_consistency(values)
+    except Exception:
+        logger.exception(f"一致性检查异常，放行: {session_id}")
+        return []
+    return [item for item in report.get("issues", []) if item.get("blocking")]
+
+
 @router.post("/workflow/export", response_model=AgentResponse, dependencies=[Depends(_require_body_workflow)])
 async def export_workflow_report(request: ExportRequest, user: User = Depends(get_current_user),
                                  db: Session = Depends(get_db)):
@@ -1611,6 +1636,19 @@ async def export_workflow_report(request: ExportRequest, user: User = Depends(ge
         project_name = request.project_name or stored_project_name
         if not report_content:
             raise HTTPException(status_code=400, detail="报告内容为空，请确认工作流已完成")
+
+        # 导出闸门：结构性缺陷（缺章/步骤没跑完/报告过短）先拦一次。
+        # force 是明确的「我知道，仍然导出」—— 没有它，缺一章的会话就彻底导不出去了。
+        if not request.force:
+            blockers = _export_blockers(session_id)
+            if blockers:
+                detail = "报告还不能导出：" + "；".join(
+                    f"{item['id']} {item['message']}" for item in blockers[:3]
+                ) + "。确认要导出请选择「仍要导出」。"
+                raise HTTPException(status_code=409, detail=detail,
+                                    headers={"X-Export-Blocked": "1"})
+        elif _export_blockers(session_id):
+            logger.warning(f"报告存在结构性缺陷，用户强制导出: {session_id}")
 
         file_path, reused = _export_with_cache(
             user=user, session_id=session_id, target="report",

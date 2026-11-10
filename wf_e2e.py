@@ -193,8 +193,12 @@ def main():
     check("POST workflow/save-report", d.get("success"), str(d)[:150])
 
     # 6. 导出Word（客户端导出按钮 → /api/agent/download）
+    # 上一步刻意存了一份 30 字短桩报告，导出闸门会以「报告过短」拦下（批次 26）。
+    # 这里验的是导出→下载链路本身，所以显式 force；闸门由
+    # tests/test_consistency_export_gate.py 单独覆盖。
     r = req("POST", "/api/agent/workflow/export", token=token,
-            json_body={"session_id": session_id, "format": "word", "project_name": project_name})
+            json_body={"session_id": session_id, "format": "word", "project_name": project_name,
+                       "force": True})
     d = bof(r)
     ok = d.get("success") and d.get("data", {}).get("file_name")
     check("POST export word", ok, str(d)[:200])
@@ -206,7 +210,8 @@ def main():
 
     # 7. 导出PDF（应返回真实 .pdf 文件）
     r = req("POST", "/api/agent/workflow/export", token=token,
-            json_body={"session_id": session_id, "format": "pdf", "project_name": project_name})
+            json_body={"session_id": session_id, "format": "pdf", "project_name": project_name,
+                       "force": True})
     d = bof(r)
     pdf_name = d.get("data", {}).get("file_name", "") if d.get("success") else ""
     ok = bool(pdf_name) and pdf_name.lower().endswith(".pdf")
@@ -262,9 +267,10 @@ def main():
     report = (d.get("data") or {}).get("consistency") or {}
     check("GET status 带 steps一致性检查结果",
           bool(report.get("checked")), f"codes={[i.get('code') for i in report.get('issues', [])]}")
-    check("一致性检查覆盖四类检查项",
+    check("一致性检查覆盖六类检查项",
           report.get("checked") == ["indicator_allocation", "score_summary",
-                                    "report_text", "steps_and_coverage"],
+                                    "report_text", "chapters",
+                                    "problem_suggestion_coverage", "steps_and_coverage"],
           str(report.get("checked")))
     log(f"一致性结论：错误 {report.get('error_count')} 项 / 提示 {report.get('warning_count')} 项")
 
