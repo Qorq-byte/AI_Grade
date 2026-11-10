@@ -143,6 +143,8 @@ class WorkflowRequest(BaseModel):
     temperature_profile: Optional[str] = "normal"
     language_style: Optional[str] = "中立"
     indicator_type: Optional[str] = "项目支出指标体系"  # 指标体系类型（6种可选）
+    #: 步骤 9 的「漏项补全」：A/B 实测点名率 6% → 100%，代价是该步 token 2.3 倍（批次 29）
+    critique_step9: bool = True
 
 
 class ApproveRequest(BaseModel):
@@ -802,7 +804,8 @@ async def start_workflow_stream(request: WorkflowRequest, user: User = Depends(g
         "require_approval": request.require_approval,
         "uploaded_files": [],
         "indicator_type": request.indicator_type or "项目支出指标体系",
-        "step_control": {"language_style": request.language_style or "中立"},
+        "step_control": {"language_style": request.language_style or "中立",
+                         "critique_step9": bool(getattr(request, "critique_step9", True))},
     }
 
     progress_bus.begin(session_id)
@@ -1093,7 +1096,8 @@ async def start_workflow(request: WorkflowRequest, user: User = Depends(get_curr
             "use_rag": request.use_rag,
             "require_approval": request.require_approval,
             "indicator_type": request.indicator_type or "项目支出指标体系",
-            "step_control": {"language_style": request.language_style or "中立"},
+            "step_control": {"language_style": request.language_style or "中立",
+                         "critique_step9": bool(getattr(request, "critique_step9", True))},
         }
         _WORKFLOW_PROGRESS[session_id] = {"status": "running", "last_step": 0, "step_results": {}}
         try:
@@ -1184,6 +1188,9 @@ async def get_workflow_status(session_id: str, db: Session = Depends(get_db), af
         # 步骤 7 逐指标评分处置台账：区分「已落地 / 模型判定资料不足 / 引用无法定位 / 未提及」
         # 老会话（本字段上线前跑的）没有这项，返回空对象，前端不展示徽标
         "score_disposition": values.get("score_disposition", {}) or {},
+        # 步骤 9 的漏项补全台账（只有台账：名字列表 + 结果，约几百字节）。
+        # 前后两版正文走 `/workflow/{id}/step9-critique`，不进轮询接口。
+        "step9_critique": values.get("step9_critique", {}) or {},
     })
 
 
@@ -2806,6 +2813,56 @@ async def add_open_ended_question(req: AddOpenQuestionRequest):
 class LanguageStyleRequest(BaseModel):
     session_id: str
     language_style: str = "中立"
+
+
+class CritiqueSwitchRequest(BaseModel):
+    session_id: str
+    enabled: bool = True
+
+
+@router.post("/workflow/set-critique", dependencies=[Depends(_require_body_workflow)])
+async def set_critique(req: CritiqueSwitchRequest):
+    """开关步骤 9 的「漏项补全」。
+
+    默认是开的（启动接口里 `critique_step9=True`）：A/B 实测点名率 6% → 100%，
+    代价是该步 token 约 2.3 倍。关掉它的场景只有一个 —— 用户自己知道这份报告
+    不需要那么细，想省一半钱。
+    """
+    try:
+        values = _get_workflow_values(req.session_id)
+        sc = values.get("step_control", {})
+        sc["critique_step9"] = bool(req.enabled)
+        _persist_state(req.session_id, {"step_control": sc})
+        return {"success": True, "data": {"critique_step9": bool(req.enabled)},
+                "message": f"步骤 9 漏项补全已{'开启' if req.enabled else '关闭'}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"设置漏项补全失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/workflow/{session_id}/step9-critique", dependencies=[Depends(_require_path_workflow)])
+async def get_step9_critique(session_id: str):
+    """步骤 9 补全的台账 + 前后两版正文（前端做 diff 用）。
+
+    为什么不塞进 `/status`：`/status` 是轮询接口，每次多带 1 万字正文会把 5 秒一次的
+    兜底轮询变成流量黑洞。要看 diff 的人主动调这一个即可。
+    """
+    try:
+        values = _get_workflow_values(session_id)
+        ledger = values.get("step9_critique") or {}
+        return {"success": True, "data": {
+            "ledger": ledger,
+            "before": values.get("problems_analysis_pre_critique") or "",
+            "after": values.get("problems_analysis") or "",
+            "changed": bool(ledger.get("revised")),
+        }}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"读取漏项补全结果失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/workflow/set-language-style", dependencies=[Depends(_require_body_workflow)])
