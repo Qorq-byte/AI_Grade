@@ -64,6 +64,20 @@ class SubmitQuestionnaireRequest(BaseModel):
     questionnaire_version: str | None = None
 
 
+class QuestionnaireAnswerItem(BaseModel):
+    question_id: str
+    question_text: Optional[str] = None
+    question_type: str = "likert"
+    related_indicator_id: Optional[str] = None
+    related_indicator_name: Optional[str] = None
+    selected_level_index: Optional[int] = None
+    text_answer: Optional[str] = None
+
+class SubmitQuestionnaireRequest(BaseModel):
+    session_id: str
+    answers: List[QuestionnaireAnswerItem]
+    questionnaire_version: str | None = None
+
 def _questionnaire_response(session_id, data):
     return AgentResponse(success=True, data={
         "session_id": session_id, "questionnaire": data["questions"],
@@ -74,4 +88,49 @@ def _questionnaire_response(session_id, data):
 @router.get("/workflow/{session_id}/questionnaire", response_model=AgentResponse)
 async def get_public_questionnaire(session_id: str):
     return _questionnaire_response(session_id, _published_questionnaire(session_id))
+
+@router.post("/workflow/questionnaire/submit")
+async def submit_questionnaire_answers(req: SubmitQuestionnaireRequest, db: Session = Depends(get_db)):
+    from backend.models.user_models import QuestionnaireAnswer
+
+    current = _published_questionnaire(req.session_id)
+    history = PerformanceAgent.load_state_backup(req.session_id).get("questionnaire_history", [])
+    versions = [current, *reversed(history)]
+    if req.questionnaire_version:
+        versions = [item for item in versions if item.get("version") == req.questionnaire_version]
+    questions = {}
+    for version in versions:
+        for question in version.get("questions", []):
+            questions.setdefault(question.get("question_id") or question.get("id"), question)
+
+    seen = set()
+    rows = []
+    for answer in req.answers:
+        question = questions.get(answer.question_id)
+        if not question or answer.question_id in seen:
+            raise HTTPException(status_code=422, detail="答卷包含未知或重复题目，请重新加载问卷")
+        seen.add(answer.question_id)
+        kind = question.get("question_type") or answer.question_type
+        index = answer.selected_level_index
+        if kind == "likert":
+            if index is None:
+                continue
+            if not 0 <= index < len(question.get("scale_levels") or range(5)):
+                raise HTTPException(status_code=422, detail="量表选项超出范围")
+        elif not (answer.text_answer or "").strip():
+            continue
+        rows.append(QuestionnaireAnswer(
+            session_id=req.session_id, question_id=answer.question_id,
+            question_text=question.get("question_text") or question.get("question") or answer.question_text,
+            question_type=kind, related_indicator_id=question.get("related_indicator_id"),
+            related_indicator_name=question.get("related_indicator_name"),
+            selected_level_index=index if kind == "likert" else None,
+            text_answer=answer.text_answer if kind != "likert" else None,
+            submitted_at=datetime.now(timezone.utc),
+        ))
+    if not rows:
+        raise HTTPException(status_code=422, detail="请至少回答一道题")
+    db.add_all(rows)
+    db.commit()
+    return {"success": True, "data": {"saved": len(rows), "errors": []}, "message": "答卷已保存"}
 
