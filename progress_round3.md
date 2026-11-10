@@ -5162,3 +5162,157 @@ _shared_state.py                     43
 7. **`active_workflows` / `active_workflow_configs` 仍是 `agent_routes` 的模块级字典**，
    新模块按名字导入了它们。当前没有测试 rebind 这两个名字，所以没出问题 ——
    但它们迟早要进 `_shared_state`，届时会再碰一次"按模块访问"的坑。
+
+---
+
+# 批次 34：抽 `_workflow_deps` + 搬「导出」域（C1 第二步）
+
+> 批次 33 把问卷域搬出去时，新模块还反过来从 `agent_routes` 导了 6 个符号。
+> 这次先把**依赖**抽成独立模块，再搬第二个域 —— 顺序反过来，第三个域就不会
+> 把 `agent_routes` 变成"所有域的公共依赖库"。
+
+## B34.1 起点：三个数先摆出来，其中一个和目标对不上
+
+改动前实测（不是估算）：
+
+| 取证 | 命令 | 结果 |
+|---|---|---|
+| 子域反向依赖 | `rg "from backend.routes.agent_routes import" backend/routes/` | **5 处**（admin 2、client 2、questionnaire 1） |
+| 可变状态的 patch 点 | `rg "agent\.active_workflows\|agent\.active_workflow_configs\|agent\._WORKFLOW_PROGRESS" tests/` | **7 行**；`monkeypatch.setattr(agent, ...)` 共 **17 处**，散在 **7 个测试文件** |
+| 导出域体量 | 按函数逐个数行 | **307 行**：`/workflow/export` 85、`/workflow/export-step` 70、`/download/{file_name}` 28、`_export_with_cache` 28、`_fallback_note` 30、`_safe_fallback_note` 14、`_export_blockers` 21、`_export_base_dir` 2、模型与段落 banner 29 |
+| 依赖体量 | 同上 | **91 行**：`AgentResponse` 7、`_owned_workflows` 5、三个 `_require_*` 27、`_get_workflow_values` 24、`_persist_state` 15、banner 与空行 13 |
+
+**先说一处对不上的地方**：`agent_routes.py` 3,369 行，判定 ④ 要求降到 **2,600** 行以内，
+等于要搬走 **769 行**；而「导出」域只有 **307 行**，加上依赖 91 行也才 398。
+**判定 ④ 在本批的定义范围内数学上不可达** —— 没有为了凑数去搬别的域，也没有偷偷改判据，
+真实结果与取舍见 B34.5 第 1 条。
+
+## B34.2 做法
+
+### 1）`_shared_state.py` 接管可变状态（43 → 52 行）
+
+```python
+active_workflows: Dict[str, PerformanceAgent] = {}
+active_workflow_configs: Dict[str, dict] = {}
+_WORKFLOW_PROGRESS = progress_bus.PROXY
+```
+
+`_WORKFLOW_PROGRESS` 本来就是 `progress_bus.PROXY`（每次操作重新解析 `PROGRESS`），
+搬到 `_shared_state` 后语义不变，只是所有权换了个地方。
+
+**一律按模块访问**：`agent_routes` 里 44 处引用（`active_workflows` 17、`active_workflow_configs` 11、
+`_WORKFLOW_PROGRESS` 16）全部改成 `_shared_state.X`；`client_routes` / `admin_routes` /
+`questionnaire_routes` / `export_routes` 同样。这不是洁癖 —— 批次 33 的坑表已经写过：
+按名字导入绑定的是**导入那一刻的对象**，测试 rebind 后新模块手里还是旧 dict。
+
+### 2）`_workflow_deps.py`（新增 118 行）
+
+搬了 6 个符号，函数体**逐字照抄**（唯一改动是 `active_workflows` → `_shared_state.active_workflows`，
+已用脚本逐字比对，见 B34.3）：
+
+```
+AgentResponse
+_owned_workflows
+_require_workflow / _require_path_workflow / _require_body_workflow
+_get_workflow_values / _persist_state
+```
+
+本模块**不 import 任何路由模块**，有用例守着（`test_workflow_deps_does_not_depend_on_agent_routes`）。
+
+### 3）`export_routes.py`（新增 370 行）
+
+搬了 3 个端点 + 4 个辅助 + 2 个请求模型，`main.py` 加一行
+`include_router(export_router, prefix="/api/agent", tags=["导出"])`。
+
+**唯一保留的一处反向依赖是「报告读取」**：`_read_report` / `_report_review_steps`
+属于还没搬的「报告」域，`export_routes` 用 `from backend.routes import agent_routes as _agent_routes`
+**按模块调用**，外面再包一层同名转发函数。这样做有两个原因：
+
+1. 按名字导入会把测试的 patch 点搬到一个没人调用的副本上 ——
+   `test_b7_enablement` 里 `monkeypatch.setattr(agent, "_report_review_steps", ...)` 会静默失效；
+2. 字面量 `rg "from backend.routes.agent_routes import"` 因此是 **0** 处，
+   但依赖本身诚实地留在代码里，不靠改判据隐藏。
+
+### 4）路由快照：deps 口径从「模块名+函数名」改成「函数名」
+
+搬依赖必然改 `__module__`，旧口径下 148 条里有一批会"假红"。
+`diff()` 现在只比函数名（`_dep_names()`），丢依赖、换成另一个函数仍然抓得住，
+并补了两条用例把这条口径钉死（`test_dependency_moving_between_modules_is_not_a_diff` /
+`test_dependency_replaced_by_another_function_is_detected`）。
+
+## B34.3 验证
+
+**改前红**（先写用例再动实现）：
+
+```
+ERROR tests/test_route_split_34.py
+E   ImportError: cannot import name '_workflow_deps' from 'backend.routes'
+```
+
+**「只搬代码」的机器证据**（不是靠眼看）：把 HEAD 的导出块与依赖函数逐字取出来，
+只归一化 `_shared_state.` 前缀后与新文件比对，**7/7 全部逐字一致**
+（导出块 307 行 + 6 个依赖函数）。`if` 条件一处未变。
+
+**路由快照**：
+
+```
+PASS 路由快照零差异（148 条）
+```
+
+（比对的是 `.backup/routes_before.json`，即批次 33 之前那份，没有重建基线。）
+
+**全量回归**：
+
+| 检查 | 改前 | 改后 |
+|---|---|---|
+| `pytest tests --ignore=tests/rag_eval` | 630 passed | **641 passed**（+11） |
+| `node --test tests/test_*.cjs` | 48 pass | **48 pass** |
+| `python -m tests._route_snapshot --compare .backup/routes_before.json` | 148 零差异 | **148 零差异** |
+| `test_all_apis.py` | 47/47 | **47/47** |
+| `frontend_e2e_check.py` | 98/0 | **98/0** |
+| `wf_e2e.py` | 47/0 | **47/0** |
+| 变异脚本 | 21 个 | **22 个**；新增 `_mutate_workflow_deps.py` **11/11** |
+
+新增 11 条用例：`test_route_split_34.py` 8 条（反向依赖归零、依赖模块不反向 import、
+三个导出端点的归属、相邻端点没被顺手搬走、rebind 后读方可见、`_persist_state` 走共享进度）、
+`test_route_snapshot.py` 2 条（deps 口径）、`test_engineering_regressions.py` 1 条（下载口只发 `.pdf/.docx`）。
+
+**变异第一轮 10/11，漏了一条**：把 `/download` 的扩展名检查改成 `if False:`，86 条用例全绿 ——
+说明"下载口只发导出件"这件事**从来没有用例守着**。按纪律先补用例
+（`test_download_refuses_files_that_are_not_export_artifacts`：导出目录里放一个 `secret.txt`，
+必须 404），再重跑，第二轮 **11/11**。
+
+## B34.4 回滚
+
+- 代码：`git revert` 本批提交。三个新文件删除，`agent_routes` 的 44 处
+  `_shared_state.X` 改回模块级名字，导出端点回到原文件。
+- 数据：无。`active_workflows` 等是进程内状态，重启即空。
+- 判据：回滚后 `pytest` 回到 630（新用例随文件一起删）、路由快照与
+  `.backup/routes_before.json` 仍零差异（口径改动随 `_route_snapshot.py` 一起回滚）。
+
+## B34.5 剩余风险与未验证项（诚实列出）
+
+1. **判定 ④（≤2,600 行）未达成：实际 2,961 行**。原因是判据里的数字比真实域体量乐观：
+   导出域只有 307 行，而目标要求搬走 769 行。要真的降到 2,600，必须再搬一个域 ——
+   体量最接近的是「报告」域（`_read_report` / `_assemble_report_*` / `/report` /
+   `/save-report` / `/report-order` / `/assemble-report` / `/format-check` /
+   模块增删改，合计约 300 行）加「指标评分」域（约 350 行）。**建议作为批次 35**，
+   本批不顺手做（两个域一起搬，出问题时定位成本翻倍）。
+2. **`export_routes` 与 `agent_routes` 之间还有一条模块级依赖**（报告读取）。
+   字面 `rg` 为 0 处，但依赖真实存在；等「报告」域搬走才彻底断掉。
+   这也是为什么本批没有把 `_read_report` 一起搬 —— 它会拖走两个报告拼装函数。
+3. **快照的 deps 口径放宽了**：现在只比函数名。同一个函数名换了实现模块不会被发现
+   （例如把 `_require_path_workflow` 换成另一个模块里的同名函数）。
+   丢依赖、换名字仍然抓得住；行为层面的兜底是 `test_private_workflow` 那 10 条 404/403 用例。
+4. **每搬一次可变状态，测试就要跟着改一批 patch 点**：本批改了 7 个测试文件、17 处
+   `monkeypatch.setattr`。这是拆分的固定成本，不是"改测试迁就实现"——所有权确实搬家了。
+   下一批（报告域）**不会**再动状态，成本应该小一些。
+5. **`agent_routes` 里仍有 9 个未使用的导入/全局**（`hashlib`、`shutil`、`Field`、
+   `AsyncGenerator`、`QuestionnaireGenerator`、`generate_default_questionnaire`、
+   `_QUALITY_RULES`、`_STYLE_INSTRUCTIONS`）。它们是本批之前就有的，没顺手删 ——
+   删导入不改变行为，但会让"只搬代码"的 diff 里混进无关改动。
+6. **`wf_e2e` 覆盖不到导出域的边界**：它跑的是真实工作流与报告生成，
+   导出只到"能导出"这一层；`force` / 闸门 / 幂等缓存的组合仍只有单测覆盖。
+7. **没有做 OpenAPI schema 深比较**（批次 33 遗留项，仍在）。
+   端点搬走后 `response_model` 名称没变，但 schema 的 `$ref` 指针会指向新模块，
+   理论上客户端生成代码会变 —— 本批没验。

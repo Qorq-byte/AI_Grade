@@ -16,8 +16,8 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `main` / 批次 33 提交，工作区干净 |
-| 已完成批次 | 第三轮 B1–B33（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
+| 分支 / HEAD | `main` / 批次 34 提交，工作区干净 |
+| 已完成批次 | 第三轮 B1–B34（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
 | 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），135 个端点 |
 | 前端 | 零构建，原生 HTML/CSS/JS + `frontend/shared/` |
 | 存储 | MySQL（库 `ai_grade_d`）+ `state_backups/*.json` 磁盘投影 |
@@ -26,12 +26,12 @@
 
 | 检查 | 命令 | 当前 |
 |---|---|---|
-| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **630 passed**（CI 也跑这一条） |
+| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **641 passed**（CI 也跑这一条） |
 | 前端共享层 / SSE | `node --test tests/test_*.cjs` | **48 pass**（5 个文件） |
 | 前端联通性 | `python frontend_e2e_check.py` | **98 通过 / 0 失败** |
 | 全接口 | `python test_all_apis.py` | **47/47** |
 | 真实工作流 | `python wf_e2e.py` | **47 项 / 0 失败**（约 4~5 分钟，要真实模型） |
-| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` / `_mutate_step9_critique.py` / `_mutate_critique_step10.py` / `_mutate_llm_resilience.py` / `_mutate_b7_enablement.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 / 10 / 7 / 11 / 8 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
+| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` / `_mutate_step9_critique.py` / `_mutate_critique_step10.py` / `_mutate_llm_resilience.py` / `_mutate_b7_enablement.py` / `_mutate_workflow_deps.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 / 10 / 7 / 11 / 8 / 11 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
 | 检索基线 | `python -m tests.rag_eval.run --check` | Recall@3 **0.448**、MRR 0.391、P 0.161 |
 
 ---
@@ -78,7 +78,7 @@
 
 | 编号 | 事项 | 现状 | 判定标准 |
 |---|---|---|---|
-| **C1** | 拆 `agent_routes.py` | ⚠️ **批次 33 拆了第一个域（问卷）**：先抽 `_shared_state.py`（会话校验 + 问卷缓存 + 读取口径），再把 8 个问卷端点搬进 `questionnaire_routes.py`；3719 → 3369 行。`tests/_route_snapshot.py` 证明 148 条路由零差异（工具本身另有 6 条用例） | 见 `progress_round3.md` B33。**远未完成**：① 还剩约 127 个端点、8–10 个域；② 新模块仍从 `agent_routes` 导 6 个符号（应抽 `_workflow_deps`）；③ 快照不覆盖依赖内部行为与 OpenAPI schema；④ 每搬一次状态就有一批测试要改 patch 位置 |
+| **C1** | 拆 `agent_routes.py` | ⚠️ **批次 33 拆问卷域，批次 34 抽依赖 + 拆导出域**：新增 `_workflow_deps.py`（118 行）与 `export_routes.py`（370 行），可变状态（`active_workflows` / `active_workflow_configs` / `_WORKFLOW_PROGRESS`）搬进 `_shared_state` 并全部改按模块访问；3719 → **2961** 行，反向依赖 **5 → 0 处**（`export_routes` 仍按模块调用报告读取，字面量已为 0） | 见 `progress_round3.md` B34。**判定 ④（≤2600）未达成**：导出域只有 307 行，目标却要求搬 769 行 —— 差 361 行需要再搬一个域。**遗留**：① 还剩约 119 个端点、7–9 个域；② 快照 deps 口径改成只比函数名（搬依赖不再假红，同名换实现不再能抓）；③ 快照不覆盖依赖内部行为与 OpenAPI schema；④ 每搬一次状态就有一批测试要改 patch 位置（本批 17 处） |
 | **C2** | 进度 / 检查点持久化 | ❌ `REDIS_URL` 只在 config 里躺着；`MemorySaver` 仍是进程内 | 多 worker 与重启续跑成立；做不到就继续在启动日志与文档里**明确写单 worker** |
 | ~~**C3**~~ | ~~写放大治理~~ | ✅ **批次 25 已完成**：`step_results` 占备份体积 **64%**，其中 83% 是可证明的重复（`raw_outputs` 与 `content` 逐字相同占 47% 且无人读、`content` 与独立字段逐字相同占 37%）。新增 `backend/services/state_backup.py` 做「写时压缩 / 读时还原」，读入口单点 `load_state_backup` 返回形状不变、20+ 处调用方一行未改；存量 36 个会话 **22.1 MB → 9.7 MB（44%）**，备份/报告 **8.3x → 3.3x**，单会话总写入 **3,503 → 1,597 KB** | 见 `progress_round3.md` B25。**遗留**：①「≤ 报告 1.2 倍」不可达（其余 51% 是重启续跑必需的中间产物），判定标准应改为「可观测重复 == 0」；② 写放大**倍数**未降（5.7x → 6.3x，分子分母同步缩小），要降到 1.0x 得改增量/日志式落盘 |
 | **C4** | 可观测 | ❌ 无 `/metrics`；日志非结构化 | `/metrics` 覆盖步骤耗时/LLM 失败率/token/SSE 连接数；日志带 `request_id/session_id/step/user` |
@@ -262,27 +262,40 @@
 - **留给后续**：① 还剩 127 个端点；② 应抽 `_workflow_deps.py` 断掉反向依赖；
   ③ 快照不覆盖依赖内部行为/OpenAPI；④ `active_workflows` 迟早也要搬。
 
-### 批次 34 = C1 第二步：抽 `_workflow_deps` + 搬「导出」域（建议下一批做这个）
-- **为什么先抽依赖**：现在每个新域都要 `from backend.routes.agent_routes import ...` 六个符号。
-  不先断掉，拆到第 3 个域时 `agent_routes` 会变成"所有域的公共依赖库"，反而更乱。
-- **要做的**：
-  1. 新建 `backend/routes/_workflow_deps.py`：`AgentResponse`、`_get_workflow_values`、
-     `_persist_state`、`_require_body_workflow`、`_require_path_workflow`、`_require_workflow`、
-     `_owned_workflows`、`active_workflows`、`active_workflow_configs`、`_WORKFLOW_PROGRESS`；
-  2. 把 `active_workflows` 等**可变状态放 `_shared_state`**（按模块访问，别再按名字导入）；
-  3. 搬「导出」域（`/workflow/export`、`/workflow/export-step`、`/download/{file_name}`、
-     `_export_with_cache`、`_fallback_note`、`_safe_fallback_note`）到 `export_routes.py`。
-- **判定**：① 快照零差异（148 条）；② `pytest 630` 全绿；③ `rg "from backend.routes.agent_routes import" backend/routes/` 只剩 0–1 处；
-  ④ `agent_routes.py` 降到 2,600 行以内。
-- **风险**：`active_workflows` 搬迁会**再碰一次测试 patch 位置**（B33.5 第 5/7 条）。
-  搬之前先 `rg "agent.active_workflows"` 数一遍，别等到用例红了才发现有 10 处。
+### 批次 34 = C1 第二步：抽 `_workflow_deps` + 搬「导出」域 ✅ 已完成
+- 交付见 `progress_round3.md` 的 B34。新增 `_workflow_deps.py`（118 行）与
+  `export_routes.py`（370 行）；`active_workflows` / `active_workflow_configs` /
+  `_WORKFLOW_PROGRESS` 进 `_shared_state`，全仓 44 处改按模块访问。
+- 路由快照 **148 条零差异**（比对的是批次 33 之前那份，没重建基线）；
+  反向依赖 **5 → 0 处**；`agent_routes` 3369 → **2961** 行。
+- **判定 ④（≤2600）没达成**：导出域实测只有 307 行，目标却要求搬 769 行。
+  没有为了凑数去搬别的域 —— 差额 361 行留给下一批。
+- **变异第一轮漏了一条**：下载口的「只发 .pdf/.docx」原先没有用例，
+  `if False:` 变异体 86 条全绿；补 `test_download_refuses_files_that_are_not_export_artifacts`
+  之后 11/11。
+- **留给后续**：① `export_routes` 仍按模块调用 `agent_routes._read_report` /
+  `_report_review_steps`（报告域还没搬）；② 快照 deps 只比函数名；
+  ③ 没做 OpenAPI 深比较；④ 未使用的导入没清理（怕 diff 混入无关改动）。
 
-### 批次 35（备选）：B4 refine 增强 / B5 AI 聊天升级
+### 批次 35（建议下一批）：C1 第三步——搬「报告」域，把 2600 行补上
+- **为什么是它**：`agent_routes` 要降到 2600，还差 361 行；报告域（`_read_report`、
+  `_assemble_report_from_steps`、`_assemble_report_from_backup_steps`、`/report`、
+  `/save-report`、`/report-order`、`/assemble-report`、`/format-check`、模块增删改）
+  合计约 300 行，最接近且与导出域天然相邻（搬完 `export_routes` 的反向依赖也一起断掉）。
+- **要做的**：新建 `report_routes.py`，把上面这些整体搬过去；
+  `export_routes` 改成从新模块取 `_read_report` / `_report_review_steps`。
+  预计 2961 → 约 2660 行，**还要再搬「指标评分」域（约 350 行）才能过 2600**。
+- **判定**：快照零差异（148 条）；`pytest` 全绿；反向依赖 0 处；行数 ≤2600（需两个域）。
+- **风险**：报告拼装是导出与报告查询的共同上游，搬错会同时影响两处；
+  现有 `test_report_no_raw_json` / `test_engineering_regressions` 是主要护栏。
+  **搬之前先数 patch 点**（`rg "agent\._(read_report|assemble_report)" tests/`）。
+
+### 批次 36（备选）：B4 refine 增强 / B5 AI 聊天升级
 - B4：现在只截 8000 字、无证据注入；`_apply_step_edit` 有 version 但 UI 没接。
 - B5：非流式、不引用用户报告、长对话全量塞。
 - 这两项都需要先想清楚「用户拿它做什么」，否则容易做成"又一个聊天框"。
 
-### 批次 36（备选，成本大）：B6 多模型对比择优
+### 批次 37（备选，成本大）：B6 多模型对比择优
 - 现状是并列展示，没有评审、没有落库 `selected_best`。
 - 有了 B31/B32 的 `build_llm_for` 与 `llm_attempts`，这一项的实现成本比之前低。
 
@@ -353,6 +366,9 @@ NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 98/0
 | **改安全的代码前先 grep「这个值谁在用」** | B24 花几分钟全仓 grep 后发现 `model_configs.api_key` 除管理后台的增删改查**没有任何消费方**（`ChatOpenAI` 全读环境变量），于是风险边界从"推理链路"缩到"库里那几个字节"，验证方式也确定成单测而不是端到端跑评价。**先确认数据流向，再决定验什么** |
 | **变异脚本跑完没还原** | 批次 18 遇到：工作树里 `list_questionnaires` 被留成了「裸 open」变异体，而注释还写着「必须走持锁的读入口」；下一次全量回归照样 322 passed（守门用例当时没覆盖到）。→ **每跑完一批变异脚本先 `git status --short`**，只应看到自己的改动；发现多出来的文件改动先用 `git diff` 看清再 `git checkout --` 还原 |
 | **变异脚本会「静默失效」** | 跑之前文件**已经被上一次中断的变异污染**时，锚点找不到 → 替换不生效 → 用例当然全绿，脚本报成「变异存活 / 变异点未找到」，看起来像覆盖不足，其实是根本没跑到。批次 21 复核踩到：盘上留着 `"no_evidence": False`，害得两个脚本各报一条假问题。→ **跑之前先 `git diff` 对着安全副本验一遍关键行；跑完除了 `git status --short` 还要 `grep` 关键行**；`.mutation_backup/` 残留别急着删，先 `diff` 看看它是干净版还是污染版 |
+| **变异跑着的时候，源码就是变异体** | 批次 34 想在变异脚本运行期间顺手做「搬运前后逐字比对」，读到的是被改坏的 `_workflow_deps.py`，得出「`_owned_workflows` 不一致」的假结论。→ **变异脚本运行期间不要读、不要比、不要提交源码**；要取证就等它跑完（脚本 `finally` 会还原） |
+| **快照把依赖的「模块名」当契约** | `_dep_name()` 原来返回 `module.name`，批次 34 把 `_require_*` 搬进 `_workflow_deps` 后，148 条里一批路由报「deps 变了」——接口一个字没改。→ 依赖比对只比**函数名**（丢依赖、换函数仍抓得住），并写用例钉住；否则每次拆分都假红，快照就会被人为无视 |
+| **函数搬家，patch 点跟着搬，用例可能「绿着失效」** | 批次 34 把 `_safe_fallback_note` 搬到 `export_routes`，它读的是**本模块**的 `_get_workflow_values`。原用例 patch 的是 `agent._get_workflow_values`，改完仍然绿——因为真实调用也会抛 404，返回 `""`，断言碰巧成立。→ 搬函数时**逐个确认测试 patch 的是不是调用方所在模块**；`monkeypatch.setattr` 打在没人读的副本上不会报错，只会静默失去意义 |
 | **8000 端口有旧进程** | 上一轮留下的 uvicorn 还占着 8000 时，新起的会绑失败，而 `test_all_apis` / `frontend_e2e_check` / `wf_e2e` 全是硬编码 8000 → 检查打在**旧代码**上。先 `netstat -ano \| grep :8000` 确认 PID，必要时重启 |
 | heredoc 里的反引号 | 会被 shell 当命令执行，提交信息会被吃掉 → 用 `git commit -F - <<'MSG'` 且避免反引号 |
 | Git 网络 | 需要 `git config --local http.proxy http://127.0.0.1:56907`；curl 走代理访问 `raw.githubusercontent.com` 会失败 |
@@ -384,8 +400,11 @@ B3 质量门禁做完了（批次 27）。
   下一层是 base + append journal 的增量落盘，但会打破「一个会话一个 `*.json`」的约定
   （清理任务、问卷列表都在按 `*.json` 遍历），**要单独排期，不要顺手做**。
 - **C 类的大头（拆 `agent_routes.py`、多 worker）不要先做**，除非要上线；
-  但 **C5 最小 CI 已经做完（批次 28）**：535 条单测 + 48 条前端用例由 GitHub Actions 自动跑，
-  16 个变异脚本仍靠人（它们会原地改源码，不能自动化，只能"记得跑 + 跑完验伤"）。
+  但 **C5 最小 CI 已经做完（批次 28）**：641 条单测 + 48 条前端用例由 GitHub Actions 自动跑，
+  22 个变异脚本仍靠人（它们会原地改源码，不能自动化，只能"记得跑 + 跑完验伤"）。
+- **C1 已经拆了两步（批次 33 问卷、34 依赖+导出）**：3369 → 2961 行，反向依赖 5 → 0。
+  经验是**一次只搬一个域、先抽依赖再搬端点**；每多搬一个域，`agent_routes` 的
+  "公共依赖"属性就弱一分。要过 2600 还得搬两个域（报告 + 指标评分），按批次 35 的计划走。
 
 **这一轮反复出现的同一个模式，值得记住**：每次「输出太长」都不是模型不会写短，而是
 **我们让它写了一份没人读的东西**（步骤 7 的正文冗余、步骤 6 的 JSON 副本、步骤 7 的 JSON 进正文）。
