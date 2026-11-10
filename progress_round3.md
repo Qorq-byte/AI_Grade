@@ -4209,3 +4209,182 @@ if replaced:
    这是刻意的（防循环），但错误提示会不如预期直白。
 8. **前端 confirm 依赖浏览器原生对话框。** 无头环境 / 被禁用弹窗的浏览器里 `typeof confirm !== 'function'`
    时会直接抛错走原分支（用例覆盖了这条），但用户看到的就是一个没有"仍要导出"选项的报错。
+
+---
+
+# 批次 27 = B3 质量门禁（2026-11-10）
+
+## B27.1 起点：交接文档让我「汇总成 quality_score」，取证之后发现这个分数算不出来
+
+交接文档给 B3 的判据是「每步返回字数/结构完整性/引用覆盖率/无依据断言数/JSON 结果是否落地，
+汇总成 `quality_score`」。动手前先写了 `tests/_probe_quality_evidence.py`，回放 38 份真实备份 ——
+结论是**这份数据支撑不了打分**：
+
+| 台账 | 有值的会话 | 说明 |
+|---|---|---|
+| `standard_purity`（标准夹带结论） | **0/38（0%）** | 算了、进了内存状态，**但不在备份白名单里**，重启即丢 |
+| `step5_coverage` / `step6_table` / `step7_length` | 6/38（16%） | 批次 20/21 才引入，只有最近的会话有 |
+| `score_disposition`（评分落地） | 20/38（53%） | |
+| `document_coverage` | 28/38（74%） | |
+| `truncated_steps` | 0/38 有值（字段在，全是空列表） | 批次 20/21 之后没再截断过，这是好消息 |
+
+更关键的是**分布**：
+
+- **评分落地率是明显双峰**：11 份老会话 0.04–0.31，8 份新会话 0.97–1.00，中间只有一个 0.73。
+  低的那一半全是批次 16–19 之前跑的（`not_mentioned` / `model_pending` / `anchor_unresolved`）。
+- **`document_coverage.used_ratio` 在 26 份样本上恒为 1.0**；步骤 5/6 的覆盖率在 6 份样本上也恒为 1.0。
+  这两项做判据等于没有信息 —— 它们永远是满分。
+- 每步字数的 `min` 只有步骤 7 是异常的（155 字，就是 `72111c2c` 那次 JSON 断在半截），
+  其余 13 步最小值都在 1,100 字以上；而各步中位数从 2,063（基本情况）到 12,765（指标体系）不等。
+
+于是本批**放弃 `quality_score`**。理由不是"分数不好看"，而是：在这样的数据上算出一个 0–100 的数，
+既不能排序（双峰），也不能指导动作 —— **78 分改变不了任何人的行为**，只会变成又一个没人看的数字。
+（这正是 B26 那条教训的延续：检查不改变行为就等于没做。）
+
+## B27.2 做法：三类输出、四个状态、一条不变量
+
+**1）三类输出（`backend/services/quality.py`）**
+
+- **每步事实**：`{step, name, chars, status, truncated, note}`。取数口径只有一条 ——
+  `step_results[n].content` 的长度。不猜"内容是否合格"。
+  `status` 三值：`missing`（空）/ `thin`（偏少）/ `ok`。
+- **flags**：每条带 `id`（`CODE#序号`，与 `consistency` 同构）、`level`、具体数字。
+  只有 `warn` / `block` 触发复核，`info` 只披露：
+
+  | code | level | 判据 | 来源 |
+  |---|---|---|---|
+  | `REPORT_BLOCKED` | block | `consistency` 的 blocking 项（缺章/步骤没跑完/报告过短） | 现算，不重算 |
+  | `STEP_MISSING` | warn | 该检查的步骤 `content` 为空 | `step_results` |
+  | `STEP_THIN` | warn | 字数 < **该步自己的**中位数 × 0.2 | `STEP_MEDIAN_CHARS` |
+  | `SCORE_NOT_LANDED` | warn | 落地率 < 0.5 且样本 ≥ 5 项 | `score_disposition` |
+  | `STANDARD_CARRY_VERDICT` | warn | 有标准的 `scoring_standard` 夹带核对结论 | `standard_purity` |
+  | `NO_EVIDENCE_SCORED` | info | 按「未取得佐证」计分的项数 > 0 | `score_disposition` |
+  | `STEP_TRUNCATED` | info | 有步骤撞长度上限 | `truncated_steps` |
+
+- **`unavailable`**：台账缺失时明确列出来，**不进 `verified`**。
+
+**2）阈值从数据里读，不拍**
+
+- `MIN_LANDING_RATIO = 0.5`：落在双峰的空档里（0.31 → 0.73），不是拍的。
+- `MIN_LANDING_SAMPLE = 5`：3 个指标里落地 1 个不足以说"报告不可信"。
+- `THIN_RATIO = 0.20`：32 份样本里唯一低于中位数 20% 的是步骤 7 的 155 字（3%），
+  其余步最小值都在 30% 以上。取 0.2 是为了**只抓断在半截**这类真事故，不评判"写得不够细"。
+- `STEP_MEDIAN_CHARS` 按步给 14 个数：步骤 3 的 1,500 字是残次（中位 12,765），
+  步骤 12 的 1,500 字是正常（中位 2,063）—— 一条全局阈值必然错一边。
+
+**3）四个状态，不是三个**
+
+初版把「有台账项通过、其余无从判断」也算 `unknown`。回放 38 份之后发现 **21 份（55%）落进这个桶**，
+而这个功能对 55% 的存量报告只输出一句"不知道"，等于没做。反过来算 `pass` 又是撒谎。
+所以单列 `partial`：
+
+| verdict | 含义 | 前端文案 |
+|---|---|---|
+| `review` | 有 `warn`/`block` 命中 | 建议复核（tooltip 给理由） |
+| `partial` | 能查的都过了，有几项历史上没落盘 | 部分项未验证 |
+| `pass` | 该查的都查了，全部通过 | 不显示 |
+| `unknown` | 一条判据都没能跑 | 质量未验证 |
+
+**不变量**：`verified ∩ unavailable == ∅`（一条判据不能既算验证过、又算无从判断）。
+它是 `test_verified_and_unavailable_never_overlap` 的参数化用例守住的 —— 5 种状态组合。
+
+**4）顺手修的白名单漏洞**
+
+`standard_purity` 在 `_node_step3` 里算完只进内存状态，**不在 `_persist_state_backup` 的 fields 里**，
+所以 38 份备份 0 份有它。这是坑表里「备份是字段白名单」的**第三次复发**
+（前两次是 `score_disposition`、`truncated_steps`）。补进白名单 + 一条落盘用例。
+
+**5）接口与前端**
+
+- `GET /workflow/{id}/quality`：现算完整结论，纯程序、不调模型。
+- `GET /client/reports`：每条加 `review: {checked, verdict, required, reasons}`。
+  现算成本实测 **1.2 ms/份**（38 份 45 ms），加了一层 `(路径, mtime, 大小)` 缓存；
+  读不到备份/解析失败一律降级 `unknown`，**一份坏掉的备份不该让列表页 500**。
+- `/client` 报告卡片按四态显示徽标，`review` 命中时 tooltip 直接给理由。
+
+**被否掉的方案**：
+
+- **打 0–100 分**：见 B27.1，数据不支持，且分数不改变行为。
+- **把 `consistency` 的 warning 级也搬上来**：「分值分配偏差」这类口径提示与质量无关，
+  两套结论同时出现在一个徽标上会互相打架（变异第 16 条专门守着这条）。
+- **逐条报每个偏少的步骤**：与 B26 的覆盖缺口同理，一条报告十条提示 = 用户学会忽略。
+  所以 `STEP_THIN` 聚合成一条，message 里带具体步骤与数字。
+- **列表页不现算、改用落库字段**：要加列 + 迁移 + 在报告生成时写，而现算只有 1.2 ms/份。
+  等到会话数上千再谈落库（那时也应该先做 C4 可观测）。
+
+## B27.3 验证
+
+**红 → 绿**：`tests/test_quality_gate.py` 先写，首轮 5 红（其中 3 条是 fixture 自己触发了
+`INDICATOR_MISSING` —— 干净的样本必须真的干净，这是 B26 学到的），改实现后转绿；
+补两条用例后共 **27 条**。
+
+**全量回归**：`pytest tests` **504 → 531 passed**；`node --test tests/test_*.cjs` **48 pass**（未变）。
+
+**变异**：新增 `tests/_mutate_quality_gate.py`，**19 个变异体**。
+第一轮 **17 抓 / 2 漏**，两条都按老规矩去修用例（不是放松断言）：
+
+| 漏掉的变异 | 为什么漏 | 怎么修 |
+|---|---|---|
+| `verified` 无条件列出全部判据 | 那段 `verified = [c for c in verified if c not in unavailable]` 是**死代码** —— 两个列表由同一批条件产生，永远不会同时包含同一个 code | 删掉过滤，改写成参数化用例守不变量 `verified ∩ unavailable == ∅`（5 种状态组合）；变异体改成「强行多列两项」 |
+| 报告列表把未验证当通过 | 那条 `except` 兜底分支只有 `review_brief` 真抛异常才进得去，而备份缺失走的是 `UNCHECKED`，不抛 | 新增用例 monkeypatch `check_session` 让它抛，直接打到兜底分支 |
+
+第二轮 **19/19 全抓**。
+
+**回放 38 份真实备份**：`review 11 份 / partial 21 份 / pass 6 份`。
+
+- 11 份 `review` 全部命中 `SCORE_NOT_LANDED`（落地率 0.04–0.31），与 B27.1 的双峰完全对上，
+  **零误报**；其中 2 份还带 `STEP_THIN`（步骤 7 只有 155 / 400 字）。
+- 6 份 `pass` 全部是新会话（批次 20 之后跑的）。
+- 21 份 `partial` 都是"能查的都过了、但 `standard_purity` 没落盘"—— 这正是把 `partial`
+  单列出来的原因。
+
+**真实一轮（`wf_e2e` 新会话 `5eedf8e0`）**：
+
+```
+verdict = pass   verified = [STEP_CONTENT, STEP_TRUNCATED, REPORT_BLOCKED,
+                             SCORE_NOT_LANDED, STANDARD_CARRY_VERDICT]   unavailable = []
+flags   = [info NO_EVIDENCE_SCORED]  （24 项里 22 项落地、16 项按未取得佐证计 0 分）
+```
+
+**5 项判据全部可查、0 项无从判断** —— 这是白名单修复的直接效果（这一份备份里
+`standard_purity = {"leaves": 24, "with_verdict": 0}`，顺带证明批次 18 的提示词约束还在生效）。
+
+**真实服务**：
+
+| 检查 | 结果 |
+|---|---|
+| `pytest tests` | **531 passed** |
+| `node --test` | **48 pass** |
+| `test_all_apis.py` | **47/47**（新增「报告列表带质量结论」一条） |
+| `frontend_e2e_check.py` | **82 通过 / 0 失败**（新增 7 条：四态徽标文案、`review` 字段、理由非空） |
+| `wf_e2e.py` | **47 项 / 0 失败** |
+| `tests/_smoke_quality_gate.py` | 列表 3 条全为 `partial`、列表与详情结论一致、不存在的会话 **404** |
+
+## B27.4 回滚
+
+- 代码：`git revert` 本批 5 个提交。**唯一的行为变更是 `/reports` 多了一个 `review` 字段**
+  与 `/client` 卡片多了一个徽标；`GET /workflow/{id}/quality` 是新增端点，不删任何旧字段。
+- 数据：**无需迁移**。质量结论是现算的，不落库、不进备份。
+  白名单里多出的 `standard_purity` 是**只增字段**，老代码读新备份也不会出错（多一个键而已）。
+- 判据：回滚后 `pytest tests` 应回到 **504 passed**、`frontend_e2e` 回到 **75 通过**。
+
+## B27.5 剩余风险与未验证项（诚实列出）
+
+1. **`partial` 这个状态会长期存在。** 38 份存量里 21 份是 `partial`，原因是 `standard_purity`
+   在批次 27 之前从未落盘 —— 这些会话**永远不会**变成 `pass`，除非重跑。这不是缺陷，
+   但用户会看到一大片「部分项未验证」，需要有人解释一次。（前端 tooltip 写了原因，仅此而已。）
+2. **`STEP_MEDIAN_CHARS` 是从 32 份样本算出来的经验值。** 项目类型一变（比如小型项目只有 3 个指标），
+   中位数会整体偏移，阈值就失去意义。没有按项目类型/指标数分桶 —— 样本量不够。
+3. **`THIN_RATIO = 0.2` 只抓"断在半截"，抓不到"写得很空"。** 一份 4,000 字但全是套话的步骤 7
+   （中位 4,898）算 `ok`。字数不是质量，这里只把字数当**事故探针**用。
+4. **`NO_EVIDENCE_SCORED` 只披露不拦截。** 真实一轮里 24 项有 16 项是「未取得佐证」计 0 分 ——
+   占 67%。这意味着那份报告的分数主要由 8 个有佐证的指标决定。这个比例要不要进 `review`，
+   没有数据支撑（现在只有 8 份样本），**留作下一批的取证题**。
+5. **`/reports` 的现算成本随会话数线性涨。** 1.2 ms/份、缓存按 `(路径, mtime, 大小)`；
+   一个用户 500 份报告时首屏约 600 ms。没有做分页（那是 E2），也没有把结论落库。
+6. **质量结论不参与导出闸门。** B26 的闸门只看 `consistency` 的 blocking；
+   `SCORE_NOT_LANDED` 这类质量 warn **不拦导出**。这是有意的（分数没落地不等于报告不能出），
+   但意味着「建议复核」只是建议 —— 没有人必须处理它。**它会不会像 B26 之前的 17 类检测一样没人理，
+   要等真实使用才知道。**
+7. **前端只做了列表徽标。** `GET /workflow/{id}/quality` 返回的每步事实（字数、缺失步骤、落地明细）
+   **没有任何界面在读**，详情面板没做。接口先就位，界面留待有需求时接。
