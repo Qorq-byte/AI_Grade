@@ -1240,6 +1240,26 @@ async def rerun_consistency_check(session_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/workflow/{session_id}/quality", dependencies=[Depends(_require_path_workflow)])
+async def workflow_quality(session_id: str):
+    """按当前状态现算步骤质量事实与「要不要复核」的结论。
+
+    纯程序计算（读备份/内存状态 + 复用 `consistency` 的结构性结论），不调模型、不花 token。
+    与 `consistency-check` 的分工：那个回答「前后有没有矛盾」，这个回答
+    「每一步的产出够不够、分数落没落地、标准夹没夹带结论」。
+    """
+    from backend.services import quality
+
+    try:
+        values = _get_workflow_values(session_id)
+        return {"success": True, "data": quality.check_quality(values)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"质量检查失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 class RetryWorkflowRequest(BaseModel):
     session_id: str
 
