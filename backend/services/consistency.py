@@ -321,8 +321,13 @@ def _check_chapters(state: Dict[str, Any]) -> List[Dict[str, Any]]:
     )]
 
 
-def _low_score_leaves(state: Dict[str, Any]) -> List[str]:
-    """得分率低于阈值的三级指标名（只取名字够长的，子串匹配才有意义）。"""
+def low_score_indicator_names(state: Dict[str, Any],
+                              ratio: float = LOW_SCORE_RATIO) -> List[str]:
+    """得分率低于阈值的三级指标名（只取名字够长的，子串匹配才有意义）。
+
+    公开版的唯一理由是**口径只有一个**：批次 26 的覆盖检查、批次 29 的步骤 9 补全
+    都用它。两处各写一份，迟早会出现「门禁说漏了 3 个、补全只补了 2 个」。
+    """
     system = state.get("indicator_system") or {}
     scores = state.get("indicator_score_map") or {}
     names: List[str] = []
@@ -334,9 +339,14 @@ def _low_score_leaves(state: Dict[str, Any]) -> List[str]:
         actual = actual_indicator_score(item, scores)
         if not full or actual is None:
             continue
-        if actual / full < LOW_SCORE_RATIO:
+        if actual / full < ratio:
             names.append(name)
     return names
+
+
+def _low_score_leaves(state: Dict[str, Any]) -> List[str]:
+    """向后兼容的别名（覆盖检查在用）。"""
+    return low_score_indicator_names(state)
 
 
 def _check_problem_suggestion_coverage(state: Dict[str, Any]) -> List[Dict[str, Any]]:
