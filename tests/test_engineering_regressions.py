@@ -2,6 +2,7 @@
 import asyncio
 import os
 import sys
+from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
 
@@ -20,6 +21,7 @@ from backend.middleware import auth_middleware as auth
 from backend.models.user_models import QuestionnaireAnswer, User, UserRole, WorkflowSession
 from backend.routes import _shared_state
 from backend.routes import agent_routes as agent
+from backend.routes import export_routes
 
 
 @compiles(MEDIUMTEXT, 'sqlite')
@@ -40,12 +42,12 @@ def isolated(tmp_path, monkeypatch):
         "owned": {"questions": [{"id": "q1"}], "project_name": "project"},
     })
     monkeypatch.setattr(performance_agent, "STATE_BACKUP_DIR", tmp_path / "backups")
-    monkeypatch.setattr(agent, "_export_base_dir", lambda user: str(tmp_path / "exports" / str(user.id)))
+    monkeypatch.setattr(export_routes, "_export_base_dir", lambda user: str(tmp_path / "exports" / str(user.id)))
     monkeypatch.setattr(agent, "UPLOAD_DIR", tmp_path)
-    monkeypatch.setattr(agent, "active_workflows", {})
-    monkeypatch.setattr(agent, "active_workflow_configs", {})
+    monkeypatch.setattr(_shared_state, "active_workflows", {})
+    monkeypatch.setattr(_shared_state, "active_workflow_configs", {})
     from backend.services import progress_bus
-    monkeypatch.setattr(agent, "_WORKFLOW_PROGRESS", progress_bus.PROXY)
+    monkeypatch.setattr(_shared_state, "_WORKFLOW_PROGRESS", progress_bus.PROXY)
     progress_bus.PROGRESS.clear()
     from backend.services import export_cache
     export_cache.clear()
@@ -184,6 +186,26 @@ def test_saved_report_export_and_download(isolated, fmt, magic):
     assert isolated.client.get(url, headers=headers).content.startswith(magic)
 
 
+def test_download_refuses_files_that_are_not_export_artifacts(isolated):
+    """下载口只发 .pdf / .docx。
+
+    导出目录按用户分目录，里面除了导出件还可能躺着别的东西（日志、临时文件、
+    用户自己放进来的文件）。没有这条检查，"文件名"就是一条任意读的口子。
+    变异测试发现这条路径原本没有用例守着 —— 补上，别让它只是"看起来有检查"。
+    """
+    from types import SimpleNamespace as NS
+
+    from backend.agents.tools.export_service import ExportService
+
+    export_dir = Path(export_routes._export_base_dir(NS(id=1))) / ExportService.EXPORT_DIR
+    export_dir.mkdir(parents=True, exist_ok=True)
+    (export_dir / "secret.txt").write_text("not an export artifact", encoding="utf-8")
+
+    url = "/api/agent/download/secret.txt"
+
+    assert isolated.client.get(url, headers=isolated.headers[1]).status_code == 404
+
+
 def test_questionnaire_delete_preserves_workflow(isolated):
     base = "/api/agent/workflow"
     with isolated.db.begin() as db:
@@ -269,7 +291,7 @@ def test_sse_terminal_state_and_duplicate_start(isolated, monkeypatch, fail):
         statements.append(statement)
 
     def invoke(initial_state, config):
-        progress = agent._WORKFLOW_PROGRESS[initial_state["session_id"]]
+        progress = _shared_state._WORKFLOW_PROGRESS[initial_state["session_id"]]
         progress["last_step"] = 1 if fail else 14
         progress["step_results"]["1"] = {"content": "step output"}
         if fail:
@@ -286,7 +308,7 @@ def test_sse_terminal_state_and_duplicate_start(isolated, monkeypatch, fail):
     assert '"event": "step_complete"' in response.text
     assert f'"event": "{ "error" if fail else "complete" }"' in response.text
     assert sum(sql.startswith("UPDATE workflow_sessions") for sql in statements) == 1
-    assert not agent._WORKFLOW_PROGRESS
+    assert not _shared_state._WORKFLOW_PROGRESS
     assert isolated.client.post(url, headers=headers, json=body).status_code == 409
     assert isolated.client.post("/api/agent/workflow/approve", headers=headers,
                                 json={"session_id": "fresh"}).status_code == 409
@@ -299,7 +321,7 @@ def test_disconnect_does_not_interrupt_finalization(isolated, monkeypatch):
     finish = Event()
 
     def invoke(initial_state, config):
-        progress = agent._WORKFLOW_PROGRESS[initial_state["session_id"]]
+        progress = _shared_state._WORKFLOW_PROGRESS[initial_state["session_id"]]
         progress["last_step"] = 14
         progress["step_results"]["1"] = {"content": "step output"}
         assert finish.wait(5)
@@ -321,7 +343,7 @@ def test_disconnect_does_not_interrupt_finalization(isolated, monkeypatch):
             finish.set()
 
     asyncio.run(disconnect())
-    assert not agent._WORKFLOW_PROGRESS
+    assert not _shared_state._WORKFLOW_PROGRESS
     with isolated.db() as db:
         record = db.query(WorkflowSession).filter_by(session_id="disconnect").one()
         assert record.status == "completed"
@@ -492,7 +514,7 @@ def test_approve_actual_interrupt_only_once(isolated, approver):
     workflow.app = graph.compile(checkpointer=MemorySaver())
     config = {"configurable": {"thread_id": "owned"}}
     workflow.app.invoke({"completed_steps": []}, config)
-    agent.active_workflows["owned"] = workflow
+    _shared_state.active_workflows["owned"] = workflow
 
     url = "/api/agent/workflow/approve"
     body = {"session_id": "owned", "approved": True}
@@ -652,7 +674,7 @@ def test_real_graph_start_pause_retry_and_resume(isolated, monkeypatch):
         assert any('"event": "error"' in event and '"step_number": 2' in event for event in events)
         await agent.retry_workflow(agent.RetryWorkflowRequest(session_id="new-graph"))
         for _ in range(120):
-            if "new-graph" not in agent._WORKFLOW_PROGRESS:
+            if "new-graph" not in _shared_state._WORKFLOW_PROGRESS:
                 break
             await asyncio.sleep(0.025)
 
@@ -734,7 +756,7 @@ def test_workflow_thread_inherits_request_id(isolated, monkeypatch):
 
     def invoke(initial_state, config):
         captured.append(get_request_id())
-        progress = agent._WORKFLOW_PROGRESS[initial_state["session_id"]]
+        progress = _shared_state._WORKFLOW_PROGRESS[initial_state["session_id"]]
         progress["last_step"] = 14
         progress["step_results"]["1"] = {"content": "step output"}
         return {"completed_steps": list(range(1, 15)), "final_report": "done"}

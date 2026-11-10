@@ -247,6 +247,7 @@ def api(tmp_path, monkeypatch):
     from backend.main import app
     from backend.middleware import auth_middleware as auth
     from backend.models.user_models import User, UserRole
+    from backend.routes import _shared_state
     from backend.routes import agent_routes as agent
 
     @compiles(MEDIUMTEXT, "sqlite")
@@ -259,9 +260,9 @@ def api(tmp_path, monkeypatch):
     monkeypatch.setattr(database, "SessionLocal", factory)
     monkeypatch.setattr(auth, "SECRET_KEY", "test-only-signing-key")
     monkeypatch.setattr(pa, "STATE_BACKUP_DIR", tmp_path / "backups")
-    monkeypatch.setattr(agent, "active_workflows", {})
-    monkeypatch.setattr(agent, "active_workflow_configs", {})
-    monkeypatch.setattr(agent, "_WORKFLOW_PROGRESS", {})
+    monkeypatch.setattr(_shared_state, "active_workflows", {})
+    monkeypatch.setattr(_shared_state, "active_workflow_configs", {})
+    monkeypatch.setattr(_shared_state, "_WORKFLOW_PROGRESS", {})
     with factory.begin() as db:
         db.add(User(id=9, username="root", password_hash="unused",
                     role=UserRole.ADMIN, is_active=True))

@@ -23,7 +23,9 @@ from backend.agents import performance_agent as pa
 from backend.main import app
 from backend.middleware import auth_middleware as auth
 from backend.models.user_models import ModelConfig, User, UserRole
+from backend.routes import _shared_state
 from backend.routes import agent_routes as agent
+from backend.routes import export_routes
 
 PROJECT = "某某区农村供水保障工程"
 
@@ -41,9 +43,9 @@ def api(tmp_path, monkeypatch):
     monkeypatch.setattr(database, "SessionLocal", factory)
     monkeypatch.setattr(auth, "SECRET_KEY", "test-only-signing-key")
     monkeypatch.setattr(pa, "STATE_BACKUP_DIR", tmp_path / "backups")
-    monkeypatch.setattr(agent, "active_workflows", {})
-    monkeypatch.setattr(agent, "active_workflow_configs", {})
-    monkeypatch.setattr(agent, "_WORKFLOW_PROGRESS", {})
+    monkeypatch.setattr(_shared_state, "active_workflows", {})
+    monkeypatch.setattr(_shared_state, "active_workflow_configs", {})
+    monkeypatch.setattr(_shared_state, "_WORKFLOW_PROGRESS", {})
     with factory.begin() as db:
         db.add(User(id=9, username="root", password_hash="unused",
                     role=UserRole.ADMIN, is_active=True))
@@ -159,7 +161,7 @@ def test_note_lists_every_step_that_used_a_fallback():
         _attempts(9, "backup-b"), _attempts(10, "backup-b"),
     ]}
 
-    note = agent._fallback_note(values)
+    note = export_routes._fallback_note(values)
 
     assert "步骤 9（backup-b）" in note
     assert "步骤 10（backup-b）" in note
@@ -169,7 +171,7 @@ def test_note_lists_every_step_that_used_a_fallback():
 def test_note_is_empty_when_only_the_primary_ran():
     values = {"llm_attempts": [_attempts(3, "primary-a"), _attempts(9, "primary-a")]}
 
-    assert agent._fallback_note(values) == ""
+    assert export_routes._fallback_note(values) == ""
 
 
 def test_note_dedupes_repeated_fallbacks_on_the_same_step():
@@ -177,7 +179,7 @@ def test_note_dedupes_repeated_fallbacks_on_the_same_step():
         _attempts(1, "primary-a"), _attempts(9, "backup-b"), _attempts(9, "backup-b"),
     ]}
 
-    assert agent._fallback_note(values).count("步骤 9（backup-b）") == 1
+    assert export_routes._fallback_note(values).count("步骤 9（backup-b）") == 1
 
 
 def test_export_appends_the_note_to_the_document(api, monkeypatch):
@@ -200,8 +202,8 @@ def test_export_appends_the_note_to_the_document(api, monkeypatch):
         captured["content"] = kwargs["content"]
         return str(backup_dir / "fake.docx"), False
 
-    monkeypatch.setattr(agent, "_export_with_cache", fake_export)
-    monkeypatch.setattr(agent, "_export_blockers", lambda session_id: [])
+    monkeypatch.setattr(export_routes, "_export_with_cache", fake_export)
+    monkeypatch.setattr(export_routes, "_export_blockers", lambda session_id: [])
     monkeypatch.setattr(agent, "_report_review_steps", lambda session_id: [])
 
     resp = client.post("/api/agent/workflow/export",
@@ -230,8 +232,8 @@ def test_export_without_fallback_has_no_note(api, monkeypatch):
         captured["content"] = kwargs["content"]
         return str(backup_dir / "fake.docx"), False
 
-    monkeypatch.setattr(agent, "_export_with_cache", fake_export)
-    monkeypatch.setattr(agent, "_export_blockers", lambda session_id: [])
+    monkeypatch.setattr(export_routes, "_export_with_cache", fake_export)
+    monkeypatch.setattr(export_routes, "_export_blockers", lambda session_id: [])
     monkeypatch.setattr(agent, "_report_review_steps", lambda session_id: [])
 
     client.post("/api/agent/workflow/export",
@@ -247,20 +249,20 @@ def test_safe_note_swallows_unreadable_state(monkeypatch):
     def missing(session_id):
         raise HTTPException(status_code=404, detail="工作流状态不存在")
 
-    monkeypatch.setattr(agent, "_get_workflow_values", missing)
-    assert agent._safe_fallback_note("no-state") == ""
+    monkeypatch.setattr(export_routes, "_get_workflow_values", missing)
+    assert export_routes._safe_fallback_note("no-state") == ""
 
     def boom(session_id):
         raise RuntimeError("db down")
 
-    monkeypatch.setattr(agent, "_get_workflow_values", boom)
-    assert agent._safe_fallback_note("no-state") == ""
+    monkeypatch.setattr(export_routes, "_get_workflow_values", boom)
+    assert export_routes._safe_fallback_note("no-state") == ""
 
 
 def test_safe_note_passes_through_a_readable_state():
     values = {"llm_attempts": [_attempts(1, "primary-a"), _attempts(9, "backup-b")]}
 
-    assert "步骤 9（backup-b）" in agent._fallback_note(values)
+    assert "步骤 9（backup-b）" in export_routes._fallback_note(values)
 
 
 def test_system_config_is_persisted(tmp_path, monkeypatch):

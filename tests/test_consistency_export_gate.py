@@ -30,7 +30,9 @@ from backend.agents import performance_agent
 from backend.main import app
 from backend.middleware import auth_middleware as auth
 from backend.models.user_models import User, UserRole
+from backend.routes import _shared_state
 from backend.routes import agent_routes as agent
+from backend.routes import export_routes
 from backend.services import consistency
 
 PROJECT = "某某区农村供水保障工程"
@@ -236,11 +238,11 @@ def api(tmp_path, monkeypatch):
     monkeypatch.setattr(database, "SessionLocal", factory)
     monkeypatch.setattr(auth, "SECRET_KEY", "test-only-signing-key")
     monkeypatch.setattr(performance_agent, "STATE_BACKUP_DIR", tmp_path / "backups")
-    monkeypatch.setattr(agent, "active_workflows", {})
-    monkeypatch.setattr(agent, "active_workflow_configs", {})
-    monkeypatch.setattr(agent, "_WORKFLOW_PROGRESS", {})
+    monkeypatch.setattr(_shared_state, "active_workflows", {})
+    monkeypatch.setattr(_shared_state, "active_workflow_configs", {})
+    monkeypatch.setattr(_shared_state, "_WORKFLOW_PROGRESS", {})
     # 渲染 Word/PDF 与本用例无关，闸门判断在渲染之前
-    monkeypatch.setattr(agent, "_export_with_cache",
+    monkeypatch.setattr(export_routes, "_export_with_cache",
                         lambda **kwargs: (str(tmp_path / "fake.docx"), False))
     with factory.begin() as db:
         db.add(User(id=9, username="root", password_hash="unused",

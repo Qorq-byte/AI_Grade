@@ -75,7 +75,7 @@ def replay(root, database_url):
     from backend.agents.tools.indicator_manager import TEMPLATE_PROJECT_EXPENDITURE
     from backend.main import app
     from backend.middleware import auth_middleware
-    from backend.routes import agent_routes, client_routes
+    from backend.routes import _shared_state, agent_routes, client_routes
     from backend.services.auth_service import create_admin_if_not_exists
 
     compiles(MEDIUMTEXT, "sqlite")(lambda element, compiler, **kwargs: "TEXT")
@@ -156,7 +156,7 @@ def replay(root, database_url):
         print("sse_stream_probe.py exit", probe_result)
         failed |= bool(probe_result)
         for _ in range(100):
-            if not agent_routes._WORKFLOW_PROGRESS:
+            if not _shared_state._WORKFLOW_PROGRESS:
                 break
             time.sleep(0.05)
         with database.SessionLocal() as db:

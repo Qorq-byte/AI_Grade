@@ -143,8 +143,8 @@ def api(tmp_path, monkeypatch):
     monkeypatch.setattr(auth, "SECRET_KEY", "test-only-signing-key")
     monkeypatch.setattr(performance_agent, "STATE_BACKUP_DIR", tmp_path / "backups")
     monkeypatch.setattr(_shared_state, "_QUESTIONNAIRE_CACHE", {})
-    monkeypatch.setattr(agent, "active_workflows", {})
-    monkeypatch.setattr(agent, "active_workflow_configs", {})
+    monkeypatch.setattr(_shared_state, "active_workflows", {})
+    monkeypatch.setattr(_shared_state, "active_workflow_configs", {})
     with factory.begin() as db:
         db.add(User(id=9, username="root", password_hash="unused",
                     role=UserRole.ADMIN, is_active=True))
