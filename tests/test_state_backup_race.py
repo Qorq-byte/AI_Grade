@@ -35,6 +35,7 @@ from backend.agents.performance_agent import PerformanceAgent
 from backend.main import app
 from backend.middleware import auth_middleware as auth
 from backend.models.user_models import User, UserRole
+from backend.routes import _shared_state
 from backend.routes import agent_routes as agent
 
 
@@ -141,7 +142,7 @@ def api(tmp_path, monkeypatch):
     monkeypatch.setattr(sys.modules["backend.agents.base_agent"], "SessionLocal", factory)
     monkeypatch.setattr(auth, "SECRET_KEY", "test-only-signing-key")
     monkeypatch.setattr(performance_agent, "STATE_BACKUP_DIR", tmp_path / "backups")
-    monkeypatch.setattr(agent, "_QUESTIONNAIRE_CACHE", {})
+    monkeypatch.setattr(_shared_state, "_QUESTIONNAIRE_CACHE", {})
     monkeypatch.setattr(agent, "active_workflows", {})
     monkeypatch.setattr(agent, "active_workflow_configs", {})
     with factory.begin() as db:
