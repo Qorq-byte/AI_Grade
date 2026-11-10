@@ -121,6 +121,30 @@ def _discard_backup(path: Path, budget: Optional[float] = None) -> bool:
 
 
 
+#: 步骤 11 里模型自述「综合得分：X 分 / 评价等级：Y」的行。
+#: 允许「为 / 是」与无冒号写法（「综合得分 88.5 分」），但**必须出现分数或等级词**——
+#: 否则「各指标得分情况总体较好」这种叙述也会被当成断言删掉。
+_MODEL_SCORE_LINE = re.compile(
+    r"^(?:.*?)(?:综合得分|总得分|综合评分|评价等级|评定等级|综合等级)"
+    r"\s*(?:为|是)?\s*[：:]?\s*(?:[0-9]+(?:\.[0-9]+)?\s*分|不合格|待核实|优秀|良好|合格)"
+)
+
+
+def _strip_model_score_lines(content: str) -> tuple:
+    """删掉模型自述的得分/等级行，返回 (剩余正文, 被删的行)。
+
+    步骤 11 的结论行必须由程序汇总值给出，模型写的那份一律不采信。但「删掉」这件事
+    必须留痕：调用方把被删的行写进 warnings，否则用户永远不知道模型原本写了什么。
+    """
+    kept, removed = [], []
+    for line in (content or "").splitlines():
+        if _MODEL_SCORE_LINE.match(line.strip()):
+            removed.append(line.strip())
+        else:
+            kept.append(line)
+    return "\n".join(kept), removed
+
+
 def _ensure_step_control(state: PerformanceState) -> dict:
     if "step_control" not in state or not state.get("step_control"):
         state["step_control"] = {
@@ -1699,10 +1723,19 @@ class PerformanceAgent:
         content = self._execute_step(state, 11)
         score_line = (f"综合得分：{summary['total_score']:.2f} 分，评价等级：{summary['grade']}"
                       if summary["complete"] else "综合得分与评价等级：资料不足，待核实")
-        content = re.sub(
-            r"(?m)^.*(?:综合得分|评价等级)\s*[：:].*$", "", content
-        ).strip()
+        content, replaced = _strip_model_score_lines(content)
+        content = content.strip()
         content = score_line + ("\n\n" + content if content else "")
+        # 删了模型自述的得分必须记账：这段正文会被整章并进最终报告，
+        # 「报告里的分数被换掉」是要能事后追的（批次 26）
+        if replaced:
+            notes = state.setdefault("warnings", [])
+            sample = "；".join(item[:60] for item in replaced[:3])
+            more = f" 等 {len(replaced)} 处" if len(replaced) > 3 else ""
+            note = f"[步骤11] 模型自述的得分/等级已按程序汇总替换：{sample}{more}"
+            if note not in notes:
+                notes.append(note)
+            logger.info(f"[Step 11] 替换模型自述的得分行 {len(replaced)} 处")
         state["comprehensive_evaluation"] = content
         if summary["complete"]:
             state["evaluation_total_score"] = summary["total_score"]
