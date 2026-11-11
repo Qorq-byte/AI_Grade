@@ -123,3 +123,14 @@ def diff_summary(before: str, after: str, max_lines: int = 80) -> Dict:
             rows.append({"op": "ctx", "text": line[1:]})
     truncated = len(rows) > max_lines
     return {"added": added, "removed": removed, "lines": rows[:max_lines], "truncated": truncated}
+
+
+def build_model(model_name: str, temperature: float = 0.3):
+    """按名字造一个客户端（主模型与备选共用）。
+
+    单独成函数是为了让路由与测试都只依赖这一个入口：
+    测试打桩这里就能完全绕开真模型，不需要网络与密钥。
+    """
+    from backend.agents.base_agent import build_llm_for
+
+    return build_llm_for(model_name, temperature, 0.9)

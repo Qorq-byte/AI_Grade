@@ -46,7 +46,7 @@ from sqlalchemy.orm import Session
 from backend.config import settings
 from backend.routes import _shared_state
 from backend.routes._shared_state import _validate_session_id
-from backend.services import refine
+from backend.services import llm_resilience, refine
 from backend.routes._workflow_deps import (
     AgentResponse, STEP_CONTENT_FIELDS, _get_workflow_values, _persist_state,
     _require_body_workflow, _require_path_workflow,
@@ -294,14 +294,28 @@ async def refine_step_content(req: RefineStepRequest):
     if not current or step == 14:
         raise HTTPException(status_code=404, detail="找不到可优化的已完成步骤")
     cfg = _shared_state.active_workflow_configs.get(session_id, {})
-    model_name = cfg.get("model_name") or settings.DEFAULT_MODEL
-    from backend.utils.llm_helper import get_model_credentials
-    creds = get_model_credentials(model_name)
-    model = ChatOpenAI(model=model_name, api_key=creds["api_key"], base_url=creds["base_url"], temperature=0.3)
+    primary = cfg.get("model_name") or settings.DEFAULT_MODEL
+    chain = llm_resilience.model_chain(primary, llm_resilience.fallback_models_from(values))
     # 证据注入 / 首尾保留截断都在 services/refine.py 里，便于单测（批次 36）
     built = refine.build_prompt(values, step, current.get("content", ""), req.message)
-    response = await run_in_threadpool(model.invoke, built["prompt"])
-    content = response.content if hasattr(response, "content") else str(response)
+    attempts: List[Dict] = []
+    warnings = list(values.get("warnings") or [])
+
+    def _call(model_name: str) -> str:
+        response = refine.build_model(model_name).invoke(built["prompt"])
+        return response.content if hasattr(response, "content") else str(response)
+
+    try:
+        # 重试 + 降级在 services/llm_resilience.py：与 agent 层同一套判定
+        content = await run_in_threadpool(
+            llm_resilience.invoke_with_fallback,
+            chain=chain, call=_call, step=step, attempts=attempts, warnings=warnings,
+        )
+    except llm_resilience.LLMInvocationError as exc:
+        # 永久错误（400/401/403）是上游拒绝 → 502；全失败/网络 → 503（稍后可再试）
+        raise HTTPException(status_code=502 if exc.kind == "permanent" else 503,
+                            detail=str(exc))
+    degraded = any(item["outcome"] == "ok" and item["model"] != chain[0] for item in attempts)
     if step == 3 and content.startswith("```"):
         content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
     if req.preview:
@@ -311,8 +325,15 @@ async def refine_step_content(req: RefineStepRequest):
             "version": current.get("version", 1),
             "evidence_count": built["evidence_count"], "truncated": built["truncated"],
             "diff": refine.diff_summary(current.get("content", ""), content),
+            "attempts": attempts, "degraded": degraded,
         }, "message": "预览已生成，尚未保存"}
     data = _apply_step_edit(session_id, step, content, "model_refine", current.get("version", 1))
+    # 只有「采用」才落账：预览后被丢弃的内容，不该出现在导出件的降级标注里
+    _persist_state(session_id, {
+        "llm_attempts": llm_resilience.merge_attempts(values.get("llm_attempts"), attempts),
+        "warnings": warnings,
+    })
+    data["degraded"] = degraded
     return {"success": True, "data": data, "message": "内容已优化"}
 
 

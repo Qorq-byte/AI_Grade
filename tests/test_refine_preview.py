@@ -26,7 +26,6 @@ from backend.agents import performance_agent
 from backend.main import app
 from backend.middleware import auth_middleware as auth
 from backend.models.user_models import User, UserRole, WorkflowSession
-from backend.routes import agent_routes
 from backend.services import refine
 
 
@@ -145,9 +144,8 @@ def api(tmp_path, monkeypatch):
     monkeypatch.setattr(database, "SessionLocal", factory)
     monkeypatch.setattr(auth, "SECRET_KEY", "test-only-signing-key")
     monkeypatch.setattr(performance_agent, "STATE_BACKUP_DIR", tmp_path / "backups")
-    monkeypatch.setattr(agent_routes, "ChatOpenAI", _FakeModel)
-    monkeypatch.setattr("backend.utils.llm_helper.get_model_credentials",
-                        lambda model_name: {"api_key": "k", "base_url": ""})
+    # 批次 37 起 refine 走 services/refine.build_model，不再是路由里的 ChatOpenAI
+    monkeypatch.setattr(refine, "build_model", lambda name, temperature=0.3: _FakeModel())
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
     (backup_dir / "s1.json").write_text(json.dumps({
