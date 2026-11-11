@@ -46,6 +46,7 @@ from sqlalchemy.orm import Session
 from backend.config import settings
 from backend.routes import _shared_state
 from backend.routes._shared_state import _validate_session_id
+from backend.services import refine
 from backend.routes._workflow_deps import (
     AgentResponse, STEP_CONTENT_FIELDS, _get_workflow_values, _persist_state,
     _require_body_workflow, _require_path_workflow,
@@ -172,6 +173,10 @@ class RefineStepRequest(BaseModel):
     session_id: str
     step_number: int
     message: str
+    #: True = 只出草稿给前端预览（不落库）；默认保持旧行为直接应用
+    preview: bool = False
+    #: True = 只出草稿给前端预览（不落库）；默认保持旧行为直接应用
+    preview: bool = False
     layout_mode: str = "classic"
     language_style: str = "neutral"
     indicator_type: str = "项目支出指标体系"
@@ -293,17 +298,76 @@ async def refine_step_content(req: RefineStepRequest):
     from backend.utils.llm_helper import get_model_credentials
     creds = get_model_credentials(model_name)
     model = ChatOpenAI(model=model_name, api_key=creds["api_key"], base_url=creds["base_url"], temperature=0.3)
-    prompt = (
-        f"依据证据及人工要求修订步骤 {step}，保留来源编号。无法证实的事实标注待核实。\n"
-        f"{current.get('content', '')[:8000]}\n修订要求：{req.message}\n"
-        + ("只输出结构化指标 JSON 对象。" if step == 3 else "输出修订后的完整内容。")
-    )
-    response = await run_in_threadpool(model.invoke, prompt)
+    # 证据注入 / 首尾保留截断都在 services/refine.py 里，便于单测（批次 36）
+    built = refine.build_prompt(values, step, current.get("content", ""), req.message)
+    response = await run_in_threadpool(model.invoke, built["prompt"])
     content = response.content if hasattr(response, "content") else str(response)
     if step == 3 and content.startswith("```"):
         content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    if req.preview:
+        # 只出草稿：不写 step_results、不升版本。前端确认后再走 PUT steps/{step}
+        return {"success": True, "data": {
+            "session_id": session_id, "step_number": step, "draft": content,
+            "version": current.get("version", 1),
+            "evidence_count": built["evidence_count"], "truncated": built["truncated"],
+            "diff": refine.diff_summary(current.get("content", ""), content),
+        }, "message": "预览已生成，尚未保存"}
     data = _apply_step_edit(session_id, step, content, "model_refine", current.get("version", 1))
     return {"success": True, "data": data, "message": "内容已优化"}
+
+
+class RollbackStepRequest(BaseModel):
+    to_version: int
+
+
+@router.get("/workflow/{session_id}/steps/{step}/history", dependencies=[Depends(_require_path_workflow)])
+async def get_step_history(session_id: str, step: int):
+    """步骤的版本历史（当前版本 + revisions），给前端做「回滚到某一版」。
+
+    只回版本号、编辑者、字数，**不回正文**：正文可能上万字，回滚时由后端按版本号取，
+    前端不需要把每一版都拉下来。
+    """
+    values = _get_workflow_values(session_id)
+    current = values.get("step_results", {}).get(step)
+    if not current:
+        raise HTTPException(status_code=404, detail="找不到该步骤")
+    rows = [{
+        "version": current.get("version", 1),
+        "edited_by": current.get("edited_by", "workflow"),
+        "updated_at": current.get("updated_at"),
+        "chars": len(current.get("content") or ""),
+        "is_current": True,
+    }]
+    for revision in reversed(current.get("revisions") or []):
+        rows.append({
+            "version": revision.get("version", 0),
+            "edited_by": revision.get("edited_by", "workflow"),
+            "updated_at": None,
+            "chars": len(revision.get("content") or ""),
+            "is_current": False,
+        })
+    return {"success": True, "data": rows}
+
+
+@router.post("/workflow/{session_id}/steps/{step}/rollback", dependencies=[Depends(_require_path_workflow)])
+async def rollback_step(session_id: str, step: int, req: RollbackStepRequest):
+    """回滚到指定版本。
+
+    回滚也是一次修改：走同一条 `_apply_step_edit`（版本闸门、复核标记、依赖步骤标记
+    全部复用），版本号**继续递增**而不是倒退 —— 否则前端缓存的 version 会和下一次
+    保存撞车，用户会看到莫名其妙的 409。
+    """
+    values = _get_workflow_values(session_id)
+    current = values.get("step_results", {}).get(step)
+    if not current:
+        raise HTTPException(status_code=404, detail="找不到该步骤")
+    target = next((item for item in (current.get("revisions") or [])
+                   if item.get("version") == req.to_version), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="找不到该版本")
+    data = _apply_step_edit(session_id, step, target.get("content") or "", "rollback",
+                            current.get("version", 1))
+    return {"success": True, "data": data, "message": f"已回滚到第 {req.to_version} 版"}
 
 
 @router.get("/status", response_model=AgentResponse, dependencies=[Depends(get_current_user)])
@@ -1378,7 +1442,8 @@ async def analyze_perspective(session_id: str, request: Dict[str, Any]):
                 quality_rules="所有分析必须基于提供的指标得分数据，不得编造。",
             )
             messages = [SystemMessage(content=system_prompt), HumanMessage(content=prompt)]
-            response = workflow.base_agent.llm.invoke(messages, config={"timeout": 300})
+            response = await run_in_threadpool(
+                workflow.base_agent.llm.invoke, messages, config={"timeout": 300})
             analysis = response.content if hasattr(response, 'content') else str(response)
         else:
             analysis = "模型未初始化，无法进行视角分析"
@@ -1531,7 +1596,7 @@ async def generate_indicator_analysis(req: GenerateIndicatorAnalysisRequest):
 4. 语言专业、客观
 
 请直接输出分析内容。"""
-        resp = model.invoke(prompt)
+        resp = await run_in_threadpool(model.invoke, prompt)
         analysis = resp.content if hasattr(resp, 'content') else str(resp)
         return {"success": True, "data": {"analysis": analysis, "indicator_id": req.indicator_id}}
     except HTTPException:
@@ -1733,7 +1798,7 @@ async def verify_logic_consistency(session_id: str):
 
 ### 总结
 （是否需要修改，关键问题概述）"""
-        resp = model.invoke(prompt)
+        resp = await run_in_threadpool(model.invoke, prompt)
         result_text = resp.content if hasattr(resp, 'content') else str(resp)
 
         # 保存到state（写回checkpoint）
