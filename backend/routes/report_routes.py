@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -273,7 +274,7 @@ async def generate_module_content(req: ModuleGenerateRequest):
 
 请直接输出该模块的完整内容，要求客观、数据准确、语言规范。"""
 
-        resp = model.invoke(prompt)
+        resp = await run_in_threadpool(model.invoke, prompt)
         content = resp.content if hasattr(resp, 'content') else str(resp)
 
         # 保存到模块字典（写回checkpoint）
@@ -494,7 +495,7 @@ async def check_report_format(session_id: str):
 
 ### 总结评价
 是否建议通过/需修改后提交"""
-        resp = model.invoke(prompt)
+        resp = await run_in_threadpool(model.invoke, prompt)
         result = resp.content if hasattr(resp, 'content') else str(resp)
         _persist_state(session_id, {"format_check_result": result})
 

@@ -152,3 +152,52 @@ def test_report_order_round_trip(api):
     saved = client.get("/api/agent/workflow/s1/report-order", headers=headers).json()
     assert saved["is_custom"] is True
     assert [item["key"] for item in saved["data"]] == [item["key"] for item in custom]
+
+
+def test_format_check_does_not_block_the_event_loop(monkeypatch):
+    """慢的模型调用必须在线程池里跑，否则一个 format-check 会把整个服务卡住。
+
+    批次 36 验证时踩到：`wf_e2e` 的 format-check 客户端超时之后，**第二个请求连服务都
+    连不上** —— 因为 `async def` 里同步调 `model.invoke`，事件循环被占住，所有请求排队。
+    """
+    import asyncio
+    import threading
+
+    from backend.routes import report_routes
+
+    release = threading.Event()
+
+    class SlowModel:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def invoke(self, prompt):
+            release.wait(5)
+            return type("R", (), {"content": "校对结果"})()
+
+    monkeypatch.setattr(report_routes, "ChatOpenAI", SlowModel)
+    monkeypatch.setattr(report_routes, "_get_workflow_values",
+                        lambda sid: {"final_report": "# 报告"})
+    monkeypatch.setattr("backend.utils.llm_helper.get_model_credentials",
+                        lambda name: {"api_key": "k", "base_url": ""})
+
+    async def scenario():
+        ticks = 0
+
+        async def ticker():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.05)
+                ticks += 1
+
+        task = asyncio.create_task(ticker())
+        timer = threading.Timer(0.4, release.set)
+        timer.start()
+        try:
+            await report_routes.check_report_format("s1")
+        finally:
+            task.cancel()
+        return ticks
+
+    # 阻塞版：0.4 秒里 ticker 一次都跑不到（事件循环被占住）
+    assert asyncio.run(scenario()) >= 3
