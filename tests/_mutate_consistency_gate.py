@@ -13,6 +13,7 @@ FRONTEND = ["node", "--test", "tests/test_shared_frontend.cjs"]
 
 CONSISTENCY = "backend/services/consistency.py"
 ROUTES = "backend/routes/agent_routes.py"
+EXPORT = "backend/routes/export_routes.py"
 AGENT = "backend/agents/performance_agent.py"
 API_JS = "frontend/shared/api.js"
 
@@ -42,14 +43,14 @@ MUTATIONS = [
      "    if isinstance(problems, str) and not problems.strip() \\\n"
      "            and isinstance(suggestions, str) and suggestions.strip():",
      "    if False:"),
-    ("导出闸门无视 force", ROUTES,
+    ("导出闸门无视 force", EXPORT,
      "        if not request.force:",
      "        if True:"),
-    ("状态读不到时直接抛错（不 fail-open）", ROUTES,
+    ("状态读不到时直接抛错（不 fail-open）", EXPORT,
      "    except HTTPException:\n        return []\n    except Exception:\n"
      "        logger.exception(f\"导出前一致性检查失败，放行: {session_id}\")\n        return []",
      "    except HTTPException:\n        raise\n    except Exception:\n        raise"),
-    ("409 不带 X-Export-Blocked 标记头", ROUTES,
+    ("409 不带 X-Export-Blocked 标记头", EXPORT,
      '                                    headers={"X-Export-Blocked": "1"})',
      "                                    )"),
     ("步骤 11 替换后不记账", AGENT,

@@ -17,7 +17,7 @@ MUTATIONS = [
     ("删除假装成功（不真删文件）", "backend/agents/performance_agent.py",
      "    return _retry_on_transient_permission(remove, budget)",
      "    return True"),
-    ("列表接口退回裸 open（绕过锁）", "backend/routes/agent_routes.py",
+    ("列表接口退回裸 open（绕过锁）", "backend/routes/questionnaire_routes.py",
      """                        backup = PerformanceAgent.load_state_backup(sid)
                         if not backup:
                             continue""",

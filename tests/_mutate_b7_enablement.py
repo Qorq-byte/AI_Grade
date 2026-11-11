@@ -11,6 +11,7 @@ TARGET = [PY, "-m", "pytest", "tests/test_b7_enablement.py", "tests/test_llm_res
 
 AGENT = "backend/agents/performance_agent.py"
 ROUTES = "backend/routes/agent_routes.py"
+EXPORT = "backend/routes/export_routes.py"
 ADMIN = "backend/routes/admin_routes.py"
 
 MUTATIONS = [
@@ -29,13 +30,13 @@ MUTATIONS = [
     ("写备选时覆盖掉其它系统设置", ADMIN,
      '    current = {}\n    if cfg.api_base_url:',
      '    current = {}\n    if False:'),
-    ("导出件不追加降级标注", ROUTES,
-     '        note = _fallback_note(_get_workflow_values(session_id))\n        if note:',
-     '        note = ""\n        if note:'),
-    ("标注把主模型也算成降级", ROUTES,
+    ("导出件不追加降级标注", EXPORT,
+     "            note = _fallback_note(_get_workflow_values(session_id))",
+     '            note = ""'),
+    ("标注把主模型也算成降级", EXPORT,
      '        if item.get("outcome") != "ok" or item.get("model") == primary:',
      '        if item.get("outcome") != "ok":'),
-    ("标注不去重（同一步重复列）", ROUTES,
+    ("标注不去重（同一步重复列）", EXPORT,
      "        if pair not in hits:\n            hits.append(pair)",
      "        hits.append(pair)"),
 ]
