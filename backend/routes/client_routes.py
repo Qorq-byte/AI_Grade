@@ -8,6 +8,8 @@ import uuid
 import shutil
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
+from fastapi.responses import StreamingResponse
+from starlette.concurrency import iterate_in_threadpool
 from pydantic import BaseModel
 from typing import Optional
 from sqlalchemy.orm import Session, joinedload
@@ -26,6 +28,7 @@ from backend.models.memory_models import (
 )
 from backend.config import settings
 from backend.routes import _shared_state
+from backend.services import chat_context
 
 router = APIRouter(prefix="/api/client", tags=["客户端功能"])
 
@@ -82,16 +85,64 @@ def _get_or_create_conversation(conversation_id, user_id, db):
     return conv, conv.id
 
 
-def _call_ai_chat(conversation_id, db, model_name: str = None):
-    """调用 AI 聊天 API 并返回回复文本和token使用量"""
-    used_model = model_name or settings.DEFAULT_MODEL
-    client = _get_openai_client(used_model)
+BASE_SYSTEM_PROMPT = "你是云海睿评的AI助手，专门帮助用户进行绩效评价相关的工作。请用中文回答。"
+
+
+def _build_chat_messages(conversation_id, db, context_text: str = "") -> list:
+    """从 DB 取历史、注入报告上下文，再压进预算（同步/流式共用）。"""
+    system = BASE_SYSTEM_PROMPT
+    if context_text:
+        system = f"{BASE_SYSTEM_PROMPT}\n\n{context_text}"
     db_messages = db.query(AiMessage).filter(
         AiMessage.conversation_id == conversation_id
     ).order_by(AiMessage.created_at).all()
-    openai_messages = [{"role": "system", "content": "你是云海睿评的AI助手，专门帮助用户进行绩效评价相关的工作。请用中文回答。"}]
-    for m in db_messages:
-        openai_messages.append({"role": m.role, "content": m.content})
+    messages = [{"role": "system", "content": system}]
+    messages += [{"role": m.role, "content": m.content} for m in db_messages]
+    return chat_context.trim_history(messages)
+
+
+def _chat_error_detail(exc: Exception) -> tuple:
+    """把上游异常翻成 (状态码, 可读提示)。同步与流式共用一份口径。"""
+    error_msg = str(exc).lower()
+    if "quota" in error_msg or "free tier" in error_msg or "freetier" in error_msg or "free quota" in error_msg:
+        return 503, "AI服务配额已用完，请充值或更换模型"
+    if "api_key" in error_msg or "authentication" in error_msg or "unauthorized" in error_msg:
+        return 500, "AI服务认证失败，请检查API密钥配置"
+    if "rate" in error_msg and "limit" in error_msg:
+        return 429, "AI服务请求过于频繁，请稍后重试"
+    if "model" in error_msg and ("not" in error_msg or "invalid" in error_msg):
+        return 500, "AI模型配置异常，请联系管理员"
+    return 500, "AI服务暂时不可用，请稍后重试"
+
+
+def _resolve_chat_context(req, current_user, db) -> dict:
+    """取要引用的那份报告：显式 id 优先（校验归属），否则取最近一份已完成的。"""
+    from backend.agents.performance_agent import PerformanceAgent
+
+    record = None
+    if req.workflow_session_id:
+        from backend.routes._workflow_deps import _require_workflow
+
+        _require_workflow(req.workflow_session_id, current_user, db)
+        record = db.query(WorkflowSession).filter(
+            WorkflowSession.session_id == req.workflow_session_id).first()
+    else:
+        record = (db.query(WorkflowSession)
+                  .filter(WorkflowSession.user_id == current_user.id,
+                          WorkflowSession.status == "completed")
+                  .order_by(WorkflowSession.updated_at.desc())
+                  .first())
+    if record is None:
+        return {"text": "", "references": []}
+    values = PerformanceAgent.load_state_backup(record.session_id) or {}
+    return chat_context.build_report_context(values, record.project_name or "")
+
+
+def _call_ai_chat(conversation_id, db, model_name: str = None, context_text: str = ""):
+    """调用 AI 聊天 API 并返回回复文本和token使用量"""
+    used_model = model_name or settings.DEFAULT_MODEL
+    client = _get_openai_client(used_model)
+    openai_messages = _build_chat_messages(conversation_id, db, context_text)
     response = client.chat.completions.create(
         model=used_model,
         messages=openai_messages,
@@ -130,6 +181,8 @@ class AiChatRequest(BaseModel):
     message: str
     conversation_id: Optional[int] = None
     model: Optional[str] = None
+    #: 要引用哪份报告。空 = 取该用户最近一份已完成的报告；传了就必须是本人的
+    workflow_session_id: Optional[str] = None
 
 
 class CreateConversationRequest(BaseModel):
@@ -423,6 +476,8 @@ async def ai_chat(req: AiChatRequest, current_user: User = Depends(get_current_u
     if not req.message or not req.message.strip():
         raise HTTPException(status_code=400, detail="消息不能为空")
 
+    # 用户问「我这份报告扣分点在哪」时，模型得知道是哪份报告（批次 38）
+    context = _resolve_chat_context(req, current_user, db)
     conv, conversation_id = _get_or_create_conversation(req.conversation_id, current_user.id, db)
 
     user_msg = AiMessage(conversation_id=conversation_id, role="user", content=req.message)
@@ -431,22 +486,15 @@ async def ai_chat(req: AiChatRequest, current_user: User = Depends(get_current_u
     db.refresh(user_msg)
 
     try:
-        reply, token_info, used_model = _call_ai_chat(conversation_id, db, req.model)
+        reply, token_info, used_model = _call_ai_chat(
+            conversation_id, db, req.model, context_text=context["text"])
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"AI聊天请求失败: {e}")
         # 返回友好的错误消息，不暴露原始错误细节（可能含敏感关键字）
-        error_msg = str(e).lower()
-        if "quota" in error_msg or "free tier" in error_msg or "freetier" in error_msg or "free quota" in error_msg:
-            raise HTTPException(status_code=503, detail="AI服务配额已用完，请充值或更换模型")
-        if "api_key" in error_msg or "authentication" in error_msg or "unauthorized" in error_msg:
-            raise HTTPException(status_code=500, detail="AI服务认证失败，请检查API密钥配置")
-        if "rate" in error_msg and "limit" in error_msg:
-            raise HTTPException(status_code=429, detail="AI服务请求过于频繁，请稍后重试")
-        if "model" in error_msg and ("not" in error_msg or "invalid" in error_msg):
-            raise HTTPException(status_code=500, detail="AI模型配置异常，请联系管理员")
-        raise HTTPException(status_code=500, detail="AI服务暂时不可用，请稍后重试")
+        status, detail = _chat_error_detail(e)
+        raise HTTPException(status_code=status, detail=detail)
 
     assistant_msg = AiMessage(conversation_id=conversation_id, role="assistant", content=reply)
     db.add(assistant_msg)
@@ -482,8 +530,100 @@ async def ai_chat(req: AiChatRequest, current_user: User = Depends(get_current_u
             "model": used_model,
             "user_message_id": user_msg.id,
             "assistant_message_id": assistant_msg.id,
+            "references": context["references"],
         }
     }
+
+
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _stream_completion(messages, model_name: str, usage_out: dict):
+    """同步生成器：逐段产文本。usage 写进 usage_out（部分供应商不返回）。"""
+    client = _get_openai_client(model_name)
+    kwargs = dict(model=model_name, messages=messages, temperature=settings.TEMPERATURE,
+                  top_p=settings.TOP_P, max_tokens=settings.MAX_TOKENS, stream=True)
+    try:
+        stream = client.chat.completions.create(**kwargs, stream_options={"include_usage": True})
+    except TypeError:
+        # 有些兼容端点不认 stream_options，退回普通流式
+        stream = client.chat.completions.create(**kwargs)
+    for chunk in stream:
+        usage = getattr(chunk, "usage", None)
+        if usage is not None:
+            usage_out.update({
+                "prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+                "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
+                "total_tokens": getattr(usage, "total_tokens", 0) or 0,
+            })
+        choices = getattr(chunk, "choices", None) or []
+        if not choices:
+            continue
+        delta = getattr(choices[0], "delta", None)
+        text = getattr(delta, "content", None) if delta is not None else None
+        if text:
+            yield text
+
+
+@router.post("/ai/chat/stream")
+async def ai_chat_stream(req: AiChatRequest, current_user: User = Depends(get_current_user),
+                         db: Session = Depends(get_db)):
+    """SSE 版聊天：先逐段推 delta，最后推 done（含 conversation_id 与 references）。
+
+    历史与上下文构建与非流式共用 `_build_chat_messages`，两条路径不会给出不同的答案依据。
+    """
+    if not _get_ai_chat_enabled(db):
+        raise HTTPException(status_code=403, detail="AI聊天功能已被管理员禁用")
+    if not req.message or not req.message.strip():
+        raise HTTPException(status_code=400, detail="消息不能为空")
+
+    context = _resolve_chat_context(req, current_user, db)
+    conv, conversation_id = _get_or_create_conversation(req.conversation_id, current_user.id, db)
+    user_msg = AiMessage(conversation_id=conversation_id, role="user", content=req.message)
+    db.add(user_msg)
+    db.commit()
+    db.refresh(user_msg)
+
+    used_model = req.model or settings.DEFAULT_MODEL
+    messages = _build_chat_messages(conversation_id, db, context["text"])
+
+    async def event_stream():
+        parts, usage = [], {}
+        try:
+            async for piece in iterate_in_threadpool(
+                    _stream_completion(messages, used_model, usage)):
+                parts.append(piece)
+                yield _sse("delta", {"text": piece})
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"AI聊天流式失败: {exc}")
+            status, detail = _chat_error_detail(exc)
+            yield _sse("error", {"status": status, "detail": detail})
+            return
+
+        reply = "".join(parts)
+        # 生成器里不要复用请求作用域的 db：响应已经开始，依赖可能已经收尾
+        from backend.database import SessionLocal
+        with SessionLocal() as session:
+            session.add(AiMessage(conversation_id=conversation_id, role="assistant", content=reply))
+            conv_row = session.query(AiConversation).filter(
+                AiConversation.id == conversation_id).first()
+            if conv_row is not None:
+                if conv_row.title == "新对话":
+                    conv_row.title = req.message[:20].replace("\n", " ").strip() or "新对话"
+                conv_row.updated_at = datetime.utcnow()
+            session.commit()
+            if usage.get("total_tokens"):
+                try:
+                    from backend.services.token_service import record_token_usage
+                    record_token_usage(session, current_user.id, model_name=used_model, **usage)
+                except Exception as te:  # noqa: BLE001
+                    logger.warning(f"AI聊天Token记录失败: {te}")
+        yield _sse("done", {"conversation_id": conversation_id, "reply": reply,
+                            "model": used_model, "references": context["references"]})
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @router.post("/ai/voice-chat")
