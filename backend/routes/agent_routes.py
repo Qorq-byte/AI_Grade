@@ -175,8 +175,6 @@ class RefineStepRequest(BaseModel):
     message: str
     #: True = 只出草稿给前端预览（不落库）；默认保持旧行为直接应用
     preview: bool = False
-    #: True = 只出草稿给前端预览（不落库）；默认保持旧行为直接应用
-    preview: bool = False
     layout_mode: str = "classic"
     language_style: str = "neutral"
     indicator_type: str = "项目支出指标体系"
