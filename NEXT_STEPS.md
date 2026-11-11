@@ -16,9 +16,9 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `main` / 批次 37 提交，工作区干净 |
-| 已完成批次 | 第三轮 B1–B37（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
-| 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），137 个端点 |
+| 分支 / HEAD | `main` / 批次 38 提交，工作区干净 |
+| 已完成批次 | 第三轮 B1–B38（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
+| 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），138 个端点 |
 | 前端 | 零构建，原生 HTML/CSS/JS + `frontend/shared/` |
 | 存储 | MySQL（库 `ai_grade_d`）+ `state_backups/*.json` 磁盘投影 |
 
@@ -26,12 +26,12 @@
 
 | 检查 | 命令 | 当前 |
 |---|---|---|
-| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **730 passed**（CI 也跑这一条） |
+| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **741 passed**（CI 也跑这一条） |
 | 前端共享层 / SSE | `node --test tests/test_*.cjs` | **48 pass**（5 个文件） |
-| 前端联通性 | `python frontend_e2e_check.py` | **104 通过 / 0 失败** |
+| 前端联通性 | `python frontend_e2e_check.py` | **109 通过 / 0 失败** |
 | 全接口 | `python test_all_apis.py` | **47/47** |
 | 真实工作流 | `python wf_e2e.py` | **47 项 / 0 失败**（约 4~5 分钟，要真实模型） |
-| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` / `_mutate_step9_critique.py` / `_mutate_critique_step10.py` / `_mutate_llm_resilience.py` / `_mutate_b7_enablement.py` / `_mutate_workflow_deps.py` / `_mutate_report_routes.py` / `_mutate_refine.py` / `_mutate_refine_llm.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 / 10 / 7 / 11 / 8 / 11 / 9 / 9 / 8 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
+| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` / `_mutate_step9_critique.py` / `_mutate_critique_step10.py` / `_mutate_llm_resilience.py` / `_mutate_b7_enablement.py` / `_mutate_workflow_deps.py` / `_mutate_report_routes.py` / `_mutate_refine.py` / `_mutate_refine_llm.py` / `_mutate_chat_context.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 / 10 / 7 / 11 / 8 / 11 / 9 / 9 / 8 / 8 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
 | 检索基线 | `python -m tests.rag_eval.run --check` | Recall@3 **0.448**、MRR 0.391、P 0.161 |
 
 ---
@@ -70,7 +70,7 @@
 | ~~**B2**~~ | ~~步骤间一致性**从「检测」升级为「拦截」**~~ | ✅ **批次 26 已完成**：每条 issue 带 `id`（`CODE#序号`）与 `blocking`，`BLOCKING_CODES` 只放 4 类结构性缺陷（拦太宽用户会学会绕过）；新增 `chapters`（占位句回溯到章节标题）与 `problem_suggestion_coverage`（低分指标未点名，**聚合**一条）两项检查，`CHECKS` 4 → 6；`/workflow/export` 按 `blocking` 拦 409 + `X-Export-Blocked`，`force` 放行且记日志，读不到状态时 **fail-open**；步骤 11 的得分替换从静默 `re.sub` 改为按行判定 + 写入 `warnings` | 见 `progress_round3.md` B26。**遗留**：① 分步导出（`/workflow/export-step`）不受闸门约束；② 覆盖缺口只做子串匹配，78% 这个数字方向可信、量级虚高；③ `LOW_SCORE_RATIO=0.6` 是拍的 |
 | ~~**B3**~~ | ~~质量门禁 `GET /workflow/{id}/quality`~~ | ✅ **批次 27 已完成**：新增 `backend/services/quality.py`，输出「每步字数事实 + 可解释 flags + 无从判断项」，**刻意不打 0–100 分**（取证发现台账一半缺失、一半恒满分，分数既不能排序也不改变行为）。判据：缺步骤/字数低于该步中位数 20%/落地率 <0.5（样本≥5）/标准夹带结论；缺章等结构性缺陷复用 `consistency` 的 blocking，不另起一套。四态 `review`/`partial`/`pass`/`unknown`，不变量 `verified ∩ unavailable == ∅`。`/client/reports` 每条带 `review`（现算 1.2 ms/份 + mtime 缓存，失败降级 `unknown`），`/client` 卡片按四态显示徽标；顺带修掉 `standard_purity` 未落盘（白名单第三次复发） | 见 `progress_round3.md` B27。**遗留**：① 存量 21 份永久 `partial`（历史未落盘）；② 字数阈值是经验值、不分项目类型；③ 只抓"断在半截"，抓不到"写得很空"；④ 质量 warn **不参与导出闸门**，仍是"建议"；⑤ 详情面板没做，接口的每步事实无界面在读 |
 | **B4** | refine 增强 | ✅ **批次 36 第一步 + 批次 37 第二步**：证据注入、首尾保留截断、preview → 采用/丢弃、版本历史 + 回滚；refine 已接上重试 + 降级链（`services/llm_resilience.py`），失败映射 502/503，降级稿有前端标注 | 见 `progress_round3.md` B36/B37。**遗留**：① agent 的 `_invoke_llm` 还没切到同一实现（两份编排）；② 重试固定 1 次、退避线性；③ 预览成本不落账；④ 导出标注分不清「refine 改写」与「工作流那一步」；⑤ 前端无浏览器级验证 |
-| **B5** | AI 聊天升级 | ❌ 未开始：非流式、不引用用户报告、长对话全量塞 | 流式渲染复用现有 SSE 渲染层；回答「我这份报告扣分点在哪」能引用真实章节 |
+| **B5** | AI 聊天升级 | ⚠️ **批次 38 完成第一步**：真实后端是 `/api/client/ai/chat`（不是 `/api/agent/chat`）。已接入报告上下文（一致性问题 + 证据编号，blocking 优先、封顶 3000 字）、历史按 20 轮 / 6000 字截断、SSE 流式 + 非流式回退、回答带 `references`、归属校验（别人的报告 → 404） | 见 `progress_round3.md` B38。**遗留**：① 引用只到编号，不到章节行号；② 上下文没有报告正文（按需检索未接）；③ 字符级截断可能切半句；④ 流式 usage 依赖供应商；⑤ 前端无浏览器级验证 |
 | **B6** | 多模型对比择优 | ❌ 未开始：现在是并列展示 | 评审调用给维度分与理由，或差异高亮 + 人工选择；落库 `selected_best`；禁止取第一个 |
 | ~~**B7**~~ | ~~模型调用韧性剩余~~ | ✅ **批次 31 + 32 已完成**：分级超时（长文 300/其余 120）、先重试同一模型再降级（429/超时/5xx 才降，400/401/403 直接抛）、`llm_attempts` 每次尝试记账、管理后台可配「备用模型（最多 2 个）」、新会话从设置读默认链、导出件自动标注「哪一步由备选模型完成」。真实 429 故障注入两场景通过；`pytest 624` / 变异 19/19（两批合计） | 见 `progress_round3.md` B31/B32。**遗留**：① 重试+降级最多 3 次调用，配额耗尽时是白等；② 退避只有线性 2 秒、无抖动/熔断；③ 设置是全局的，不能按会话配；④ 前端是自由输入框（填错模型名到降级时才炸）；⑤ 导出标注只在整报导出；⑥ 标注靠「第一条尝试=主模型」推断，续跑可能判反 |
 
@@ -313,17 +313,32 @@
 - **遗留**：agent 的 `_invoke_llm` 仍是另一份编排（切过去要单独一批 + 故障注入回归）；
   重试固定 1 次、退避线性；预览成本不落账；导出标注分不清"refine 改写"与"工作流那一步"。
 
-### 批次 38（建议）：二选一
+### 批次 38 = B5 第一步：聊天引用报告 + 流式 + 历史预算 ✅ 已完成
+- 交付见 `progress_round3.md` B38。新增 `services/chat_context.py`（116 行，纯函数）：
+  一致性问题（blocking 优先）+ 证据编号压成 3000 字上下文；历史按 20 轮 / 6000 字截断，
+  **最后一条永远保留**。
+- `/api/client/ai/chat` 支持 `workflow_session_id`（校验归属，缺省取最近一份已完成），
+  返回 `references`；新增 `/api/client/ai/chat/stream`（SSE：delta → done / error）。
+- 前端流式渲染 + 引用徽标 + **失败自动回退非流式**。
+- 判定：上下文含真实编号、历史越界被截、流式按序出帧并落库、别人的报告 404 ——
+  10 条用例 + 8 条变异全抓（第一轮 6/8，两条用例数据没越界，已补强）。
+- **遗留**：引用只到编号不到章节行号；上下文没有报告正文（按需检索未接）；
+  字符级截断可能切半句；流式 usage 依赖供应商；前端无浏览器级验证。
 
-**A. B5 AI 聊天升级（产品价值最高）**
-- 现状：非流式、不引用用户报告、长对话全量塞。
-- 要做：复用现有 SSE 渲染层；回答「我这份报告扣分点在哪」时引用真实章节
-  （`step_evidence` 与 `report_evidence_index` 已有，可直接拿来拼上下文）。
-- 判定：流式首字延迟 < 2s；引用能回到具体章节；长对话按轮次截断而不是全量。
-- 风险：聊天端点与工作流共用 `active_agents`/DB，别把会话状态搅在一起。
+### 批次 39（建议）：B5 第二步——从「编号引用」到「章节引用」
+- **现状**：回答能说「依据 INDICATOR_MISSING#1」，但用户点不开到报告第几章第几段；
+  「第四章怎么写的」这类问题答不准（上下文只放了问题与证据索引）。
+- **要做**：把 `step_results` 的章节正文按关键词做**片段检索**（`workflow_evidence`
+  的 BM25 已就位，只需接一个"按问题检索章节"的入口），命中的片段带上
+  `{step, chapter, offset}` 进上下文；前端引用徽标变成可展开的片段。
+- **判定**：问 3 类问题（扣分点/某章内容/缺哪章）都能给出可定位到章节的引用；
+  上下文仍 ≤3000 字；pytest + 变异覆盖检索与截断。
+- **风险**：章节正文很长，检索片段要限长；别把整章塞进去，否则又回到"全量塞"。
 
-**B. C1 第四步（可维护性）：搬「指标评分」域**
-- 约 350 行，可把 `agent_routes` 压到 2000 以内；但两个端点要真模型，单测覆盖薄。
+### 批次 40（备选，按目标选一个）
+- **C1 第四步（评分域）**：约 350 行，可把 `agent_routes` 压到 2000 以内；
+  但 `/generate-indicator-analysis`、`/verify-logic` 要真模型，单测薄。
+- **B6 多模型对比择优**：有了 `llm_attempts` 与对比数据，成本比之前低。
 
 ---
 
@@ -339,7 +354,7 @@
 
 ```bash
 cd /d/python/AI_Grade
-NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 730
+NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 741
 node --test tests/test_*.cjs                                                          # 48
 NO_PROXY='*' .venv/Scripts/python.exe -c "import backend.main"                        # 导入自检
 ```
@@ -392,6 +407,7 @@ NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 98/0
 | **变异脚本会「静默失效」** | 跑之前文件**已经被上一次中断的变异污染**时，锚点找不到 → 替换不生效 → 用例当然全绿，脚本报成「变异存活 / 变异点未找到」，看起来像覆盖不足，其实是根本没跑到。批次 21 复核踩到：盘上留着 `"no_evidence": False`，害得两个脚本各报一条假问题。→ **跑之前先 `git diff` 对着安全副本验一遍关键行；跑完除了 `git status --short` 还要 `grep` 关键行**；`.mutation_backup/` 残留别急着删，先 `diff` 看看它是干净版还是污染版 |
 | **变异跑着的时候，源码就是变异体** | 批次 34 想在变异脚本运行期间顺手做「搬运前后逐字比对」，读到的是被改坏的 `_workflow_deps.py`，得出「`_owned_workflows` 不一致」的假结论。→ **变异脚本运行期间不要读、不要比、不要提交源码**；要取证就等它跑完（脚本 `finally` 会还原） |
 | **快照把依赖的「模块名」当契约** | `_dep_name()` 原来返回 `module.name`，批次 34 把 `_require_*` 搬进 `_workflow_deps` 后，148 条里一批路由报「deps 变了」——接口一个字没改。→ 依赖比对只比**函数名**（丢依赖、换函数仍抓得住），并写用例钉住；否则每次拆分都假红，快照就会被人为无视 |
+| **聊天有两个后端，别改错那个** | 前端 `sendChatMessage` 调的是 `/api/client/ai/chat`（`client_routes`，OpenAI 直连）；`/api/agent/chat` 是 `BaseAgent` 的记忆对话，前端没用它。批次 38 一开始差点在后者上做了半天。→ 改聊天前先 `rg "ai/chat" frontend/` 确认调用方 |
 | **服务层要用 agent 的判定函数：延迟导入** | `llm_resilience` 需要 `classify_llm_error` / `retry_backoff`，但模块顶层 `import performance_agent` 会把 LangGraph、DB、记忆会话一起拉起来，还会让"服务 → agent → 服务"的依赖方向变得可疑。→ 在**函数内**导入；纯函数层不要顶层依赖 agent |
 | **测试读备份要读 hydrate 后的** | `state_backups/*.json` 是 `compact()` 之后的样子：与独立字段逐字相同的 `content` 会被换成 `content_ref` + `content_preview`。批次 36 的用例直接读 JSON 断言 `content`，得到 `KeyError`，差点误判成"字段丢了"。→ 测试一律走 `PerformanceAgent.load_state_backup()`，它内部 `hydrate`，形状与路由看到的一致 |
 | **新增端点后要重建路由基线** | `tests/_route_snapshot.py` 是**拆分验收**工具：拿它去跑功能批次，必然报"多了路由"。这不是漂移，是新增。→ 功能批次结束时生成新的 `.backup/routes_before_b<N>.json`，并肉眼核对"只多了预期的那几条"；旧基线不要覆盖 |
