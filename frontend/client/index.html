@@ -87,6 +87,7 @@
         .refine-applied{color:#22543d;font-size:12px}
         .refine-history-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px 0;border-bottom:1px dashed #edf2f7;font-size:12px}
         .refine-current{color:#2b6cb0;font-size:11px}
+        .refine-degraded{color:#b7791f;font-size:12px;margin:4px 0 6px}
         .grade-badge{display:inline-block;padding:4px 16px;border-radius:20px;font-size:16px;font-weight:700}
         .grade-badge.excellent{background:#f0fff4;color:#22543d;border:2px solid #48bb78}
         .grade-badge.good{background:#ebf5ff;color:#2c5282;border:2px solid #4299e1}
@@ -1255,6 +1256,7 @@ function renderRefinePreview(sn,data){
     box.innerHTML='<div class="refine-preview-head">第 '+sn+' 步 · 待确认草稿'
         +'<span class="refine-preview-meta">证据 '+(data.evidence_count||0)+' 条'
         +(data.truncated?' · 原文过长，已保留首尾':'')+'</span></div>'
+        +(data.degraded?'<div class="refine-degraded">主模型不可用，本稿由备选模型完成：措辞与判断可能与其他步骤不一致</div>':'')
         +refineDiffHtml(data.diff)
         +'<div class="refine-preview-actions">'
         +'<button class="refine-btn primary" data-role="apply">采用</button>'

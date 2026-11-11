@@ -365,6 +365,7 @@ log("preview:true" in html, "refine 请求走 preview 分支（不直接落库�
 log("applyRefinePreview" in html, "预览卡片带「采用」动作")
 log("showStepHistory" in html, "步骤面板带历史版本入口")
 log("'/rollback'" in html, "历史版本可回滚（调用 /rollback）")
+log("refine-degraded" in html, "降级生成的草稿会标注「由备选模型完成」")
 
 r = req("GET", "/api/agent/workflow/fe-no-such-session/critique/10", token=user_token)
 log(r.status_code == 404, "GET 不存在会话的步骤10补全台账 → 404（不 500）", f"status={r.status_code}")
