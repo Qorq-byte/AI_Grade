@@ -339,6 +339,56 @@ class RollbackStepRequest(BaseModel):
     to_version: int
 
 
+class SelectCandidateRequest(BaseModel):
+    session_id: str
+    step_number: int
+    model: str
+
+
+@router.get("/workflow/{session_id}/comparison/{step}", dependencies=[Depends(_require_path_workflow)])
+async def get_step_comparison(session_id: str, step: int):
+    """某一步的多模型候选与评分。没有候选时 404（不是空列表，避免前端以为在比）。"""
+    from backend.services import candidates
+
+    values = _get_workflow_values(session_id)
+    outputs = candidates.candidates_of(values, step)
+    if not outputs:
+        raise HTTPException(status_code=404, detail="该步骤没有多模型候选")
+    ranked = candidates.rank(values, step)
+    entry = candidates.entry_for(values, step) or {}
+    return {"success": True, "data": {
+        "step_number": step,
+        "candidates": ranked,
+        "recommended": next((item["model"] for item in ranked if item.get("recommended")), None),
+        "selected_best": entry.get("selected_best"),
+    }}
+
+
+@router.post("/workflow/comparison/select", dependencies=[Depends(_require_body_workflow)])
+async def select_comparison_candidate(req: SelectCandidateRequest):
+    """人工改选：把该候选写回步骤正文，并记住是谁被选中。"""
+    from backend.services import candidates
+
+    values = _get_workflow_values(req.session_id)
+    outputs = candidates.candidates_of(values, req.step_number)
+    if req.model not in outputs:
+        raise HTTPException(status_code=404, detail="找不到该候选")
+    current = (values.get("step_results") or {}).get(req.step_number)
+    if not current:
+        raise HTTPException(status_code=404, detail="找不到该步骤")
+    data = _apply_step_edit(req.session_id, req.step_number, outputs[req.model],
+                            "compare_select", current.get("version", 1))
+    history = dict(values.get("comparison_history") or {})
+    key = req.step_number if req.step_number in history else str(req.step_number)
+    entry = dict(history.get(key) or {})
+    entry["selected_best"] = req.model
+    entry["selected_by"] = "manual"
+    history[key] = entry
+    _persist_state(req.session_id, {"comparison_history": history})
+    data["selected_best"] = req.model
+    return {"success": True, "data": data, "message": f"已采用 {req.model} 的版本"}
+
+
 @router.get("/workflow/{session_id}/steps/{step}/history", dependencies=[Depends(_require_path_workflow)])
 async def get_step_history(session_id: str, step: int):
     """步骤的版本历史（当前版本 + revisions），给前端做「回滚到某一版」。
@@ -1186,6 +1236,17 @@ async def get_workflow_status(session_id: str, db: Session = Depends(get_db), af
         if after_step is not None and step > after_step:
             summary["content"] = content
             summary["evidence"] = values.get("step_evidence", {}).get(str(step), [])
+        # 多模型对比的摘要（只给模型名/分数/推荐，全文走 /comparison/{step}）
+        from backend.services import candidates
+
+        if candidates.entry_for(values, step):
+            ranked = candidates.rank(values, step)
+            summary["comparison"] = {
+                "models": [item["model"] for item in ranked],
+                "scores": {item["model"]: item["score"] for item in ranked},
+                "recommended": next((item["model"] for item in ranked if item.get("recommended")), None),
+                "selected_best": (candidates.entry_for(values, step) or {}).get("selected_best"),
+            }
         summaries.append(summary)
     return AgentResponse(success=True, data={
         "session_id": session_id, "project_name": values.get("project_name") or (record.project_name if record else ""),

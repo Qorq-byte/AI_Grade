@@ -841,7 +841,16 @@ class PerformanceAgent:
             }
             outputs = result.get("individual_outputs", {})
             if outputs:
-                return next(iter(outputs.values()))
+                from backend.services import candidates
+
+                ranked = candidates.rank(state, step_number)
+                state["comparison_history"][step_number]["scores"] = {
+                    item["model"]: item["score"] for item in ranked}
+                picked = candidates.auto_pick(state, step_number)
+                chosen = picked["model"] if picked else next(iter(outputs))
+                state["comparison_history"][step_number]["auto_selected"] = chosen
+                state["comparison_history"][step_number]["selected_best"] = chosen
+                return outputs[chosen]
             raise RuntimeError("对比模型未返回结果")
 
         # 回退
@@ -1392,7 +1401,7 @@ class PerformanceAgent:
         step_name = STEP_META.get(step_number, {}).get("name", f"Step {step_number}")
         now = datetime.now()
 
-        state["step_results"][step_number] = {
+        result = {
             "step_number": step_number,
             "step_name": step_name,
             "status": StepStatusEnum.COMPLETED.value,
@@ -1404,6 +1413,28 @@ class PerformanceAgent:
             "created_at": now,
             "updated_at": now,
         }
+        # 多模型对比：候选必须留在步骤结果里。改造前这里用 {"default": content}
+        # 覆盖掉 raw_outputs，候选当场丢失，之后谁也没法再比较（批次 40）
+        from backend.services import candidates
+
+        entry = candidates.entry_for(state, step_number)
+        if entry:
+            outputs = entry.get("individual_outputs") or {}
+            if outputs:
+                result["raw_outputs"] = {str(model): str(text) for model, text in outputs.items()
+                                         if isinstance(text, str)}
+                pick = entry.get("auto_selected") or entry.get("selected_best")
+                if not pick:
+                    picked = candidates.auto_pick(state, step_number)
+                    pick = picked["model"] if picked else None
+                if pick in result["raw_outputs"]:
+                    result["selected_model"] = pick
+                result["comparison_results"] = {
+                    "models_used": entry.get("models_used") or list(result["raw_outputs"]),
+                    "selected_best": pick,
+                    "scores": entry.get("scores") or {},
+                }
+        state["step_results"][step_number] = result
         # 结构化输出的判定结果（仅步骤 3/4/7 有），供状态接口与前端展示
         if structured is not None:
             status = getattr(structured, "status", None)
@@ -1494,6 +1525,9 @@ class PerformanceAgent:
                 # 弱定位的行号校验依据。只存行数（几十字节），不存全文；
                 # 不含它则「重启/重放后同一份输入判出不同结果」，验收链条断裂
                 "raw_line_counts",
+                # 批次 40：多模型候选正文与择优记录。不含它，重启后候选全部消失，
+                # 「选哪个更好」就只剩日志里一句话 —— 第十次「字段白名单」复发。
+                "comparison_history",
             )
             backup = {key: state[key] for key in fields if key in state}
             backup["step_results"] = {
