@@ -68,6 +68,25 @@
         .wf-step-chat{border-top:1px solid #e2e8f0;padding:16px 0 0;margin-top:16px;display:none}.wf-step-chat.active{display:block}
         .wf-step-chat h4{font-size:14px;color:#1a202c;margin-bottom:8px;display:flex;align-items:center;gap:6px}
         .wf-step-chat-msgs{max-height:200px;overflow-y:auto;margin-bottom:8px;font-size:13px}.wf-step-chat-msg{padding:6px 10px;margin-bottom:6px;border-radius:8px;line-height:1.5}.wf-step-chat-msg.user{background:#ebf5ff;color:#2b6cb0}.wf-step-chat-msg.ai{background:#f8f9fa;color:#4a5568}.wf-step-chat-input-row{display:flex;gap:8px}.wf-step-chat-input-row input{flex:1;padding:6px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;outline:none}.wf-step-chat-input-row input:focus{border-color:#667eea}
+        /* B4（批次 36）：refine 草稿预览与版本回滚 */
+        .refine-btn{padding:4px 12px;font-size:12px;border-radius:6px;border:1px solid #e2e8f0;background:#fff;color:#4a5568;cursor:pointer;transition:all .15s}
+        .refine-btn:hover{border-color:#667eea;color:#667eea}
+        .refine-btn.primary{background:#667eea;color:#fff;border-color:#667eea}
+        .refine-btn.primary:hover{background:#5a6fd6;color:#fff}
+        .refine-preview{border:1px solid #cbd5e0;background:#fff}
+        .refine-preview-head{font-weight:600;color:#2d3748;margin-bottom:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+        .refine-preview-meta{font-weight:400;font-size:11px;color:#718096}
+        .refine-diff{max-height:220px;overflow:auto;border:1px solid #edf2f7;border-radius:6px;background:#fbfdff;font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.5;padding:4px 0}
+        .diff-line{padding:0 8px;white-space:pre-wrap;word-break:break-all}
+        .diff-line.add{background:#f0fff4;color:#22543d}
+        .diff-line.del{background:#fff5f5;color:#822727}
+        .diff-line.hunk{background:#edf2f7;color:#4a5568}
+        .diff-line.ctx{color:#718096}
+        .refine-diff-empty{font-size:12px;color:#a0aec0;padding:6px 0}
+        .refine-preview-actions{display:flex;gap:8px;margin-top:8px}
+        .refine-applied{color:#22543d;font-size:12px}
+        .refine-history-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px 0;border-bottom:1px dashed #edf2f7;font-size:12px}
+        .refine-current{color:#2b6cb0;font-size:11px}
         .grade-badge{display:inline-block;padding:4px 16px;border-radius:20px;font-size:16px;font-weight:700}
         .grade-badge.excellent{background:#f0fff4;color:#22543d;border:2px solid #48bb78}
         .grade-badge.good{background:#ebf5ff;color:#2c5282;border:2px solid #4299e1}
@@ -871,7 +890,7 @@ function buildGradeAndChart(txt){
 }
 
 function buildStepChat(sn){
-    return '<div class="wf-step-chat active" id="wfStepChat"><h4><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#667eea" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>优化步骤 '+sn+': '+C.STEP_NAMES[sn]+'</h4><div class="wf-step-chat-msgs" id="wfStepChatMsgs"></div><div class="wf-step-chat-input-row"><input id="wfStepChatInput" placeholder="输入优化指令，让AI帮您调整..." onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();refineStepContent()}"><button class="btn-primary btn-sm" onclick="refineStepContent()">发送</button></div></div>';
+    return '<div class="wf-step-chat active" id="wfStepChat"><h4><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#667eea" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>优化步骤 '+sn+': '+C.STEP_NAMES[sn]+'<button class="refine-btn" style="margin-left:auto" onclick="showStepHistory('+sn+')">历史版本</button></h4><div class="wf-step-chat-msgs" id="wfStepChatMsgs"></div><div class="wf-step-chat-input-row"><input id="wfStepChatInput" placeholder="输入优化指令，让AI帮您调整..." onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();refineStepContent()}"><button class="btn-primary btn-sm" onclick="refineStepContent()">发送</button></div></div>';
 }
 
 function buildStepFooter(sn,st,txt){
@@ -1203,23 +1222,99 @@ function refineStepContent(stepNum, msgText, isApprovalReject){
     if(isApprovalReject){
         var c=document.getElementById('wfContent');if(c)c.innerHTML='<div class="wf-empty"><h3>'+C.STEP_NAMES[sn]+'</h3><p>AI正在按照您的修改意见重新生成...</p></div>';
     }
-    api('POST','/api/agent/workflow/refine',{session_id:wfSessionId,step_number:sn,message:msg,layout_mode:wfLayoutMode,language_style:wfLanguageStyle,indicator_type:wfIndicatorType}).then(function(r){
+    // 批次 36（B4）：先出草稿、预览差异，用户点「采用」才落库
+    api('POST','/api/agent/workflow/refine',{session_id:wfSessionId,step_number:sn,message:msg,preview:true,layout_mode:wfLayoutMode,language_style:wfLanguageStyle,indicator_type:wfIndicatorType}).then(function(r){
         if(msgs&&aiDiv.parentNode)aiDiv.remove();
-        if(r.success&&r.data.refined_content){
-            wfStepContents[sn]=r.data.refined_content;
-            // 更新内容显示区域（不重建整个步骤面板，保留聊天历史）
-            var contentInner=document.querySelector('.wf-content-inner');
-            if(contentInner)contentInner.innerHTML=renderMd(r.data.refined_content);
-            // 将AI优化结果添加到聊天历史
-            var preview=r.data.refined_content.substring(0,200)+(r.data.refined_content.length>200?'...':'');
-            if(msgs)msgs.innerHTML+='<div class="wf-step-chat-msg ai"><strong>优化完成 ✅</strong><br><span style="font-size:0.85em;opacity:0.8">'+esc(preview)+'</span></div>';
-            if(msgs)msgs.scrollTop=msgs.scrollHeight;
-            showToast('步骤'+sn+'内容已优化','success')
+        if(r.success&&r.data&&typeof r.data.draft==='string'){
+            if(msgs)msgs.innerHTML+='<div class="wf-step-chat-msg ai">草稿已生成，确认后再保存（未采用不会改动当前内容）。</div>';
+            renderRefinePreview(sn,r.data);
         }else{if(msgs)msgs.innerHTML+='<div class="wf-step-chat-msg ai">优化失败，请重试</div>'}
     }).catch(function(e){
         if(msgs&&aiDiv.parentNode)aiDiv.remove();
         if(msgs)msgs.innerHTML+='<div class="wf-step-chat-msg ai">错误: '+esc(e.message)+'</div>'
     })
+}
+
+// ── B4（批次 36）：refine 草稿预览 / 采用 / 丢弃 / 版本回滚 ──
+function refineDiffHtml(diff){
+    if(!diff||!diff.lines||!diff.lines.length)return '<div class="refine-diff-empty">内容没有变化</div>';
+    var h='<div class="refine-diff">';
+    for(var i=0;i<diff.lines.length;i++){
+        var row=diff.lines[i],op=row.op||'ctx';
+        var cls=op==='add'?'add':(op==='del'?'del':(op==='hunk'?'hunk':'ctx'));
+        var sign=op==='add'?'+':(op==='del'?'-':' ');
+        h+='<div class="diff-line '+cls+'">'+esc(sign+' '+row.text)+'</div>';
+    }
+    if(diff.truncated)h+='<div class="diff-line hunk">…（差异过长，仅显示前 '+diff.lines.length+' 行）</div>';
+    return h+'</div>';
+}
+
+function renderRefinePreview(sn,data){
+    var msgs=document.getElementById('wfStepChatMsgs');if(!msgs)return;
+    var box=document.createElement('div');box.className='wf-step-chat-msg ai refine-preview';
+    box.innerHTML='<div class="refine-preview-head">第 '+sn+' 步 · 待确认草稿'
+        +'<span class="refine-preview-meta">证据 '+(data.evidence_count||0)+' 条'
+        +(data.truncated?' · 原文过长，已保留首尾':'')+'</span></div>'
+        +refineDiffHtml(data.diff)
+        +'<div class="refine-preview-actions">'
+        +'<button class="refine-btn primary" data-role="apply">采用</button>'
+        +'<button class="refine-btn" data-role="discard">丢弃</button></div>';
+    box._draft=data.draft;box._version=data.version;box._step=sn;
+    box.querySelector('[data-role="apply"]').onclick=function(){applyRefinePreview(box)};
+    box.querySelector('[data-role="discard"]').onclick=function(){box.remove();showToast('已丢弃草稿','info')};
+    msgs.appendChild(box);msgs.scrollTop=msgs.scrollHeight;
+}
+
+function applyRefinePreview(box){
+    var sn=box._step,btn=box.querySelector('[data-role="apply"]');
+    btn.disabled=true;btn.textContent='保存中...';
+    api('PUT','/api/agent/workflow/'+wfSessionId+'/steps/'+sn,{content:box._draft,version:box._version}).then(function(r){
+        if(!r.success)throw new Error(r.message||'保存失败');
+        wfStepContents[sn]=box._draft;
+        if(r.data&&r.data.version)wfVersions[sn]=r.data.version;
+        var inner=document.querySelector('.wf-content-inner');if(inner)inner.innerHTML=renderMd(box._draft);
+        box.querySelector('.refine-preview-actions').innerHTML='<span class="refine-applied">已采用（第 '+(r.data&&r.data.version||'')+' 版）</span>';
+        showToast('步骤'+sn+'内容已更新','success');
+    }).catch(function(e){
+        btn.disabled=false;btn.textContent='采用';
+        showToast(e.status===409?'步骤已被修改，请刷新后重试':('保存失败：'+e.message),'error');
+    });
+}
+
+function showStepHistory(sn){
+    if(!wfSessionId)return;
+    api('GET','/api/agent/workflow/'+wfSessionId+'/steps/'+sn+'/history').then(function(r){
+        if(!r.success)return;
+        var msgs=document.getElementById('wfStepChatMsgs');if(!msgs)return;
+        var old=msgs.querySelectorAll('.refine-history');for(var k=0;k<old.length;k++)old[k].remove();
+        var box=document.createElement('div');box.className='wf-step-chat-msg ai refine-history';
+        var h='<div class="refine-preview-head">步骤 '+sn+' 的历史版本</div>';
+        for(var i=0;i<r.data.length;i++){
+            var row=r.data[i];
+            h+='<div class="refine-history-row"><span>第 '+row.version+' 版 · '+esc(row.edited_by||'workflow')+' · '+(row.chars||0)+' 字</span>';
+            h+=row.is_current?'<span class="refine-current">当前</span>'
+                :'<button class="refine-btn" data-version="'+row.version+'">回滚</button>';
+            h+='</div>';
+        }
+        box.innerHTML=h;
+        box.querySelectorAll('button[data-version]').forEach(function(btn){
+            btn.onclick=function(){rollbackStep(sn,parseInt(btn.getAttribute('data-version')),btn)};
+        });
+        msgs.appendChild(box);msgs.scrollTop=msgs.scrollHeight;
+    }).catch(function(e){showToast('读取历史失败：'+e.message,'error')});
+}
+
+function rollbackStep(sn,version,btn){
+    btn.disabled=true;btn.textContent='回滚中...';
+    api('POST','/api/agent/workflow/'+wfSessionId+'/steps/'+sn+'/rollback',{to_version:version}).then(function(r){
+        if(!r.success)throw new Error(r.message||'回滚失败');
+        var content=(r.data&&r.data.refined_content)||'';
+        wfStepContents[sn]=content;
+        if(r.data&&r.data.version)wfVersions[sn]=r.data.version;
+        var inner=document.querySelector('.wf-content-inner');if(inner)inner.innerHTML=renderMd(content);
+        showToast('已回滚到第 '+version+' 版','success');
+        showStepHistory(sn);
+    }).catch(function(e){btn.disabled=false;btn.textContent='回滚';showToast('回滚失败：'+e.message,'error')});
 }
 
         function wfStepStatus(sn){if(wfCompletedSteps.indexOf(sn)>=0)return 'done';if(wfRunning&&sn===wfCurrentStep)return 'doing';return 'pending'}
