@@ -1,14 +1,13 @@
-"""导出域的路由（从 `agent_routes.py` 拆出，批次 34）。
+"""导出域的路由（从 `agent_routes.py` 拆出，批次 34；批次 35 并入导出样式）。
 
 拆分原则：**只搬代码，不改逻辑**。路径、方法、依赖、响应模型一字不动，
 由 `tests/_route_snapshot.py` 前后比对来证明（148 条零差异）。
 
 与问卷域的区别：问卷域搬走时还反过来 import `agent_routes` 的六个符号；
 这次先抽了 `_workflow_deps.py`，依赖与状态读写都从那里拿。
-唯一保留的一处反向依赖是**报告读取**（`_read_report` / `_report_review_steps`）——
-它们属于「报告」域，还没搬；这里**按模块访问**而不是按名字导入，
-这样测试 `monkeypatch.setattr(agent_routes, "_read_report", ...)` 依然生效
-（按名字导入会把 patch 点搬到一个没人调用的副本上）。
+报告读取（`_read_report` / `_report_review_steps`）属于「报告」域（批次 35 已搬）。
+这里**按模块访问** `report_routes`，不按名字导入 —— 按名字导入会把测试的 patch 点
+搬到一个没人调用的副本上（批次 34 踩过）。
 """
 from __future__ import annotations
 
@@ -31,9 +30,10 @@ from backend.database import get_db
 from backend.middleware.auth_middleware import get_current_user
 from backend.models.user_models import User
 from backend.routes import _shared_state
-from backend.routes import agent_routes as _agent_routes
+from backend.routes import report_routes as _report_routes
 from backend.routes._workflow_deps import (
-    AgentResponse, _get_workflow_values, _require_body_workflow,
+    AgentResponse, _get_workflow_values, _persist_state, _require_body_workflow,
+    _require_path_workflow,
 )
 from backend.services import export_cache
 
@@ -363,8 +363,58 @@ async def export_step_content(request: ExportStepRequest, user: User = Depends(g
 # 按模块访问 `_agent_routes`（而不是 `from ... import _read_report`），
 # 否则测试改的是 `agent_routes` 上的名字、跑的是这里的副本。
 def _report_review_steps(session_id):
-    return _agent_routes._report_review_steps(session_id)
+    return _report_routes._report_review_steps(session_id)
 
 
 def _read_report(session_id: str, db: Session):
-    return _agent_routes._read_report(session_id, db)
+    return _report_routes._read_report(session_id, db)
+
+
+# ═══════════════════════════════════════════════════════
+#  导出样式自定义
+# ═══════════════════════════════════════════════════════
+
+class ExportStyleRequest(BaseModel):
+    session_id: str
+    font_family: str = "SimSun"
+    font_size: int = 12
+    line_spacing: float = 1.5
+    page_margin: float = 2.5
+
+
+@router.post("/workflow/export-style", dependencies=[Depends(_require_body_workflow)])
+async def set_export_style(req: ExportStyleRequest):
+    """
+    设置导出PDF/Word文档的自定义样式
+    支持的字体：SimSun(宋体), SimHei(黑体), KaiTi(楷体), FangSong(仿宋)
+    """
+    try:
+        values = _get_workflow_values(req.session_id)
+        style = {
+            "font_family": req.font_family,
+            "font_size": req.font_size,
+            "line_spacing": req.line_spacing,
+            "page_margin": req.page_margin,
+        }
+        _persist_state(req.session_id, {"export_style": style})
+        return {"success": True, "data": style, "message": "导出样式已保存"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/workflow/{session_id}/export-style", dependencies=[Depends(_require_path_workflow)])
+async def get_export_style(session_id: str):
+    """获取当前的导出样式设置"""
+    try:
+        values = _get_workflow_values(session_id)
+        style = values.get("export_style", {
+            "font_family": "SimSun", "font_size": 12,
+            "line_spacing": 1.5, "page_margin": 2.5,
+        })
+        return {"success": True, "data": style}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

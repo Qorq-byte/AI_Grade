@@ -32,6 +32,16 @@ from backend.routes import _shared_state
 from backend.routes._shared_state import _validate_session_id
 
 
+#: 每一步的正文落在 state 的哪个字段里。
+#: 步骤编辑（`_apply_step_edit`）与报告组装（`assemble-report`）都要用 ——
+#: 两处各写一份的话，新增一步就会出现"改得了、拼不进去"。
+STEP_CONTENT_FIELDS = {
+    1: "cost_list", 2: "effective_data", 5: "scoring_standards", 6: "evaluation_table",
+    7: "indicator_analysis", 8: "experience_summary", 9: "problems_analysis", 10: "suggestions",
+    11: "comprehensive_evaluation", 12: "basic_info", 13: "work_introduction",
+}
+
+
 class AgentResponse(BaseModel):
     """Agent响应基础模型"""
     success: bool

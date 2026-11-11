@@ -226,7 +226,10 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     request_id = _rid(request)
-    logger.error(f"未处理的异常 [{request.method} {request.url.path}]: {exc}", exc_info=True)
+    # 必须用 opt(exception=True)：loguru 不认 exc_info，会把它当格式化参数；
+    # 而异常文本里一旦出现花括号（JSON / dict repr），format 会抛 IndexError，
+    # 兜底处理器自己崩掉、客户端只拿到空响应体（批次 35 踩过）。
+    logger.opt(exception=True).error(f"未处理的异常 [{request.method} {request.url.path}]: {exc}")
     return JSONResponse(
         status_code=500,
         content={"success": False, "detail": f"服务器内部错误: {str(exc)}",
@@ -322,6 +325,9 @@ app.include_router(agent_routes.router, prefix="/api/agent", tags=["Agent"])
 # 批次 33：问卷域单独一个模块（从 agent_routes 拆出，路径与依赖不变）
 from backend.routes.questionnaire_routes import router as questionnaire_router
 app.include_router(questionnaire_router, prefix="/api/agent", tags=["问卷"])
+# 批次 35：报告域单独一个模块（同上）
+from backend.routes.report_routes import router as report_router
+app.include_router(report_router, prefix="/api/agent", tags=["报告"])
 # 批次 34：导出域单独一个模块（同上，只搬代码不改逻辑）
 from backend.routes.export_routes import router as export_router
 app.include_router(export_router, prefix="/api/agent", tags=["导出"])
