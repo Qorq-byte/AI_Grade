@@ -42,6 +42,15 @@ def _state():
         "project_name": "某某项目",
         "completed_steps": [1, 2],
         "final_report": "",
+        "step_results": {
+            7: {"content": (
+                "一、总体得分情况\n\n"
+                "本项目综合得分 82 分，数量指标完成较好，质量指标基本达标。\n\n"
+                "二、扣分项\n\n"
+                "设备采购完成率不足，扣 3 分；资金到位率偏低，扣 2 分。"
+            )},
+            9: {"content": "问题分析：资金到位率偏低的原因是拨付流程较长，影响执行进度。"},
+        },
         "step_evidence": {"8": [
             {"id": "P1", "source": "可研报告.pdf", "locator": "第 12 行",
              "kind": "project", "text": "项目实际完成 80%"},
@@ -232,3 +241,83 @@ def test_stream_reports_an_error_frame_without_persisting_a_reply(api):
     with factory() as db:
         roles = [m.role for m in db.query(AiMessage).all()]
     assert roles == ["user"]
+
+
+# ─── 批次 39：章节级引用（按问题检索正文片段） ───
+
+def _report_state():
+    return _state()
+
+
+def test_snippets_are_retrieved_by_the_question():
+    """问「扣分项」就该命中扣分那一段，而不是章节开头。"""
+    snippets = chat_context.retrieve_chapter_snippets(_report_state(), "扣分项在哪")
+
+    assert snippets, "应至少命中一段"
+    top = snippets[0]
+    assert "设备采购完成率不足" in top["text"]
+    assert top["step"] == 7
+    assert top["chapter"]                     # 章节名来自 STEP_META，不能为空
+    assert top["offset"] > 0                   # 能定位到正文里的位置
+
+
+def test_snippet_offset_points_into_the_chapter():
+    values = _report_state()
+    snippets = chat_context.retrieve_chapter_snippets(values, "设备采购完成率")
+    content = values["step_results"][7]["content"]
+    top = snippets[0]
+
+    assert content[top["offset"]:].startswith(top["text"][:12])
+
+
+def test_no_match_means_no_chapter_section():
+    built = chat_context.build_report_context(_report_state(), "某某项目", query="xyzzy-不存在")
+
+    assert "【相关章节】" not in built["text"]
+    assert not any(item.get("step") for item in built["references"])
+
+
+def test_context_includes_the_matched_chapter_and_a_locatable_reference():
+    built = chat_context.build_report_context(_report_state(), "某某项目", query="扣分项")
+
+    assert "【相关章节】" in built["text"]
+    assert "设备采购完成率不足" in built["text"]
+    refs = [item for item in built["references"] if item.get("step")]
+    assert refs and refs[0]["chapter"] and refs[0]["offset"] >= 0
+    assert "第" in refs[0]["label"]           # 形如「步骤7·第3段」
+
+
+def test_snippets_are_capped_in_count_and_length():
+    values = {"step_results": {
+        7: {"content": "\n".join(f"第{i}段：" + "扣分说明" * 200 for i in range(20))},
+    }}
+
+    snippets = chat_context.retrieve_chapter_snippets(values, "扣分", limit=3, max_chars=200)
+
+    assert len(snippets) <= 3
+    assert all(len(item["text"]) <= 200 for item in snippets)
+
+
+def test_context_with_snippets_still_respects_the_total_budget():
+    values = _report_state()
+    values["step_results"][7]["content"] = "扣分项说明" * 2000
+
+    built = chat_context.build_report_context(values, "项目", query="扣分项")
+
+    assert len(built["text"]) <= chat_context.MAX_CONTEXT_CHARS
+    # 指令必须活下来（在顶部，不会被尾部截断吃掉）
+    assert "报告里没有这项" in built["text"]
+
+
+def test_chat_passes_the_user_question_to_retrieval(api):
+    client, headers, _, monkeypatch = api
+    owner = _FakeOwner()
+    monkeypatch.setattr(client_routes, "_get_openai_client", lambda model=None: _fake_client(owner))
+
+    resp = client.post("/api/client/ai/chat", headers=headers,
+                       json={"message": "扣分项在哪", "workflow_session_id": "s1"})
+
+    assert resp.status_code == 200, resp.text
+    system = owner.calls[0]["messages"][0]["content"]
+    assert "设备采购完成率不足" in system
+    assert any(item.get("step") for item in resp.json()["data"]["references"])

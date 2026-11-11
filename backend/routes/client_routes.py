@@ -135,7 +135,8 @@ def _resolve_chat_context(req, current_user, db) -> dict:
     if record is None:
         return {"text": "", "references": []}
     values = PerformanceAgent.load_state_backup(record.session_id) or {}
-    return chat_context.build_report_context(values, record.project_name or "")
+    return chat_context.build_report_context(values, record.project_name or "",
+                                               query=req.message or "")
 
 
 def _call_ai_chat(conversation_id, db, model_name: str = None, context_text: str = ""):

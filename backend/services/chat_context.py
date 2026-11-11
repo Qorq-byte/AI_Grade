@@ -12,7 +12,8 @@
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+import re
+from typing import Dict, List, Optional, Tuple
 
 #: 注入 system 的报告上下文上限。3000 字 ≈ 1.5k token，够放问题清单与证据索引。
 MAX_CONTEXT_CHARS = 3000
@@ -23,6 +24,12 @@ MAX_EVIDENCE = 10
 #: 历史预算：轮数与字符数取先到者。
 MAX_HISTORY_TURNS = 20
 MAX_HISTORY_CHARS = 6000
+#: 按问题检索章节片段（批次 39）：最多几段、每段多少字、整份报告最多扫多少字。
+MAX_SNIPPETS = 3
+MAX_SNIPPET_CHARS = 400
+MAX_REPORT_CHARS = 60_000
+#: 章节标题的形态：`一、` / `（一）` / `##` / `1.`。用它把正文切成「标题 + 正文」的块。
+HEADING_RE = re.compile(r"^\s*(#{1,4}\s|[一二三四五六七八九十]+、|（[一二三]+）|\d+[.、])")
 
 NO_REPORT_TEXT = ""
 
@@ -34,11 +41,15 @@ def _clip(text: str, limit: int) -> str:
     return text[: limit - 1] + "…"
 
 
-def build_report_context(values: Optional[dict], project_name: str = "") -> Dict:
+def build_report_context(values: Optional[dict], project_name: str = "",
+                         query: str = "") -> Dict:
     """把工作流状态压成一段可引用的上下文。
 
+    `query` 是用户当前的问题：给了就按它检索章节片段（批次 39），
+    这样「第四章怎么写的」也能拿到可定位的原文，而不是只能答"问题清单"。
+
     返回 `{text, references}`：`text` 进 system 提示，`references` 回给前端
-    （用户可以点开看到"这句话是从哪条问题/哪份材料来的"）。
+    （用户可以点开看到"这句话是从哪条问题/哪份材料/哪一段来的"）。
     """
     values = values or {}
     if not values:
@@ -55,7 +66,12 @@ def build_report_context(values: Optional[dict], project_name: str = "") -> Dict
         steps_text = "尚未完成"
 
     references: List[Dict] = []
-    lines = [f"【当前报告】{name}；已完成步骤：{steps_text}。"]
+    lines = [
+        f"【当前报告】{name}；已完成步骤：{steps_text}。",
+        # 指令放在**顶部**：整体截断时不能被吃掉，否则模型会开始编
+        "请只依据以下信息回答；问到报告里没有的内容时，直接说「报告里没有这项」，"
+        "不要编造章节号、数字或引用编号。",
+    ]
 
     try:
         report = consistency.check_consistency(values)
@@ -73,6 +89,20 @@ def build_report_context(values: Optional[dict], project_name: str = "") -> Dict
                                "label": item.get("code") or "问题",
                                "detail": item.get("message", "")})
 
+    snippets = retrieve_chapter_snippets(values, query) if query else []
+    if snippets:
+        lines.append("【相关章节】")
+        for snippet in snippets:
+            lines.append(f"- [{snippet['id']}] {snippet['chapter']} · {snippet['locator']}："
+                         f"{snippet['text']}")
+            references.append({
+                "id": snippet["id"],
+                "label": f"步骤{snippet['step']}·{snippet['locator']}",
+                "detail": snippet["text"][:120],
+                "step": snippet["step"], "chapter": snippet["chapter"],
+                "offset": snippet["offset"],
+            })
+
     index = report_evidence_index(values.get("step_evidence") or {})
     if index:
         rows = [line for line in index.splitlines() if line.startswith("- ")]
@@ -83,12 +113,128 @@ def build_report_context(values: Optional[dict], project_name: str = "") -> Dict
                 raw = row[2:].strip()
                 references.append({"id": raw.split("]")[0].lstrip("["),
                                    "label": "证据", "detail": raw})
-    if not issues and not index:
-        lines.append("【说明】这份报告还没有可引用的问题清单与证据索引。")
-
-    lines.append("请只依据以上信息回答；问到报告里没有的内容时，直接说「报告里没有这项」，"
-                 "不要编造章节号、数字或引用编号。")
+    if not issues and not index and not snippets:
+        lines.append("【说明】这份报告还没有可引用的章节、问题清单与证据索引。")
     return {"text": _clip("\n".join(lines), MAX_CONTEXT_CHARS), "references": references}
+
+
+def _paragraphs(text: str) -> List[Tuple[int, str]]:
+    """按空行切段，返回 (偏移, 文本)。偏移用于「点开到第几段」。"""
+    out: List[Tuple[int, str]] = []
+    start = 0
+    for match in re.finditer(r"\n{2,}", text):
+        raw = text[start:match.start()]
+        stripped = raw.strip()
+        if stripped:
+            out.append((start + raw.index(stripped), stripped))
+        start = match.end()
+    raw = text[start:]
+    stripped = raw.strip()
+    if stripped:
+        out.append((start + raw.index(stripped), stripped))
+    return out
+
+
+def _window(offset: int, text: str, size: int) -> List[Tuple[int, str]]:
+    """超长段落按 size 切窗（尽量落在换行处），偏移仍然指向原文。"""
+    out: List[Tuple[int, str]] = []
+    pos = 0
+    while pos < len(text):
+        raw = text[pos:pos + size]
+        cut = raw.rfind("\n")
+        if cut >= size // 2:
+            raw = raw[:cut + 1]
+        pos += max(len(raw), 1)
+        piece = raw.strip()
+        if piece:
+            out.append((offset + pos - len(raw) + raw.index(piece), piece))
+    return out
+
+
+def _blocks(text: str, target: int = MAX_SNIPPET_CHARS) -> List[Tuple[int, str]]:
+    """把一章切成「标题 + 正文」的块。标题开新块，过长再切窗。"""
+    sections: List[List[Tuple[int, str]]] = []
+    current: List[Tuple[int, str]] = []
+    for offset, para in _paragraphs(text):
+        if current and HEADING_RE.match(para.splitlines()[0]):
+            sections.append(current)
+            current = []
+        current.append((offset, para))
+    if current:
+        sections.append(current)
+
+    blocks: List[Tuple[int, str]] = []
+    for section in sections:
+        buf: List[str] = []
+        start = None
+        for offset, para in section:
+            if len(para) > target * 2:
+                if buf:
+                    blocks.append((start, "\n\n".join(buf)))
+                    buf, start = [], None
+                blocks.extend(_window(offset, para, target))
+                continue
+            if start is None:
+                start = offset
+            buf.append(para)
+            if sum(len(item) for item in buf) >= target:
+                blocks.append((start, "\n\n".join(buf)))
+                buf, start = [], None
+        if buf:
+            blocks.append((start, "\n\n".join(buf)))
+    return [(offset, text.strip()) for offset, text in blocks if text.strip()]
+
+
+def retrieve_chapter_snippets(values: Optional[dict], query: str,
+                              limit: int = MAX_SNIPPETS,
+                              max_chars: int = MAX_SNIPPET_CHARS) -> List[Dict]:
+    """按问题在报告正文里找最相关的几段（BM25，中文二元组）。
+
+    为什么不用整章：一章动辄几千字，塞进 3000 字预算会把问题清单和证据挤掉；
+    只给命中的片段，模型才能回答「第四章怎么写的」而不跑题。
+    """
+    query = (query or "").strip()
+    values = values or {}
+    if not query:
+        return []
+
+    from backend.agents.prompts.default_prompts import STEP_META
+    from backend.services import retrieval
+
+    chunks, meta = [], {}
+    budget = 0
+    results = values.get("step_results") or {}
+    for key in sorted(results, key=lambda item: int(item)):
+        item = results[key]
+        content = item.get("content") if isinstance(item, dict) else None
+        if not isinstance(content, str) or not content.strip():
+            continue
+        step = int(key)
+        chapter = STEP_META.get(step, {}).get("name", f"步骤{step}")
+        for index, (offset, text) in enumerate(_blocks(content, max_chars)):
+            if budget >= MAX_REPORT_CHARS:
+                break
+            chunk_id = f"S{step}P{index}"
+            chunks.append({"id": chunk_id, "source": chapter, "locator": f"第{index + 1}段",
+                           "kind": "report", "text": _clip(text, max_chars), "step_number": step})
+            meta[chunk_id] = {"step": step, "chapter": chapter,
+                              "offset": offset, "locator": f"第{index + 1}段"}
+            budget += len(text)
+    if not chunks:
+        return []
+
+    hits = retrieval.build_index(chunks).search(query, limit=max(limit * 3, limit))
+    picked: List[Dict] = []
+    for score, chunk in hits:
+        info = meta[chunk.id]
+        picked.append({
+            "id": chunk.id, "step": info["step"], "chapter": info["chapter"],
+            "locator": info["locator"], "offset": info["offset"],
+            "text": chunk.text, "score": round(score, 4),
+        })
+        if len(picked) >= limit:
+            break
+    return picked
 
 
 def trim_history(messages: List[Dict], max_turns: int = MAX_HISTORY_TURNS,
