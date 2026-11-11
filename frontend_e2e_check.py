@@ -374,6 +374,10 @@ log("workflow_session_id" in html, "聊天请求带当前报告 id（用于引�
 log("appendChatReferences" in html, "回答下方展示引用编号")
 log("addStreamingBubble" in html, "流式回答逐段渲染到气泡")
 
+# 批次 39（B5 第二步）：引用从「编号」变成「可展开的章节片段」
+log("toggleChatRef" in html, "引用徽标可展开片段原文")
+log("chat-ref-detail-open" in html, "展开的片段有独立样式")
+
 r = req("GET", "/api/agent/workflow/fe-no-such-session/critique/10", token=user_token)
 log(r.status_code == 404, "GET 不存在会话的步骤10补全台账 → 404（不 500）", f"status={r.status_code}")
 

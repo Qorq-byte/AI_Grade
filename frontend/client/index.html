@@ -38,7 +38,7 @@
         .voice-recorder{display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%;transition:all .3s;padding:8px 0}.voice-recorder.hidden{height:0;opacity:0;overflow:hidden}.voice-indicator{display:flex;align-items:center;gap:8px;margin-bottom:6px}.voice-dot{width:8px;height:8px;border-radius:50%;background:#e53e3e;animation:pulse 1s infinite}.voice-time{font-family:monospace;font-size:13px;color:rgba(255,255,255,.8)}.voice-bars{display:flex;align-items:center;justify-content:center;gap:2px;width:100%;height:32px;padding:0 16px}.voice-bar{width:4px;border-radius:2px;background:rgba(255,255,255,.5);animation:barWave .8s infinite}
         @keyframes barWave{0%,100%{height:8px}50%{height:28px}}@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
         .send-btn-dark{width:32px;height:32px;border-radius:50%;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s}.send-btn-dark.active{background:white;color:#1F2023}.send-btn-dark.active:hover{background:rgba(255,255,255,.8)}.send-btn-dark.idle{background:transparent;color:#9ca3af}.send-btn-dark.idle:hover{background:rgba(96,96,96,.3);color:#d1d5db}.send-btn-dark.recording-btn{background:transparent;color:#e53e3e}.send-btn-dark.recording-btn:hover{background:rgba(229,62,62,.15);color:#fc8181}
-        .chat-empty{text-align:center;padding:60px 0;color:#9ca3af}.chat-empty h2{font-size:1.5rem;font-weight:700;color:#e2e8f0;margin-bottom:8px}.chat-empty p{font-size:14px}.chat-refs{margin-top:8px;padding-top:6px;border-top:1px dashed #3a3a4e;font-size:11px;color:#9ca3af}.chat-refs-title{margin-right:4px}.chat-ref{display:inline-block;margin:2px 4px 0 0;padding:1px 6px;border-radius:10px;background:#33334a;color:#c3c9d4;cursor:help}.chat-disabled-bar{display:none;text-align:center;padding:12px;color:#fc8181;background:rgba(229,62,62,.1);border-radius:8px;margin-bottom:12px;font-size:13px}
+        .chat-empty{text-align:center;padding:60px 0;color:#9ca3af}.chat-empty h2{font-size:1.5rem;font-weight:700;color:#e2e8f0;margin-bottom:8px}.chat-empty p{font-size:14px}.chat-refs{margin-top:8px;padding-top:6px;border-top:1px dashed #3a3a4e;font-size:11px;color:#9ca3af}.chat-refs-title{margin-right:4px}.chat-ref-detail-open{margin-top:6px;padding:6px 8px;background:#242438;border-radius:6px;color:#c3c9d4;line-height:1.5;font-size:11px}.chat-ref{display:inline-block;margin:2px 4px 0 0;padding:1px 6px;border-radius:10px;background:#33334a;color:#c3c9d4;cursor:help}.chat-disabled-bar{display:none;text-align:center;padding:12px;color:#fc8181;background:rgba(229,62,62,.1);border-radius:8px;margin-bottom:12px;font-size:13px}
 
         /* ===== WORKFLOW UI ===== */
         .wf-topbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:24px;padding:16px;background:white;border-radius:12px;border:1px solid #e2e8f0}
@@ -1969,9 +1969,19 @@ document.addEventListener('DOMContentLoaded',function(){
             var box=document.createElement('div');box.className='chat-refs';
             var html='<span class="chat-refs-title">依据：</span>';
             for(var i=0;i<Math.min(refs.length,6);i++){
-                var r=refs[i];html+='<span class="chat-ref" title="'+esc(r.detail||'')+'">'+esc(r.id||'')+'</span>';
+                var r=refs[i];
+                var label=r.label||r.id||'';
+                var detail=(r.chapter?r.chapter+' · ':'')+(r.detail||'');
+                html+='<span class="chat-ref" data-detail="'+esc(detail)+'" onclick="toggleChatRef(this)">'+esc(label)+'</span>';
             }
             box.innerHTML=html;el.querySelector('.chat-bubble-dark').appendChild(box);
+        }
+        function toggleChatRef(el){
+            var box=el.parentNode,open=box.querySelector('.chat-ref-detail-open');
+            if(open)open.remove();
+            var d=document.createElement('div');d.className='chat-ref-detail-open';
+            d.textContent=el.getAttribute('data-detail')||'';
+            box.appendChild(d);
         }
         function sendChatMessage(){var t=document.getElementById('promptTextarea'),m=t.value.trim();if(!m)return;if(!isChatEnabled){showToast('AI聊天已禁用','error');return}t.value='';updateSendButton();var dp=m;(currentMode==='search')?dp='[搜索: '+m+']':(currentMode==='think')?dp='[深度思考: '+m+']':(currentMode==='canvas')?dp='[画布: '+m+']':null;
             addChatBubble('user',m);t.disabled=true;document.getElementById('sendButton').disabled=true;
