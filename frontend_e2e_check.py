@@ -378,6 +378,11 @@ log("addStreamingBubble" in html, "流式回答逐段渲染到气泡")
 log("toggleChatRef" in html, "引用徽标可展开片段原文")
 log("chat-ref-detail-open" in html, "展开的片段有独立样式")
 
+# 批次 40（B6）：多模型候选可比较、可择优
+log("buildComparisonPanel" in html, "/client 含多模型对比面板")
+log("selectCandidate" in html, "候选可人工采用")
+log("cmp-badge" in html, "推荐候选有单独标记")
+
 r = req("GET", "/api/agent/workflow/fe-no-such-session/critique/10", token=user_token)
 log(r.status_code == 404, "GET 不存在会话的步骤10补全台账 → 404（不 500）", f"status={r.status_code}")
 

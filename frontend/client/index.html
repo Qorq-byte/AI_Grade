@@ -88,6 +88,14 @@
         .refine-history-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px 0;border-bottom:1px dashed #edf2f7;font-size:12px}
         .refine-current{color:#2b6cb0;font-size:11px}
         .refine-degraded{color:#b7791f;font-size:12px;margin:4px 0 6px}
+        .cmp-row{display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:6px;font-size:13px}
+        .cmp-row.selected{border-color:#48bb78;background:#f0fff4}
+        .cmp-model{font-weight:600;color:#2d3748}
+        .cmp-score{color:#4a5568;font-size:12px}
+        .cmp-badge{background:#ebf5ff;color:#2b6cb0;border-radius:10px;padding:1px 8px;font-size:11px}
+        .cmp-current{background:#f0fff4;color:#22543d;border-radius:10px;padding:1px 8px;font-size:11px}
+        .cmp-tie{color:#b7791f;font-size:12px;margin:0 0 6px}
+        .cmp-row .refine-btn{margin-left:auto}
         .grade-badge{display:inline-block;padding:4px 16px;border-radius:20px;font-size:16px;font-weight:700}
         .grade-badge.excellent{background:#f0fff4;color:#22543d;border:2px solid #48bb78}
         .grade-badge.good{background:#ebf5ff;color:#2c5282;border:2px solid #4299e1}
@@ -462,7 +470,7 @@
         var currentUserData=null,isChatEnabled=true,isCollapsed=false,isMobileOpen=false,currentConversationId=null,conversations=[],isRecording=false,recordingTimer=null,recordingSeconds=0,currentMode='',speechRecognition=null,chatStatusPollTimer=null,notificationPollTimer=null;
 
         // ====== WF State ======
-        var wfSessionId=null,wfRunning=false,wfCurrentStep=0,wfStatus="",wfStatusController=null,wfCoverage=null,wfConsistency=null,wfDispo=null,wfCritique=null,wfCritiqueSwitches={},wfVersions={},wfEvidence={},wfReviewSteps=[],wfCompletedSteps=[],wfStepContents={},wfApprovalStep=null,wfUploadedFiles=[],wfAbortController=null
+        var wfSessionId=null,wfRunning=false,wfCurrentStep=0,wfStatus="",wfStatusController=null,wfCoverage=null,wfConsistency=null,wfDispo=null,wfCritique=null,wfCritiqueSwitches={},wfVersions={},wfEvidence={},wfComparisons={},wfReviewSteps=[],wfCompletedSteps=[],wfStepContents={},wfApprovalStep=null,wfUploadedFiles=[],wfAbortController=null
 
         function initWfStepper(){var l=document.getElementById('wfStepperList');if(!l)return;l.innerHTML='';for(var i=1;i<=14;i++){(function(sn){var div=document.createElement('div');div.className='wf-step';div.id='wfStep'+sn;div.innerHTML='<div class="wf-step-dot">'+sn+'</div><span class="wf-step-name">'+C.STEP_NAMES[sn]+'</span>';div.onclick=function(){selectWfStep(sn)};l.appendChild(div)})(i)}}
 
@@ -483,6 +491,7 @@
         var showLayout=(sn>=1);
         if(showLayout)inner+='<div class="layout-selector" style="display:flex" id="wfLayoutSel"><button class="active" onclick="setLayoutMode(\'classic\',this)">经典排版</button><button onclick="setLayoutMode(\'auto\',this)">自动排版</button></div>';
         inner+=buildStepSpecificPanel(sn,txt);
+        if(wfComparisons[sn])inner+=buildComparisonPanel(sn);
         if(wfEditMode==='manual' && sn<14 && sn!==4){
             inner+='<textarea id="wfManualContent" class="input-field" rows="12" style="width:100%">'+esc(txt)+'</textarea>';
             inner+='<button class="btn-primary" onclick="saveManualStep('+sn+')">保存人工修改</button>';
@@ -714,6 +723,36 @@ function rerunConsistencyCheck(){
             showToast(res.data.summary||'一致性检查通过','success');
         }
     }).catch(function(e){showApiError(e,{op:'一致性检查'})});
+}
+
+function buildComparisonPanel(sn){
+    var cmp=wfComparisons[sn];if(!cmp||!cmp.models||cmp.models.length<1)return '';
+    var h='<div class="step-extra-panel show cmp-panel"><h5>多模型对比</h5>';
+    if(cmp.models.length>1&&!cmp.recommended){
+        h+='<p class="cmp-tie">两个候选得分相同，不自动推荐 —— 请自己判断。</p>';
+    }
+    h+='<div class="cmp-list">';
+    for(var i=0;i<cmp.models.length;i++){
+        var m=cmp.models[i],sc=(cmp.scores&&cmp.scores[m])||0;
+        h+='<div class="cmp-row'+(m===cmp.selected_best?' selected':'')+'">'
+          +'<span class="cmp-model">'+esc(m)+'</span>'
+          +'<span class="cmp-score">'+sc+' 分</span>'
+          +(m===cmp.recommended?'<span class="cmp-badge">推荐</span>':'')
+          +(m===cmp.selected_best?'<span class="cmp-current">当前采用</span>':'')
+          +'<button class="refine-btn" onclick="selectCandidate('+sn+',\''+esc(m)+'\')">采用</button>'
+          +'</div>';
+    }
+    return h+'</div></div>';
+}
+function selectCandidate(sn,model){
+    api('POST','/api/agent/workflow/comparison/select',{session_id:wfSessionId,step_number:sn,model:model}).then(function(r){
+        if(!r.success)throw new Error(r.message||'采用失败');
+        if(r.data&&r.data.refined_content)wfStepContents[sn]=r.data.refined_content;
+        if(r.data&&r.data.version)wfVersions[sn]=r.data.version;
+        if(wfComparisons[sn])wfComparisons[sn].selected_best=model;
+        showToast('已采用 '+model+' 的版本','success');
+        selectWfStep(sn);
+    }).catch(function(e){showToast('采用失败：'+e.message,'error')});
 }
 
 function buildEditModeBar(sn){
@@ -1354,7 +1393,7 @@ function rollbackStep(sn,version,btn){
             // 重置状态，准备新评价
             wfStatusController?.abort();
             wfSessionId=newWorkflowSession();sessionStorage.setItem(workflowSessionKey,wfSessionId);
-            wfCompletedSteps=[];wfStepContents={};wfVersions={};wfEvidence={};wfReviewSteps=[];wfApprovalStep=null;wfCurrentStep=0;wfStatus='running';wfCoverage=null;wfConsistency=null;wfDispo=null;wfCritique=null;wfCritiqueSwitches={};
+            wfCompletedSteps=[];wfStepContents={};wfVersions={};wfEvidence={};wfComparisons={};wfReviewSteps=[];wfApprovalStep=null;wfCurrentStep=0;wfStatus='running';wfCoverage=null;wfConsistency=null;wfDispo=null;wfCritique=null;wfCritiqueSwitches={};
             document.getElementById('wfRetryBtn').hidden=true;
             window._currentQuestionData=null;  // 清空问卷缓存，确保下次切换Tab重新加载
             initWfStepper();document.getElementById('wfLayout').style.display='flex';
@@ -1484,6 +1523,7 @@ var body={session_id:wfSessionId,use_rag:document.getElementById("wfUseRag").che
                     if ('content' in step) wfStepContents[step.step_number] = step.content;
                     wfVersions[step.step_number] = step.version;
                     if (step.evidence) wfEvidence[step.step_number] = step.evidence;
+                    if (step.comparison) wfComparisons[step.step_number] = step.comparison;
                 }
                 wfReviewSteps = data.review_steps;
                 if (data.document_coverage && data.document_coverage.total_chars) wfCoverage = data.document_coverage;
