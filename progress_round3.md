@@ -5316,3 +5316,150 @@ PASS 路由快照零差异（148 条）
 7. **没有做 OpenAPI schema 深比较**（批次 33 遗留项，仍在）。
    端点搬走后 `response_model` 名称没变，但 schema 的 `$ref` 指针会指向新模块，
    理论上客户端生成代码会变 —— 本批没验。
+
+---
+
+# 批次 35：搬「报告」域，判定 ④ 达标（C1 第三步）
+
+> 批次 34 差的 361 行，这一批补上：`agent_routes.py` **2961 → 2354**。
+> 顺带发现并修掉两个「测试绿着、其实没守」的问题，以及一个把 500 变成空响应的真 bug。
+
+## B35.1 起点：先查了一遍变异脚本的锚点（计划外，但必须做）
+
+搬代码会让变异脚本里「源码片段」的锚点失效。脚本的处理是打印
+「变异点未找到」然后**跳过** —— 它还在跑、还在输出「抓住 N 条」，
+但守的那条逻辑早就没人管了。
+
+于是先写了一条静态守卫 `tests/test_mutation_anchors.py`，把 `backend/routes/` 下
+所有变异体的锚点逐条核对。**当场红了 3 个脚本、7 条锚点**：
+
+| 脚本 | 失效锚点 | 什么时候坏的 |
+|---|---|---|
+| `_mutate_backup_race.py` | 列表接口退回裸 open | 批次 33 搬问卷列表 |
+| `_mutate_b7_enablement.py` | 导出件不追加降级标注 / 标注把主模型算成降级 / 标注不去重 | 批次 34 搬导出域 |
+| `_mutate_consistency_gate.py` | 导出闸门无视 force / 不 fail-open / 409 缺标记头 | 批次 34 搬导出域 |
+
+修完之后逐条真跑：b7 **8/8**、backup_race **4/4**、consistency_gate **15/15**。
+其中 consistency_gate 第一次跑仍漏一条 —— 见 B35.3 的「绿着失效」。
+
+## B35.2 做法
+
+### 1）`report_routes.py`（新增 590 行）
+
+搬了四个块，共 551 行：
+
+- 报告查询 & 编辑存储（`_read_report` / `_save_report` / `/report` / `/save-report`，
+  含 `_chapter_from_values`、`_assemble_report_from_steps`、`_assemble_report_from_backup_steps`）；
+- 步骤 12 模块化内容生成（`/generate-module`、`/modules`、`STEP12_MODULES`）；
+- 报告顺序 / 组装 / 格式校验（`REPORT_SECTION_ORDER`、`/report-order`、`/assemble-report`、
+  `/format-check`）；
+- 步骤 12 动态模块增删改（`/add-custom-module`、`/delete-module`、`/update-module-content`）。
+
+### 2）导出样式并进 `export_routes.py`（48 行）
+
+`/workflow/export-style`（GET/POST）本来就是「导出件长什么样」，跟着导出域走。
+`export_routes` 的反向依赖从 `agent_routes` 改成 `report_routes`；
+`backend/routes/` 下**已经没有任何** `from backend.routes.agent_routes import`。
+
+### 3）`STEP_CONTENT_FIELDS` 进 `_workflow_deps`
+
+它同时被「步骤编辑」（还在 `agent_routes`）和「报告组装」（已搬走）使用。
+两边各抄一份的话，新增一步就会出现「改得了、拼不进去」。有用例守着两者是**同一个对象**。
+
+### 4）修了一个真 bug：兜底异常处理器二次崩
+
+`backend/main.py` 原来是：
+
+```python
+logger.error(f"未处理的异常 ...: {exc}", exc_info=True)
+```
+
+loguru 不认 `exc_info`，把它当**格式化参数**；异常文本里只要出现花括号
+（JSON、dict repr 都有），`message.format()` 就抛 `IndexError`。
+结果是端点 500 之后处理器自己又崩，客户端拿到**空响应体**，排查时没有任何线索。
+本批搬报告域时就被它挡住过一次：真实错误是「Pydantic 模型没定义完」，现场只看到空 500。
+
+改成 `logger.opt(exception=True).error(...)`，并补 `tests/test_error_logging.py` 两条用例。
+
+## B35.3 验证
+
+**改前红**（三条，都是真实的）：
+
+1. `test_mutation_anchors.py` —— 3 个脚本、7 条锚点失效；
+2. 报告域搬完第一次请求 500：`report_routes` 的 `ReportOrderRequest` 用了 `List[...]`，
+   但 `from typing import ...` 漏了 `List`。导入不报错、路由快照也看不出（body 模型名没变），
+   直到 Pydantic 在请求时重建模型才炸。
+3. `test_export_fails_open_when_workflow_state_is_missing` 在 B34 之后 patch 的是
+   `agent._get_workflow_values`，而调用方已搬到 `export_routes` —— **用例一直绿着，
+   但什么都没测**。`_mutate_consistency_gate.py` 的 fail-open 变异第一轮「漏掉」，
+   才把它揪出来。改成 patch `export_routes._get_workflow_values` 后变异立刻抓住。
+
+**「只搬代码」的机器证据**：报告域 551 行 + 导出样式 48 行，与 HEAD 逐字比对
+**完全一致**（这次连 `_shared_state.` 前缀都不需要归一化）。
+
+**路由快照**（两次比对，都在 `.backup/routes_before.json` 上）：
+
+```
+PASS 路由快照零差异（148 条）
+```
+
+**全量回归**：
+
+| 检查 | 改前 | 改后 |
+|---|---|---|
+| `pytest tests --ignore=tests/rag_eval` | 641 passed | **698 passed**（+57） |
+| `node --test tests/test_*.cjs` | 48 pass | **48 pass** |
+| 路由快照 | 148 零差异 | **148 零差异** |
+| `test_all_apis.py` | 47/47 | **47/47** |
+| `frontend_e2e_check.py` | 98/0 | **98/0** |
+| `wf_e2e.py` | 47/0 | **47/0** |
+| 变异脚本 | 22 个 | **23 个**；新增 `_mutate_report_routes.py` **9/9** |
+
+新增 57 条用例：
+
+- `test_mutation_anchors.py`（24）：所有路由层变异体的锚点还在不在；
+- `test_route_split_35.py`（24）：报告/导出样式端点归属、反向依赖归零、
+  `STEP_CONTENT_FIELDS` 同一对象、`_save_report` 走共享状态、**OpenAPI schema 能生成**
+  （专抓「注解缺类型导入」）；
+- `test_report_routes.py`（7）：读报告三级回退、保存落库、组装落库、模块增删/重名 400、
+  章节顺序读写、导出样式读写；
+- `test_error_logging.py`（2）：兜底处理器遇到花括号文本不再二次崩。
+
+**行数**：
+
+```
+agent_routes.py          2961 → 2354   （−607，判定 ④ ≤2600 达标）
+report_routes.py                   590
+export_routes.py          370 → 420   （并入导出样式）
+_workflow_deps.py         118 → 128   （并入 STEP_CONTENT_FIELDS）
+```
+
+## B35.4 回滚
+
+- 代码：`git revert` 本批提交。`report_routes.py` 删除，四个块回到 `agent_routes`，
+  导出样式回到原文件；`main.py` 的处理器改动也可单独回滚（只影响日志）。
+- 数据：无。搬的都是无状态代码。
+- 判据：回滚后 `pytest` 回到 641，路由快照仍与 `.backup/routes_before.json` 零差异。
+
+## B35.5 剩余风险与未验证项（诚实列出）
+
+1. **`agent_routes.py` 还有 2354 行**。判定 ④ 已达标，但「拆完」还早：
+   SSE 流式（约 400 行）、评分/扣分/逻辑校对（约 350 行）、上传（约 110 行）、
+   critique/语言风格（约 130 行）、模板库（约 200 行）都还在里面。
+2. **格式校验与模块生成没有单测**：`/format-check` 和 `/generate-module` 都要真模型，
+   只有 `wf_e2e.py` 覆盖；`_mutate_report_routes.py` 也因此没有给这两条加变异。
+3. **锚点守卫只覆盖 `backend/routes/`**：`_mutate_step7.py` 用别名（`"agent"`）、
+   `_mutate_shrink_34.py` 用隐式单目标（三元组），静态解析不可靠。
+   对它们「猜路径」比不猜更糟，所以守卫刻意不覆盖 —— 这是边界，不是遗漏。
+4. **OpenAPI 用例只验证「能生成」**，不做字段级深比较（批次 33 遗留项，仍在）。
+   `$ref` 指向新模块、字段类型变化都看不出来。
+5. **兜底处理器的修改改变了日志调用方式**（`exc_info=True` → `opt(exception=True)`）。
+   行为上仍打印堆栈，但如果有外部日志采集按 `exc_info` 字段过滤，需要复核。
+6. **`report_routes` 与 `export_routes` 之间是单向依赖**（export → report）。
+   如果后续把「导出样式」当成报告的一部分挪回去，这条依赖方向会反过来 ——
+   两边都别 import 对方，保持单向。
+7. **`wf_e2e` 第一次跑卡住了 13 分钟**：服务端停在 `[Step 9]` 之后，没有任何日志、
+   没有异常，客户端 `start-stream` 的 `timeout=None` 就一直等。杀掉重跑，
+   4 分钟 47/0 通过 —— 判定为模型侧单次调用挂起，与本批改动无关（工作流不经过被搬的端点）。
+   但这暴露了一个既有问题：**流式请求没有超时，卡住时只能人工杀**。
+   下次碰 `wf_e2e` 挂起，先看服务端最后一条 `[Step N]` 日志，再决定是否重跑。
