@@ -15,6 +15,7 @@ TARGET_TESTS = "tests/test_report_no_raw_json.py"
 AGENT = "backend/agents/performance_agent.py"
 STRUCT = "backend/agents/tools/structured_output.py"
 ROUTES = "backend/routes/agent_routes.py"
+REPORT = "backend/routes/report_routes.py"
 
 # (说明, 文件, 原文, 替换)
 MUTATIONS = [
@@ -69,11 +70,11 @@ MUTATIONS = [
             prose = (state.get("step7_prose") or "").strip()
             return prose"""),
     ("路由组装不用正文（values 路径）",
-     ROUTES,
+     REPORT,
      """        ("四、指标得分及分析", _chapter_from_values(values, "indicator_analysis")),""",
      """        ("四、指标得分及分析", values.get("indicator_analysis")),"""),
     ("备份组装忽略 step7_prose",
-     ROUTES,
+     REPORT,
      """        if step_num == "7":
             # 第四章只拼正文：不带这一步，报告里就会出现整段评分 JSON（批次 22）
             content = (backup.get("step7_prose") or "").strip() or content""",
