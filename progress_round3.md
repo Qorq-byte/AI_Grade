@@ -5589,3 +5589,95 @@ _workflow_deps.py         118 → 128   （并入 STEP_CONTENT_FIELDS）
    换机器/CI 要重新 `--out` 生成。它是本地验收工具，不是可复现的 CI 断言。
 9. **事件循环守卫只覆盖 `format-check` 一处**：另外 4 处也改了，但没有各自的用例 ——
    它们的形态相同（同一个 `run_in_threadpool` 改法），一处红就能定位这一类问题。
+
+---
+
+# 批次 37：refine 接上韧性链（B4 第二步）
+
+> 批次 36 把 refine 做成了「有证据、能预览、可回滚」，但它仍然**裸调一次模型**：
+> 主模型 429/超时就是一次失败，也不记 `llm_attempts`。这一批把 B31/B32 那套
+> 重试 + 降级接过来，让"人工优化一步"和"工作流跑一步"享有同样的容错。
+
+## B37.1 起点：韧性链只活在 agent 里
+
+| 事项 | 改造前 |
+|---|---|
+| 重试 | `/workflow/refine` 直接 `ChatOpenAI(...).invoke` —— 一次失败就返回 500 |
+| 降级 | 完全没有。`system_config.fallback_models` 里配了备选也不生效 |
+| 台账 | 不记 `llm_attempts`，导出件的「哪一步换了模型」标注漏掉这次改写 |
+| 可复用性 | 那套策略写在 `PerformanceAgent._invoke_llm` 里，依赖 `state`、`base_agent.llm`、`progress_bus`；路由要用只能 new 一个 agent（会连库、建记忆会话） |
+
+## B37.2 做法
+
+### 1）`backend/services/llm_resilience.py`（新增 131 行，纯函数）
+
+- `model_chain(primary, configured, limit=3)`：去重、封顶 3 个（主 + 2 备选），
+  接受 list 或逗号串；
+- `fallback_models_from(values)`：`system_config.fallback_models` 优先，其次环境变量
+  `LLM_FALLBACK_MODELS`；
+- `invoke_with_fallback(chain, call, step, attempts, warnings, retries, sleep)`：
+  同模型先重试一次 → 仍 transient 才换下一个；**permanent（400/401/403）直接抛**；
+  每次尝试写进调用方持有的 `attempts`；降级成功追加一条 warning（与 agent 层同一句话）；
+- `merge_attempts`：并进已有台账，只留最近 200 条（与 agent 层一致）。
+
+判定与退避直接复用 `performance_agent` 的 `classify_llm_error` / `retry_backoff` /
+`LLM_RETRY_ATTEMPTS` —— **同一份规则，不复制**。为避免服务层在 import 期拉起整个
+agent（LangGraph / DB 连接池），这三者用函数内延迟导入。
+
+### 2）路由
+
+- 主模型仍是 `active_workflow_configs[sid].model_name`（回落 `settings.DEFAULT_MODEL`）；
+  备选链从会话状态取；
+- 每次尝试通过 `refine.build_model(name)` 现造客户端（测试打桩这一个入口就能绕开真模型）；
+- 失败映射：`permanent → 502`（上游拒绝，换模型没用）、`transient → 503`（稍后可再试）。
+  改造前统一 500，前端分不清"该不该重试"；
+- **台账只在「采用」时落盘**：预览丢弃的内容不该出现在导出件的降级标注里；
+  预览响应里带 `attempts` 与 `degraded`，前端能立刻看到"这稿是备选模型写的"。
+
+### 3）前端
+
+预览卡片在 `degraded` 时多一行提示（暖色）：
+「主模型不可用，本稿由备选模型完成：措辞与判断可能与其他步骤不一致」。
+
+## B37.3 验证
+
+**改前红**：`test_refine_llm.py` 的 4 条路由用例失败（预览没有 attempts/degraded、
+全失败返回 500、永久错误也去调了备选）。纯函数层 10 条直接绿 —— 先证明规则本身对。
+
+| 检查 | 改前 | 改后 |
+|---|---|---|
+| `pytest` | 715 passed | **730 passed**（+15：14 条韧性 + 1 条锚点守卫参数化） |
+| 路由快照 | 150 零差异 | **150 零差异**（本批不加端点） |
+| `test_all_apis` | 47/47 | **47/47** |
+| `frontend_e2e_check` | 103/0 | **104/0**（+1：降级标注） |
+| `wf_e2e` | 47/0 | **47/0** |
+| 变异脚本 | 24 个 | **25 个**；新增 `_mutate_refine_llm.py` **8/8** |
+
+**变异覆盖的 8 条**：不重试同一模型 / 永久错误也降级 / 只用主模型 / 降级不写 warning /
+链路不封顶 / 成功也记成 error / 预览不返回尝试标记 / 失败映射成 500。
+
+**一个被测试当场抓住的连带改动**：`test_refine_preview.py` 原来打桩的是
+`agent_routes.ChatOpenAI`，路由改走 `refine.build_model` 后打桩失效，3 条用例立刻红 ——
+说明这批用例真的盯着调用路径，不是只盯着返回值。
+
+## B37.4 回滚
+
+- 代码：`git revert` 本批提交。`system_config.fallback_models` 为空时链路只有主模型，
+  行为与改造前等价（一次调用、失败 500）—— 也就是说**不配备选就等于回滚**。
+- 数据：无。`llm_attempts` 是追加字段，老会话没有也能跑。
+- 判据：回滚后 `pytest` 回到 715，路由快照仍是 150。
+
+## B37.5 剩余风险与未验证项（诚实列出）
+
+1. **两份实现并存**：agent 的 `_invoke_llm` 还没切到 `llm_resilience`。判定函数与文案
+   已经共用，但**编排逻辑有两份**，将来改策略（比如加熔断）要改两处。
+   切 agent 是独立一批的事（14 步热路径，要全量 + 故障注入回归）。
+2. **重试次数固定 1、退避线性**：与 agent 层一致（B32 的遗留项），没有抖动/熔断。
+3. **每次尝试都重建客户端**：`build_llm_for` 会读配置、校验密钥。refine 是人工低频操作，
+   可以接受；如果以后高频（比如批量重写），要缓存客户端。
+4. **预览的成本不可见**：预览失败的尝试不落盘（刻意），所以"预览了 10 次都没采用"
+   在台账里查不到，只有服务端日志有。
+5. **`attempts` 的 `step` 是步骤号，不是 `refine` 来源标记**：导出件的标注会写成
+   「步骤 8（backup）」—— 与"工作流跑的那一步"同形。要区分只能看 `detail`/时间，
+   这一批没加来源字段（会动到导出标注的解析）。
+6. **前端仍只有字符串级 e2e**：降级提示的真实渲染没有浏览器验证（B36 的遗留项，仍在）。
