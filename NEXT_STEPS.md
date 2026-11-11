@@ -12,13 +12,13 @@
 
 ---
 
-## 1. 当前位置（截至 2026-11-10）
+## 1. 当前位置（截至 2026-11-11）
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `main` / 批次 35 提交，工作区干净 |
-| 已完成批次 | 第三轮 B1–B35（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
-| 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），135 个端点 |
+| 分支 / HEAD | `main` / 批次 36 提交，工作区干净 |
+| 已完成批次 | 第三轮 B1–B36（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
+| 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），137 个端点 |
 | 前端 | 零构建，原生 HTML/CSS/JS + `frontend/shared/` |
 | 存储 | MySQL（库 `ai_grade_d`）+ `state_backups/*.json` 磁盘投影 |
 
@@ -26,12 +26,12 @@
 
 | 检查 | 命令 | 当前 |
 |---|---|---|
-| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **698 passed**（CI 也跑这一条） |
+| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **715 passed**（CI 也跑这一条） |
 | 前端共享层 / SSE | `node --test tests/test_*.cjs` | **48 pass**（5 个文件） |
-| 前端联通性 | `python frontend_e2e_check.py` | **98 通过 / 0 失败** |
+| 前端联通性 | `python frontend_e2e_check.py` | **103 通过 / 0 失败** |
 | 全接口 | `python test_all_apis.py` | **47/47** |
 | 真实工作流 | `python wf_e2e.py` | **47 项 / 0 失败**（约 4~5 分钟，要真实模型） |
-| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` / `_mutate_step9_critique.py` / `_mutate_critique_step10.py` / `_mutate_llm_resilience.py` / `_mutate_b7_enablement.py` / `_mutate_workflow_deps.py` / `_mutate_report_routes.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 / 10 / 7 / 11 / 8 / 11 / 9 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
+| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` / `_mutate_step9_critique.py` / `_mutate_critique_step10.py` / `_mutate_llm_resilience.py` / `_mutate_b7_enablement.py` / `_mutate_workflow_deps.py` / `_mutate_report_routes.py` / `_mutate_refine.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 / 10 / 7 / 11 / 8 / 11 / 9 / 9 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
 | 检索基线 | `python -m tests.rag_eval.run --check` | Recall@3 **0.448**、MRR 0.391、P 0.161 |
 
 ---
@@ -69,7 +69,7 @@
 | **B1** | critique-revise（步骤 8/9/10/12/13） | ⚠️ **批次 29 做步骤 9、批次 30 做步骤 10**（换个做法：确定性漏项补全）。`CRITIQUE_SPECS` 统一定义两步的提示词/字段/开关，闸门与台账共用；A/B：步骤 9 点名率 **5.9%→100%**（token 2.33 倍）、步骤 10 **46.4%→85.7%**（1.84 倍）；真实一轮两步都补到 17/17。`POST /workflow/set-critique {step, enabled}` + `/critique/{step}` 看前后两版，前端两个面板各有开关按钮。**步骤 8/12/13 仍未做** | 见 `progress_round3.md` B29/B30。**遗留**：① 一轮补全不保证全覆盖（步骤 10 单轮 85.7%）；② 建议的「落地性/不喊口号」无法自动验证，只抽读过 1 份；③ 两步合计成本 +15%~20%（全流程总量未实测）；④ 备份每会话 +40 KB（原文按 UTF-8 存，B29 的 5–6KB 估算已更正） |
 | ~~**B2**~~ | ~~步骤间一致性**从「检测」升级为「拦截」**~~ | ✅ **批次 26 已完成**：每条 issue 带 `id`（`CODE#序号`）与 `blocking`，`BLOCKING_CODES` 只放 4 类结构性缺陷（拦太宽用户会学会绕过）；新增 `chapters`（占位句回溯到章节标题）与 `problem_suggestion_coverage`（低分指标未点名，**聚合**一条）两项检查，`CHECKS` 4 → 6；`/workflow/export` 按 `blocking` 拦 409 + `X-Export-Blocked`，`force` 放行且记日志，读不到状态时 **fail-open**；步骤 11 的得分替换从静默 `re.sub` 改为按行判定 + 写入 `warnings` | 见 `progress_round3.md` B26。**遗留**：① 分步导出（`/workflow/export-step`）不受闸门约束；② 覆盖缺口只做子串匹配，78% 这个数字方向可信、量级虚高；③ `LOW_SCORE_RATIO=0.6` 是拍的 |
 | ~~**B3**~~ | ~~质量门禁 `GET /workflow/{id}/quality`~~ | ✅ **批次 27 已完成**：新增 `backend/services/quality.py`，输出「每步字数事实 + 可解释 flags + 无从判断项」，**刻意不打 0–100 分**（取证发现台账一半缺失、一半恒满分，分数既不能排序也不改变行为）。判据：缺步骤/字数低于该步中位数 20%/落地率 <0.5（样本≥5）/标准夹带结论；缺章等结构性缺陷复用 `consistency` 的 blocking，不另起一套。四态 `review`/`partial`/`pass`/`unknown`，不变量 `verified ∩ unavailable == ∅`。`/client/reports` 每条带 `review`（现算 1.2 ms/份 + mtime 缓存，失败降级 `unknown`），`/client` 卡片按四态显示徽标；顺带修掉 `standard_purity` 未落盘（白名单第三次复发） | 见 `progress_round3.md` B27。**遗留**：① 存量 21 份永久 `partial`（历史未落盘）；② 字数阈值是经验值、不分项目类型；③ 只抓"断在半截"，抓不到"写得很空"；④ 质量 warn **不参与导出闸门**，仍是"建议"；⑤ 详情面板没做，接口的每步事实无界面在读 |
-| **B4** | refine 增强 | ❌ 未开始：现在只截 8000 字、无证据注入；`_apply_step_edit` 有 version 但 UI 没接 | 注入本步证据 + 相邻步骤上下文；返回 `diff`/`version`，前端支持预览→采用/丢弃→回滚 |
+| **B4** | refine 增强 | ⚠️ **批次 36 完成第一步**：证据注入（本步证据 + 上一步摘要 + 项目名）、首尾保留截断（7:3 + 标记）、`preview` 草稿 → 采用/丢弃、版本历史 + 回滚（前端差异卡片）。**还没接韧性链**：直接 `ChatOpenAI`，429/超时就是一次失败，也不记 `llm_attempts` | 见 `progress_round3.md` B36。**遗留**：① refine 无重试/降级/记账（下一步最该补）；② 草稿只存前端，刷新即丢；③ diff 是行级、长文只显示前 80 行；④ 前端只有字符串级 e2e，没有浏览器验证 |
 | **B5** | AI 聊天升级 | ❌ 未开始：非流式、不引用用户报告、长对话全量塞 | 流式渲染复用现有 SSE 渲染层；回答「我这份报告扣分点在哪」能引用真实章节 |
 | **B6** | 多模型对比择优 | ❌ 未开始：现在是并列展示 | 评审调用给维度分与理由，或差异高亮 + 人工选择；落库 `selected_best`；禁止取第一个 |
 | ~~**B7**~~ | ~~模型调用韧性剩余~~ | ✅ **批次 31 + 32 已完成**：分级超时（长文 300/其余 120）、先重试同一模型再降级（429/超时/5xx 才降，400/401/403 直接抛）、`llm_attempts` 每次尝试记账、管理后台可配「备用模型（最多 2 个）」、新会话从设置读默认链、导出件自动标注「哪一步由备选模型完成」。真实 429 故障注入两场景通过；`pytest 624` / 变异 19/19（两批合计） | 见 `progress_round3.md` B31/B32。**遗留**：① 重试+降级最多 3 次调用，配额耗尽时是白等；② 退避只有线性 2 秒、无抖动/熔断；③ 设置是全局的，不能按会话配；④ 前端是自由输入框（填错模型名到降级时才炸）；⑤ 导出标注只在整报导出；⑥ 标注靠「第一条尝试=主模型」推断，续跑可能判反 |
@@ -290,31 +290,33 @@
 - **留给后续**：格式校验/模块生成无单测（要真模型）；锚点守卫只覆盖 `backend/routes/`；
   OpenAPI 只验「能生成」；SSE/评分/上传/critique/模板库仍在 `agent_routes`（约 1200 行）。
 
-### 批次 36（二选一，看目标）
+### 批次 36 = B4 refine 增强（第一步）✅ 已完成
+- 交付见 `progress_round3.md` B36：证据注入（本步证据 + 上一步摘要 + 项目名）、
+  首尾保留截断（7:3 + 标记）、`preview` 草稿、版本历史与回滚、前端差异卡片 + 采用/丢弃。
+- 新增 `backend/services/refine.py`（125 行）与 2 个端点；`agent_routes` 2354 → 2418
+  （功能增长，不是拆分）。路由 148 → 150，新基线 `.backup/routes_before_b37.json`。
+- 判定：预览不落库、证据真进提示词、回滚恢复正文且版本递增 —— 15 条用例 + 9 条变异全抓。
+- **顺带修了一个既有缺陷**：`format-check` / `generate-module` / `perspective` /
+  `generate-indicator-analysis` / `verify-logic` 五处在 `async` 里同步调 `model.invoke`，
+  一次慢调用会把整个服务卡住（`wf_e2e` 第一次就是这么超时的）。已全部挪进线程池，
+  并补了事件循环守卫用例。
+- **遗留（下一步最该补）**：refine 没接 B31/B32 的韧性链（无重试/降级/记账）；
+  preview 只存前端；diff 是行级；前端只有字符串级 e2e，没有浏览器验证。
 
-**A. C1 第四步（可维护性）：搬「指标评分」域**
-- 范围：`/indicators-for-scoring`、`/generate-indicator-analysis`、`/save-indicator-scores`、
-  `/extract-deductions`、`/confirm-deductions`、`/verify-logic`、`/score-summary`、
-  `/reorder-indicators`、`_parse_evaluation_points`、`_generate_score_table`（约 350 行）。
-- 判定：快照零差异；`pytest` 全绿；`agent_routes` ≤2000 行。
-- 风险：`/generate-indicator-analysis`、`/verify-logic` 要真模型，单测只能覆盖参数与落盘；
-  变异只能打「校验/落盘」类，不打 LLM 调用本身。
+### 批次 37（建议）：B4 第二步——refine 接上韧性链
+- **现状**：`/workflow/refine` 直接 `ChatOpenAI(...).invoke`，主模型 429/超时就是一次失败，
+  也不记 `llm_attempts` —— 导出件的"哪一步换了模型"标注自然也漏掉这次改写。
+- **要做**：复用 agent 层的 `build_llm_for` 与重试+降级；每次尝试记进 `llm_attempts`
+  （`step` 为当前步、来源标 `refine`）；全失败返回 503 + 可读原因，而不是 500。
+- **判定**：故障注入 429 / 超时两种，refine 要么降级出草稿、要么 503；`llm_attempts` 有记录；
+  变异 ≥4 条。**注意**：这一层没有真模型也能测（打桩 + `_inject_llm_fault.py` 已有先例）。
+- **风险**：动的是调模型这层，单测要打桩；真实韧性仍要靠故障注入那一套。
 
-**B. B4 refine 增强 / B5 AI 聊天升级（产品价值）**
-- B4：现在只截 8000 字、无证据注入；`_apply_step_edit` 有 version 但 UI 没接。
-- B5：非流式、不引用用户报告、长对话全量塞。
-- 这两项都要先想清楚「用户拿它做什么」，否则容易做成"又一个聊天框"。
-
-### 批次 36（备选）：B4 refine 增强 / B5 AI 聊天升级
-- B4：现在只截 8000 字、无证据注入；`_apply_step_edit` 有 version 但 UI 没接。
-- B5：非流式、不引用用户报告、长对话全量塞。
-- 这两项都需要先想清楚「用户拿它做什么」，否则容易做成"又一个聊天框"。
-
-### 批次 37（备选，成本大）：B6 多模型对比择优
-- 现状是并列展示，没有评审、没有落库 `selected_best`。
-- 有了 B31/B32 的 `build_llm_for` 与 `llm_attempts`，这一项的实现成本比之前低。
-
-
+### 批次 38（备选，按目标选一个）
+- **C1 第四步（评分域）**：约 350 行，可把 `agent_routes` 压到 2000 以内；
+  但 `/generate-indicator-analysis`、`/verify-logic` 要真模型，单测只能覆盖参数与落盘。
+- **B5 AI 聊天升级**：流式 + 引用报告章节，产品价值最高，但工作量也最大。
+- **B6 多模型对比择优**：有了 `llm_attempts` 与对比数据，成本比之前低。
 
 ---
 
@@ -330,7 +332,7 @@
 
 ```bash
 cd /d/python/AI_Grade
-NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 504
+NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 715
 node --test tests/test_*.cjs                                                          # 48
 NO_PROXY='*' .venv/Scripts/python.exe -c "import backend.main"                        # 导入自检
 ```
@@ -383,6 +385,8 @@ NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 98/0
 | **变异脚本会「静默失效」** | 跑之前文件**已经被上一次中断的变异污染**时，锚点找不到 → 替换不生效 → 用例当然全绿，脚本报成「变异存活 / 变异点未找到」，看起来像覆盖不足，其实是根本没跑到。批次 21 复核踩到：盘上留着 `"no_evidence": False`，害得两个脚本各报一条假问题。→ **跑之前先 `git diff` 对着安全副本验一遍关键行；跑完除了 `git status --short` 还要 `grep` 关键行**；`.mutation_backup/` 残留别急着删，先 `diff` 看看它是干净版还是污染版 |
 | **变异跑着的时候，源码就是变异体** | 批次 34 想在变异脚本运行期间顺手做「搬运前后逐字比对」，读到的是被改坏的 `_workflow_deps.py`，得出「`_owned_workflows` 不一致」的假结论。→ **变异脚本运行期间不要读、不要比、不要提交源码**；要取证就等它跑完（脚本 `finally` 会还原） |
 | **快照把依赖的「模块名」当契约** | `_dep_name()` 原来返回 `module.name`，批次 34 把 `_require_*` 搬进 `_workflow_deps` 后，148 条里一批路由报「deps 变了」——接口一个字没改。→ 依赖比对只比**函数名**（丢依赖、换函数仍抓得住），并写用例钉住；否则每次拆分都假红，快照就会被人为无视 |
+| **测试读备份要读 hydrate 后的** | `state_backups/*.json` 是 `compact()` 之后的样子：与独立字段逐字相同的 `content` 会被换成 `content_ref` + `content_preview`。批次 36 的用例直接读 JSON 断言 `content`，得到 `KeyError`，差点误判成"字段丢了"。→ 测试一律走 `PerformanceAgent.load_state_backup()`，它内部 `hydrate`，形状与路由看到的一致 |
+| **新增端点后要重建路由基线** | `tests/_route_snapshot.py` 是**拆分验收**工具：拿它去跑功能批次，必然报"多了路由"。这不是漂移，是新增。→ 功能批次结束时生成新的 `.backup/routes_before_b<N>.json`，并肉眼核对"只多了预期的那几条"；旧基线不要覆盖 |
 | **缺一个 typing 导入，导入和快照都看不出来** | 批次 35 搬 `ReportOrderRequest` 时漏了 `List`。`import backend.main` 成功、路由快照零差异（body 模型名没变），但 Pydantic 在**请求时**重建模型才炸成 500 —— 而且兜底处理器自己又崩，只看到空响应。→ 加一条 `app.openapi()` 用例：它会把每个模型的注解求值一遍，缺类型当场 `PydanticUserError` |
 | **兜底异常处理器不能自己再抛** | `logger.error(msg, exc_info=True)` 里 loguru 不认 `exc_info`，会把它当格式化参数；异常文本含花括号（JSON/dict repr）→ `IndexError`，500 变成空响应体。→ 用 `logger.opt(exception=True).error(...)`；任何「记录异常」的地方都别把异常文本塞进带 `{}` 的格式化位置 |
 | **变异脚本的锚点会随搬家失效** | 脚本打印「变异点未找到」然后跳过，退出码非 0 但没人跑就没人知道。批次 33/34 各留下一批，到 35 才发现 7 条空包弹。→ `tests/test_mutation_anchors.py` 静态核对 `backend/routes/` 下所有锚点；搬代码时顺手改 `MUTATIONS` 里的路径 |

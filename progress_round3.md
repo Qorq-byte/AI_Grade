@@ -5463,3 +5463,129 @@ _workflow_deps.py         118 → 128   （并入 STEP_CONTENT_FIELDS）
    4 分钟 47/0 通过 —— 判定为模型侧单次调用挂起，与本批改动无关（工作流不经过被搬的端点）。
    但这暴露了一个既有问题：**流式请求没有超时，卡住时只能人工杀**。
    下次碰 `wf_e2e` 挂起，先看服务端最后一条 `[Step N]` 日志，再决定是否重跑。
+
+---
+
+# 批次 36：B4 refine 增强（第一步：证据注入 + 预览 + 回滚）
+
+> 这一批不是拆分，是产品功能。四件事一起做：**证据进提示词**、**截断留痕**、
+> **先预览再落库**、**版本可回滚**。前三件解决"改得没依据 / 改丢了内容 / 一改就回不去"。
+
+## B36.1 起点：先把现状取证
+
+改之前 `/workflow/refine` 的实际行为（读代码 + 跑一遍确认）：
+
+| 事项 | 改造前 |
+|---|---|
+| 提示词 | 只有当前正文 `[:8000]` 一句要求；**没有证据**，也没有上下文 |
+| 截断 | `content[:8000]`，8000 字之后**静默消失**。报告类文本的结论、合计、落款都在尾部 |
+| 落库 | 调完模型立刻 `_apply_step_edit`，前端直接替换显示；没有"先看看"的机会 |
+| 版本 | `_apply_step_edit` 已经维护 `version` 与 `revisions`，但**没有任何接口暴露**，UI 只用当前正文 |
+| 测试 | `rg "workflow/refine" tests/` = **0 条**。这条链路此前完全靠人工点 |
+
+证据在 `step_evidence[str(step)]` 里（`{id, source, locator, kind, text}`），
+`render_evidence()` 已经能把它们渲染成 `[P1] 文件名（第 12 行，项目资料）…` ——
+步骤 7 的锚点校验一直用它，refine 却没用上。
+
+## B36.2 做法
+
+### 1）`backend/services/refine.py`（新增 125 行，纯函数）
+
+- `clip(text, limit)`：**保留首尾 7:3 + 中间标记**，返回 `(文本, 是否截断)`。
+  不再静默丢内容；尾部保住结论与合计。
+- `evidence_context(values, step)`：只取**本步**的 `step_evidence`（跨步借用会让报告里
+  出现"第四章引用了第二章的 [P3]"这种查不回去的引用），渲染后按 3000 字截断。
+- `neighbor_context(values, step)`：项目名 + 上一步正文前 600 字，让模型知道"这段接在哪"。
+- `build_prompt(...)`：返回 `{prompt, evidence_count, truncated}` —— 后两个直接给前端展示，
+  用户能看见"这次带了几条证据、原文是否被截断"。
+- `diff_summary(before, after)`：`difflib` 行级差异，输出 `add/del/ctx/hunk` 四态 +
+  增删行数，最多 80 行（避免把 3 万字报告塞进响应）。
+
+### 2）接口
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/workflow/refine` | 新增 `preview: bool = False`。`true` 时只返回 `draft/version/diff/evidence_count/truncated`，**不写任何状态**；默认保持旧行为 |
+| GET | `/workflow/{sid}/steps/{step}/history` | 当前版本 + revisions，返回版本号/编辑者/字数，**不回正文** |
+| POST | `/workflow/{sid}/steps/{step}/rollback` | `{to_version}`；复用 `_apply_step_edit`，版本号**继续递增**（回滚也是一次修改，倒退会和前端缓存的 version 撞车） |
+
+"采用"没有新接口：前端拿 preview 返回的 `version` 走已有的
+`PUT /workflow/{sid}/steps/{step}`，乐观锁直接生效 —— 预览期间别人改过就 409。
+
+### 3）前端（`frontend/client/index.html`，+119 行）
+
+- refine 改为 `preview:true`；返回后在聊天面板里渲染**差异卡片**（绿加/红删）+
+  「采用 / 丢弃」。采用走 PUT，409 时提示"步骤已被修改，请刷新"。
+- 步骤聊天头部加「历史版本」：列出各版本（编辑者/字数/当前标记），非当前版本可回滚。
+- 新增 16 条 CSS（`.refine-preview` / `.diff-line.add/del` 等），沿用页面既有配色。
+
+### 4）顺手修一个既有缺陷：慢模型调用把整个服务卡住
+
+验证 `wf_e2e` 时踩到的：`format-check` 客户端 180 秒超时之后，**第二个请求连服务都连不上**。
+原因不是网络，是 `async def check_report_format` 里直接 `model.invoke(prompt)` ——
+同步调用占着事件循环，期间所有请求排队。
+
+全仓一共 5 处同类写法，都改成 `await run_in_threadpool(...)`：
+
+| 文件 | 端点 |
+|---|---|
+| `report_routes.py` | `/workflow/{sid}/format-check`、`/workflow/generate-module` |
+| `agent_routes.py` | `/workflow/{sid}/perspective`、`/workflow/generate-indicator-analysis`、`/workflow/{sid}/verify-logic` |
+
+补了一条语义级用例（`test_format_check_does_not_block_the_event_loop`）：在 0.4 秒的
+慢模型调用期间数事件循环的 tick，阻塞版 0 次、线程池版 ≥3 次。
+**验证过它真会红**：把该端点改回同步调用，用例立即失败。
+
+## B36.3 验证
+
+**改前红**：`test_refine_preview.py` 收集失败（`backend.services.refine` 不存在）。
+
+**全量回归**：
+
+| 检查 | 改前 | 改后 |
+|---|---|---|
+| `pytest` | 698 passed | **715 passed**（+17：15 条 refine + 1 条事件循环 + 1 条锚点守卫参数化） |
+| `node --test` | 48 | **48** |
+| 路由快照 | 148 条零差异 | **150 条**：与旧基线比只多 2 条（history / rollback），无其他差异 |
+| `test_all_apis` | 47/47 | **47/47** |
+| `frontend_e2e_check` | 98/0 | **103/0**（+5 条：预览函数、preview 分支、采用、历史入口、rollback 调用） |
+| `wf_e2e` | 47/0 | **47/0**（第一次卡在 format-check 超时，正是上面那个缺陷；修完后 4 分 13 秒通过） |
+| 变异脚本 | 23 个 | **24 个**；新增 `_mutate_refine.py` **9/9** |
+
+**路由基线的处理**：这一批**新增**了 2 个端点，与 `.backup/routes_before.json` 比对必然
+"多了路由"（这正是快照该报的）。生成新基线 `.backup/routes_before_b37.json`（150 条）
+供后续拆分使用；旧基线保留不动。与旧基线的差异**只有这 2 条**，没有别的漂移。
+
+**变异覆盖的 9 条**（全抓）：截断只留开头 / 截断失效 / 不注入证据 / 上一步取错步骤 /
+没证据不说明 / preview 照样落库 / preview 版本号 +1 / 回滚拿当前正文 / 历史不标当前版本。
+
+## B36.4 回滚
+
+- 代码：`git revert` 本批提交。`preview` 默认 `false`，老前端调用行为不变；
+  前端回滚后回到"直接替换"的旧交互。
+- 数据：无。新增的都是接口，不改状态结构（`version`/`revisions` 本来就有）。
+- 判据：回滚后 `pytest` 回到 698，路由快照回到 148（用旧基线比对）。
+- **兼容性**：`/workflow/refine` 的 `preview` 有默认值，老客户端不受影响；
+  新增的两个端点不影响既有调用方。
+
+## B36.5 剩余风险与未验证项（诚实列出）
+
+1. **refine 没走 B31/B32 的韧性链**：它直接 `ChatOpenAI(...)` + 一次 `invoke`，
+   没有重试、没有降级、没有 `llm_attempts` 记账。主模型超时/429 时这里就是一次失败。
+   （B31 的 `build_llm_for` 在 agent 层，路由还没接。）**这是下一步最该补的**。
+2. **preview 没有服务端暂存**：草稿只存在前端 DOM 里，刷新即丢。
+   好处是不占内存、不产生垃圾状态；代价是"预览 → 关页面 → 回来"要重新生成。
+3. **多标签页同时预览**：第二个"采用"会拿到 409（版本闸门生效），UI 只弹 toast，
+   不做自动合并。这是刻意选的行为（宁可让用户刷新，也不要静默覆盖）。
+4. **差异是行级的**：整段重写时 diff 会很长（前端只显示前 80 行，服务端也一样）。
+   没有做"段落级语义差异"。
+5. **证据只取本步**：步骤 8 想引用步骤 7 的证据会拿不到 —— 这是为了防止跨章引用，
+   但"上一步的证据其实有用"这种情况没覆盖。
+6. **前端只看语法检查 + e2e 字符串检查**：`renderRefinePreview` 的真实渲染效果没有截图/
+   浏览器验证；e2e 只证明"函数在页面里"，不证明"点下去对"。
+7. **回滚不做二次确认**：点「回滚」立即生效（当前版本会存进 revisions，可再回滚回来），
+   但没有 confirm 弹窗。误点成本低（再点一次回滚），暂时接受。
+8. **路由基线在 `.gitignore` 里**（`.backup/`）：`routes_before_b37.json` 只在本机有效，
+   换机器/CI 要重新 `--out` 生成。它是本地验收工具，不是可复现的 CI 断言。
+9. **事件循环守卫只覆盖 `format-check` 一处**：另外 4 处也改了，但没有各自的用例 ——
+   它们的形态相同（同一个 `run_in_threadpool` 改法），一处红就能定位这一类问题。
