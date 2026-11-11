@@ -19,7 +19,7 @@ import pytest
 
 from backend.agents import performance_agent
 from backend.agents.performance_agent import PerformanceAgent
-from backend.routes.agent_routes import _assemble_report_from_backup_steps
+from backend.routes.report_routes import _assemble_report_from_backup_steps
 from backend.services import state_backup
 
 #: 用一段够长的中文正文，让重复量在字节上看得出来（也顺带覆盖非 ASCII 不转义）

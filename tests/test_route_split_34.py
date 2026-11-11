@@ -75,7 +75,7 @@ def test_export_endpoints_are_served_by_export_routes(path, method):
 
 def test_step_endpoints_stay_in_agent_routes():
     """搬迁只搬导出域 —— 相邻端点的归属不能被顺手改掉。"""
-    assert _endpoint("/api/agent/workflow/{session_id}/report", "GET").endpoint.__module__ == (
+    assert _endpoint("/api/agent/workflow/{session_id}/status", "GET").endpoint.__module__ == (
         "backend.routes.agent_routes"
     )
 

@@ -26,6 +26,8 @@ from backend.models.user_models import ModelConfig, User, UserRole
 from backend.routes import _shared_state
 from backend.routes import agent_routes as agent
 from backend.routes import export_routes
+from backend.routes import report_routes
+from backend.routes import report_routes
 
 PROJECT = "某某区农村供水保障工程"
 
@@ -204,7 +206,7 @@ def test_export_appends_the_note_to_the_document(api, monkeypatch):
 
     monkeypatch.setattr(export_routes, "_export_with_cache", fake_export)
     monkeypatch.setattr(export_routes, "_export_blockers", lambda session_id: [])
-    monkeypatch.setattr(agent, "_report_review_steps", lambda session_id: [])
+    monkeypatch.setattr(report_routes, "_report_review_steps", lambda session_id: [])
 
     resp = client.post("/api/agent/workflow/export",
                        json={"session_id": "with-fallback", "format": "word"}, headers=headers)
@@ -234,7 +236,7 @@ def test_export_without_fallback_has_no_note(api, monkeypatch):
 
     monkeypatch.setattr(export_routes, "_export_with_cache", fake_export)
     monkeypatch.setattr(export_routes, "_export_blockers", lambda session_id: [])
-    monkeypatch.setattr(agent, "_report_review_steps", lambda session_id: [])
+    monkeypatch.setattr(report_routes, "_report_review_steps", lambda session_id: [])
 
     client.post("/api/agent/workflow/export",
                 json={"session_id": "no-fallback", "format": "word"}, headers=headers)

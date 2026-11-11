@@ -306,7 +306,9 @@ def test_export_fails_open_when_workflow_state_is_missing(api, monkeypatch):
     def missing(session_id):
         raise HTTPException(status_code=404, detail="工作流状态不存在")
 
-    monkeypatch.setattr(agent, "_get_workflow_values", missing)
+    # 闸门与导出端点都在 export_routes 里，patch 必须打在**它的**模块级名字上；
+    # 打在 agent_routes 上不会报错，只会静默不生效（批次 35 被变异测试抓出来）。
+    monkeypatch.setattr(export_routes, "_get_workflow_values", missing)
     # _read_report 也走备份；只有闸门依赖 _get_workflow_values
     resp = client.post("/api/agent/workflow/export",
                        json={"session_id": "orphan", "format": "word"}, headers=headers)

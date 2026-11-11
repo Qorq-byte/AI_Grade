@@ -15,6 +15,8 @@ import json
 from backend.agents import performance_agent
 from backend.agents.tools import structured_output
 from backend.routes import agent_routes
+from backend.routes import report_routes
+from backend.routes import report_routes
 
 PAYLOAD = {"scores": {"L3_01_01_01": {
     "actual_score": 3.0, "evidence_id": "P1-14-1", "reason": "与指标表一致"}}}
@@ -224,7 +226,7 @@ def test_values_assembly_prefers_prose():
         "step7_prose": PROSE,
     }
 
-    report = agent_routes._assemble_report_from_steps(values)
+    report = report_routes._assemble_report_from_steps(values)
 
     assert PROSE in report
     assert "```" not in report
@@ -237,7 +239,7 @@ def test_backup_assembly_prefers_prose():
         "step_results": {"7": {"content": JSON_BLOCK + "\n\n" + PROSE}},
     }
 
-    report = agent_routes._assemble_report_from_backup_steps(backup)
+    report = report_routes._assemble_report_from_backup_steps(backup)
 
     assert PROSE in report
     assert "```" not in report
@@ -249,7 +251,7 @@ def test_backup_assembly_old_backup_compatible():
         "step_results": {"7": {"content": JSON_BLOCK + "\n\n" + PROSE}},
     }
 
-    report = agent_routes._assemble_report_from_backup_steps(backup)
+    report = report_routes._assemble_report_from_backup_steps(backup)
 
     assert PROSE in report
 
