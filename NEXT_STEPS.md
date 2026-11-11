@@ -16,9 +16,9 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `main` / 批次 39 提交，工作区干净 |
-| 已完成批次 | 第三轮 B1–B39（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
-| 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），138 个端点 |
+| 分支 / HEAD | `main` / 批次 40 提交，工作区干净 |
+| 已完成批次 | 第三轮 B1–B40（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
+| 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），140 个端点 |
 | 前端 | 零构建，原生 HTML/CSS/JS + `frontend/shared/` |
 | 存储 | MySQL（库 `ai_grade_d`）+ `state_backups/*.json` 磁盘投影 |
 
@@ -26,12 +26,12 @@
 
 | 检查 | 命令 | 当前 |
 |---|---|---|
-| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **749 passed**（CI 也跑这一条） |
+| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **761 passed**（CI 也跑这一条） |
 | 前端共享层 / SSE | `node --test tests/test_*.cjs` | **48 pass**（5 个文件） |
-| 前端联通性 | `python frontend_e2e_check.py` | **111 通过 / 0 失败** |
+| 前端联通性 | `python frontend_e2e_check.py` | **114 通过 / 0 失败** |
 | 全接口 | `python test_all_apis.py` | **47/47** |
 | 真实工作流 | `python wf_e2e.py` | **47 项 / 0 失败**（约 4~5 分钟，要真实模型） |
-| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` / `_mutate_step9_critique.py` / `_mutate_critique_step10.py` / `_mutate_llm_resilience.py` / `_mutate_b7_enablement.py` / `_mutate_workflow_deps.py` / `_mutate_report_routes.py` / `_mutate_refine.py` / `_mutate_refine_llm.py` / `_mutate_chat_context.py` / `_mutate_chapter_refs.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 / 10 / 7 / 11 / 8 / 11 / 9 / 9 / 8 / 8 / 6 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
+| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` / `_mutate_step9_critique.py` / `_mutate_critique_step10.py` / `_mutate_llm_resilience.py` / `_mutate_b7_enablement.py` / `_mutate_workflow_deps.py` / `_mutate_report_routes.py` / `_mutate_refine.py` / `_mutate_refine_llm.py` / `_mutate_chat_context.py` / `_mutate_chapter_refs.py` / `_mutate_candidates.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 / 10 / 7 / 11 / 8 / 11 / 9 / 9 / 8 / 8 / 6 / 7 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
 | 检索基线 | `python -m tests.rag_eval.run --check` | Recall@3 **0.448**、MRR 0.391、P 0.161 |
 
 ---
@@ -71,7 +71,7 @@
 | ~~**B3**~~ | ~~质量门禁 `GET /workflow/{id}/quality`~~ | ✅ **批次 27 已完成**：新增 `backend/services/quality.py`，输出「每步字数事实 + 可解释 flags + 无从判断项」，**刻意不打 0–100 分**（取证发现台账一半缺失、一半恒满分，分数既不能排序也不改变行为）。判据：缺步骤/字数低于该步中位数 20%/落地率 <0.5（样本≥5）/标准夹带结论；缺章等结构性缺陷复用 `consistency` 的 blocking，不另起一套。四态 `review`/`partial`/`pass`/`unknown`，不变量 `verified ∩ unavailable == ∅`。`/client/reports` 每条带 `review`（现算 1.2 ms/份 + mtime 缓存，失败降级 `unknown`），`/client` 卡片按四态显示徽标；顺带修掉 `standard_purity` 未落盘（白名单第三次复发） | 见 `progress_round3.md` B27。**遗留**：① 存量 21 份永久 `partial`（历史未落盘）；② 字数阈值是经验值、不分项目类型；③ 只抓"断在半截"，抓不到"写得很空"；④ 质量 warn **不参与导出闸门**，仍是"建议"；⑤ 详情面板没做，接口的每步事实无界面在读 |
 | **B4** | refine 增强 | ✅ **批次 36 第一步 + 批次 37 第二步**：证据注入、首尾保留截断、preview → 采用/丢弃、版本历史 + 回滚；refine 已接上重试 + 降级链（`services/llm_resilience.py`），失败映射 502/503，降级稿有前端标注 | 见 `progress_round3.md` B36/B37。**遗留**：① agent 的 `_invoke_llm` 还没切到同一实现（两份编排）；② 重试固定 1 次、退避线性；③ 预览成本不落账；④ 导出标注分不清「refine 改写」与「工作流那一步」；⑤ 前端无浏览器级验证 |
 | **B5** | AI 聊天升级 | ✅ **批次 38 第一步 + 批次 39 第二步**：真实后端 `/api/client/ai/chat`；报告上下文（问题 + 证据 + **按问题检索的章节片段**，封顶 3000 字，指令在顶部）、历史 20 轮/6000 字截断、SSE 流式 + 非流式回退、引用带 `step/chapter/offset` 且可展开 | 见 `progress_round3.md` B38/B39。**遗留**：① 检索是 BM25 关键词，没有同义词/向量，也**没有真实问题集评测**；② 只取前 3 段；③ offset 是章内偏移，前端没有真正跳转；④ 上下文仍可能截掉证据索引；⑤ 切块靠标题启发式；⑥ 前端无浏览器级验证 |
-| **B6** | 多模型对比择优 | ❌ 未开始：现在是并列展示 | 评审调用给维度分与理由，或差异高亮 + 人工选择；落库 `selected_best`；禁止取第一个 |
+| **B6** | 多模型对比择优 | ⚠️ **批次 40 完成第一步**：候选不再丢（写进 `raw_outputs` + `comparison_results`，`comparison_history` 进备份白名单）；新增确定性评分（引用可定位 30 / 指标覆盖 25 / 结构 20 / 篇幅 15），并列不给推荐；`/comparison/{step}` 查询、`/comparison/select` 人工采用；status 带对比摘要，前端有对比面板 | 见 `progress_round3.md` B40。**遗留**：① 分数是代理指标、权重是拍的；② 并列时自动选择按模型名排序（武断）；③ 老会话没有候选（404，不假装）；④ wf_e2e 不覆盖多模型路径；⑤ 前端无浏览器验证 |
 | ~~**B7**~~ | ~~模型调用韧性剩余~~ | ✅ **批次 31 + 32 已完成**：分级超时（长文 300/其余 120）、先重试同一模型再降级（429/超时/5xx 才降，400/401/403 直接抛）、`llm_attempts` 每次尝试记账、管理后台可配「备用模型（最多 2 个）」、新会话从设置读默认链、导出件自动标注「哪一步由备选模型完成」。真实 429 故障注入两场景通过；`pytest 624` / 变异 19/19（两批合计） | 见 `progress_round3.md` B31/B32。**遗留**：① 重试+降级最多 3 次调用，配额耗尽时是白等；② 退避只有线性 2 秒、无抖动/熔断；③ 设置是全局的，不能按会话配；④ 前端是自由输入框（填错模型名到降级时才炸）；⑤ 导出标注只在整报导出；⑥ 标注靠「第一条尝试=主模型」推断，续跑可能判反 |
 
 ### P1 · 工程底座（任务书阶段五剩余）
@@ -336,22 +336,33 @@
 - **遗留**：BM25 没有同义词/向量，也**没有真实问题集评测**；只取前 3 段；
   offset 是章内偏移、前端没有真正跳转；上下文仍可能截掉证据索引；切块靠标题启发式。
 
-### 批次 40（建议）：B6 多模型对比择优
-- **现状**：多模型是并列展示，没有评审、没有落库 `selected_best`，
-  用户只能自己读两段长文判断哪个好。
-- **要做**：给每个候选按维度打分（与指标体系的一致性、证据引用可定位、结构完整、
-  字数），输出「推荐 + 理由」；人工可以改选，落库 `selected_best`；
-  **禁止默认取第一个**。评分维度要复用现成的 `quality` / `consistency`，不要再造一套。
-- **判定**：候选 ≥2 时必须有推荐与理由；人工改选后落库并能读回；
-  单候选时明确显示「只有一个候选，无法比较」。
-- **风险**：评审本身要调模型（成本 ×候选数）；"哪个更好"没有客观真值，
-  只能用「与指标/证据的一致性」这类可算的代理指标，别声称是质量判决。
+### 批次 40 = B6 第一步：候选可比较、可择优 ✅ 已完成
+- 交付见 `progress_round3.md` B40。先修了两个更基础的问题：候选被
+  `{"default": content}` 覆盖、`comparison_history` 不在备份白名单；自动选择
+  从 `next(iter(...))` 改成按分数排名。
+- 新增 `services/candidates.py`：引用可定位 30 / 指标覆盖 25 / 结构 20 / 篇幅 15，
+  附理由；**并列不给推荐**。`/comparison/{step}` 查询、`/comparison/select` 人工采用。
+- 判定：候选留存、白名单、并列不推荐、引用校验、人工采用 404、status 摘要 ——
+  11 条用例 + 7 条变异全抓。
+- **遗留**：分数是代理指标、权重是拍的；并列时自动选择按模型名排序；
+  老会话没有候选；wf_e2e 不覆盖多模型路径；前端无浏览器验证。
 
-### 批次 41（备选，按目标选一个）
-- **C1 第四步（评分域）**：约 350 行，可把 `agent_routes` 压到 2000 以内；
-  但 `/generate-indicator-analysis`、`/verify-logic` 要真模型，单测薄。
-- **B5 第三步（评测）**：建一份 20 条真实问题集，量化「带上下文/带章节片段」的命中率；
-  没有这个，B5 的收益只能靠体感。
+### 批次 41（建议）：C1 第四步——搬「指标评分」域
+- **为什么现在做**：产品线（B4/B5/B6）都完成了第一步，拆分欠账回到台面；
+  `agent_routes` 仍有 2400+ 行，评分域约 350 行，是最完整的一块。
+- **范围**：`/indicators-for-scoring`、`/generate-indicator-analysis`、
+  `/save-indicator-scores`、`/extract-deductions`、`/confirm-deductions`、
+  `/verify-logic`、`/score-summary`、`/reorder-indicators`、`_parse_evaluation_points`、
+  `_generate_score_table`。
+- **判定**：快照零差异（153 条）；`pytest` 全绿；`agent_routes` ≤2000 行；反向依赖 0。
+- **风险**：`/generate-indicator-analysis`、`/verify-logic` 要真模型，单测只能覆盖
+  参数校验与落盘；搬之前先 `rg "agent\._(parse_evaluation_points|generate_score_table)" tests/`。
+
+### 批次 42（备选，产品向）
+- **B6 第二步**：候选差异高亮（段落级）+ 选择审计（谁、何时、当时分数）；
+  注意不要再引入"模型当裁判"。
+- **B5 第三步**：建 20 条真实问题集，量化「带章节片段」的命中率 —— 没有评测，
+  B5 的收益只能靠体感。
 
 ---
 
@@ -367,7 +378,7 @@
 
 ```bash
 cd /d/python/AI_Grade
-NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 749
+NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 761
 node --test tests/test_*.cjs                                                          # 48
 NO_PROXY='*' .venv/Scripts/python.exe -c "import backend.main"                        # 导入自检
 ```
@@ -420,6 +431,7 @@ NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 98/0
 | **变异脚本会「静默失效」** | 跑之前文件**已经被上一次中断的变异污染**时，锚点找不到 → 替换不生效 → 用例当然全绿，脚本报成「变异存活 / 变异点未找到」，看起来像覆盖不足，其实是根本没跑到。批次 21 复核踩到：盘上留着 `"no_evidence": False`，害得两个脚本各报一条假问题。→ **跑之前先 `git diff` 对着安全副本验一遍关键行；跑完除了 `git status --short` 还要 `grep` 关键行**；`.mutation_backup/` 残留别急着删，先 `diff` 看看它是干净版还是污染版 |
 | **变异跑着的时候，源码就是变异体** | 批次 34 想在变异脚本运行期间顺手做「搬运前后逐字比对」，读到的是被改坏的 `_workflow_deps.py`，得出「`_owned_workflows` 不一致」的假结论。→ **变异脚本运行期间不要读、不要比、不要提交源码**；要取证就等它跑完（脚本 `finally` 会还原） |
 | **快照把依赖的「模块名」当契约** | `_dep_name()` 原来返回 `module.name`，批次 34 把 `_require_*` 搬进 `_workflow_deps` 后，148 条里一批路由报「deps 变了」——接口一个字没改。→ 依赖比对只比**函数名**（丢依赖、换函数仍抓得住），并写用例钉住；否则每次拆分都假红，快照就会被人为无视 |
+| **给生成器套 try/except 要连消费一起包** | `indicator_leaves` 是生成器：`try: leaves = indicator_leaves(x)` 不执行函数体，异常在 `for`/`list()` 时才抛，`except` 形同虚设。批次 40 的评分因此直接 500。→ 一律 `list(fn(...))` 放进 try 里；或者先确认它是不是生成器 |
 | **变异脚本里的多行锚点用三引号** | 用 heredoc 落盘时，Python 字符串里的 `\n` 可能被写成字面 `/n`，锚点于是永远「未找到」——脚本会打印「跳过」，看起来像覆盖不足。→ 多行锚点一律写成三引号原文；脚本报「变异点未找到」时先 `cat -A` 看一眼转义 |
 | **聊天有两个后端，别改错那个** | 前端 `sendChatMessage` 调的是 `/api/client/ai/chat`（`client_routes`，OpenAI 直连）；`/api/agent/chat` 是 `BaseAgent` 的记忆对话，前端没用它。批次 38 一开始差点在后者上做了半天。→ 改聊天前先 `rg "ai/chat" frontend/` 确认调用方 |
 | **服务层要用 agent 的判定函数：延迟导入** | `llm_resilience` 需要 `classify_llm_error` / `retry_backoff`，但模块顶层 `import performance_agent` 会把 LangGraph、DB、记忆会话一起拉起来，还会让"服务 → agent → 服务"的依赖方向变得可疑。→ 在**函数内**导入；纯函数层不要顶层依赖 agent |
