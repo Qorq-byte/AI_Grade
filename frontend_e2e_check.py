@@ -367,6 +367,13 @@ log("showStepHistory" in html, "步骤面板带历史版本入口")
 log("'/rollback'" in html, "历史版本可回滚（调用 /rollback）")
 log("refine-degraded" in html, "降级生成的草稿会标注「由备选模型完成」")
 
+# 批次 38（B5）：聊天走 SSE、引用报告上下文、失败回退非流式
+log("streamChatReply" in html, "/client 含聊天流式函数")
+log("/api/client/ai/chat/stream" in html, "聊天优先调用流式接口")
+log("workflow_session_id" in html, "聊天请求带当前报告 id（用于引用）")
+log("appendChatReferences" in html, "回答下方展示引用编号")
+log("addStreamingBubble" in html, "流式回答逐段渲染到气泡")
+
 r = req("GET", "/api/agent/workflow/fe-no-such-session/critique/10", token=user_token)
 log(r.status_code == 404, "GET 不存在会话的步骤10补全台账 → 404（不 500）", f"status={r.status_code}")
 

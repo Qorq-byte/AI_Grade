@@ -38,7 +38,7 @@
         .voice-recorder{display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%;transition:all .3s;padding:8px 0}.voice-recorder.hidden{height:0;opacity:0;overflow:hidden}.voice-indicator{display:flex;align-items:center;gap:8px;margin-bottom:6px}.voice-dot{width:8px;height:8px;border-radius:50%;background:#e53e3e;animation:pulse 1s infinite}.voice-time{font-family:monospace;font-size:13px;color:rgba(255,255,255,.8)}.voice-bars{display:flex;align-items:center;justify-content:center;gap:2px;width:100%;height:32px;padding:0 16px}.voice-bar{width:4px;border-radius:2px;background:rgba(255,255,255,.5);animation:barWave .8s infinite}
         @keyframes barWave{0%,100%{height:8px}50%{height:28px}}@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
         .send-btn-dark{width:32px;height:32px;border-radius:50%;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s}.send-btn-dark.active{background:white;color:#1F2023}.send-btn-dark.active:hover{background:rgba(255,255,255,.8)}.send-btn-dark.idle{background:transparent;color:#9ca3af}.send-btn-dark.idle:hover{background:rgba(96,96,96,.3);color:#d1d5db}.send-btn-dark.recording-btn{background:transparent;color:#e53e3e}.send-btn-dark.recording-btn:hover{background:rgba(229,62,62,.15);color:#fc8181}
-        .chat-empty{text-align:center;padding:60px 0;color:#9ca3af}.chat-empty h2{font-size:1.5rem;font-weight:700;color:#e2e8f0;margin-bottom:8px}.chat-empty p{font-size:14px}.chat-disabled-bar{display:none;text-align:center;padding:12px;color:#fc8181;background:rgba(229,62,62,.1);border-radius:8px;margin-bottom:12px;font-size:13px}
+        .chat-empty{text-align:center;padding:60px 0;color:#9ca3af}.chat-empty h2{font-size:1.5rem;font-weight:700;color:#e2e8f0;margin-bottom:8px}.chat-empty p{font-size:14px}.chat-refs{margin-top:8px;padding-top:6px;border-top:1px dashed #3a3a4e;font-size:11px;color:#9ca3af}.chat-refs-title{margin-right:4px}.chat-ref{display:inline-block;margin:2px 4px 0 0;padding:1px 6px;border-radius:10px;background:#33334a;color:#c3c9d4;cursor:help}.chat-disabled-bar{display:none;text-align:center;padding:12px;color:#fc8181;background:rgba(229,62,62,.1);border-radius:8px;margin-bottom:12px;font-size:13px}
 
         /* ===== WORKFLOW UI ===== */
         .wf-topbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:24px;padding:16px;background:white;border-radius:12px;border:1px solid #e2e8f0}
@@ -1923,15 +1923,83 @@ document.addEventListener('DOMContentLoaded',function(){
         function handleInputChange(){var t=document.getElementById('promptTextarea'),s=document.getElementById('sendButton');if(!isRecording){if(t.value.trim())s.className='send-btn-dark active';else s.className='send-btn-dark idle'}}
         function updateSendButton(){var s=document.getElementById('sendButton');if(isRecording)s.className='send-btn-dark recording-btn';else if(document.getElementById('promptTextarea').value.trim())s.className='send-btn-dark active';else s.className='send-btn-dark idle'}
         function handleKeyDown(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChatMessage()}}
+        // ── B5（批次 38）：聊天走 SSE，引用报告上下文；失败回退非流式 ──
+        function streamChatReply(body,onDelta){
+            var token=sessionStorage.getItem('token')||localStorage.getItem('token')||'';
+            return fetch('/api/client/ai/chat/stream',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify(body)}).then(function(res){
+                if(!res.ok||!res.body)throw new Error('stream unavailable');
+                var reader=res.body.getReader(),decoder=new TextDecoder(),buf='',donePayload=null;
+                function handle(block){
+                    var ev='',data='';
+                    block.split('\n').forEach(function(line){
+                        if(line.indexOf('event: ')==0)ev=line.slice(7).trim();
+                        else if(line.indexOf('data: ')==0)data+=line.slice(6);
+                    });
+                    if(!data)return;
+                    var payload;try{payload=JSON.parse(data)}catch(e){return}
+                    if(ev==='delta'&&payload.text)onDelta(payload.text);
+                    else if(ev==='done')donePayload=payload;
+                    else if(ev==='error'){var err=new Error(payload.detail||'AI服务暂时不可用');err.status=payload.status;throw err}
+                }
+                function pump(){
+                    return reader.read().then(function(r){
+                        if(r.done)return donePayload;
+                        buf+=decoder.decode(r.value,{stream:true});
+                        var idx;
+                        while((idx=buf.indexOf('\n\n'))>=0){var block=buf.slice(0,idx);buf=buf.slice(idx+2);handle(block)}
+                        return pump();
+                    });
+                }
+                return pump();
+            });
+        }
+        function addStreamingBubble(){
+            var c=document.getElementById('chatMessages');if(!c)return null;
+            var el=document.createElement('div');el.className='chat-message-dark assistant';
+            el.innerHTML='<div class="chat-avatar assistant">AI</div><div class="chat-bubble-dark"></div>';
+            c.appendChild(el);c.scrollTop=c.scrollHeight;
+            var bubble=el.querySelector('.chat-bubble-dark'),text='';
+            return {el:el,
+                append:function(piece){text+=piece;bubble.innerHTML=esc(text).replace(/\n/g,'<br>');c.scrollTop=c.scrollHeight},
+                text:function(){return text},
+                remove:function(){el.remove()}};
+        }
+        function appendChatReferences(el,refs){
+            if(!el||!refs||!refs.length)return;
+            var box=document.createElement('div');box.className='chat-refs';
+            var html='<span class="chat-refs-title">依据：</span>';
+            for(var i=0;i<Math.min(refs.length,6);i++){
+                var r=refs[i];html+='<span class="chat-ref" title="'+esc(r.detail||'')+'">'+esc(r.id||'')+'</span>';
+            }
+            box.innerHTML=html;el.querySelector('.chat-bubble-dark').appendChild(box);
+        }
         function sendChatMessage(){var t=document.getElementById('promptTextarea'),m=t.value.trim();if(!m)return;if(!isChatEnabled){showToast('AI聊天已禁用','error');return}t.value='';updateSendButton();var dp=m;(currentMode==='search')?dp='[搜索: '+m+']':(currentMode==='think')?dp='[深度思考: '+m+']':(currentMode==='canvas')?dp='[画布: '+m+']':null;
             addChatBubble('user',m);t.disabled=true;document.getElementById('sendButton').disabled=true;
-            var th=addChatBubble('assistant','思考中...',true);
-            var reqBody={message:dp};if(currentConversationId)reqBody.conversation_id=currentConversationId;var sel=document.getElementById('aiModelSelect');if(sel&&sel.value)reqBody.model=sel.value;api('POST','/api/client/ai/chat',reqBody).then(function(r){
-                if(th&&th.parentNode)th.remove();addChatBubble('assistant',r.data.reply);
-                if(r.data.model){var st=document.getElementById('aiModelStatus');if(st)st.textContent='模型: '+r.data.model}
-                if(!currentConversationId||r.data.conversation_id!==currentConversationId)currentConversationId=r.data.conversation_id;
+            var reqBody={message:dp};if(currentConversationId)reqBody.conversation_id=currentConversationId;
+            if(typeof wfSessionId!=='undefined'&&wfSessionId)reqBody.workflow_session_id=wfSessionId;
+            var sel=document.getElementById('aiModelSelect');if(sel&&sel.value)reqBody.model=sel.value;
+            var live=addStreamingBubble();
+            streamChatReply(reqBody,function(piece){if(live)live.append(piece)}).then(function(done){
+                if(!done)throw new Error('流式响应没有结束帧');
+                if(live&&!live.text())live.append(done.reply||'');
+                if(live)appendChatReferences(live.el,done.references);
+                if(done.model){var st=document.getElementById('aiModelStatus');if(st)st.textContent='模型: '+done.model}
+                if(!currentConversationId||done.conversation_id!==currentConversationId)currentConversationId=done.conversation_id;
                 loadConversations();refreshTokenDisplay()
-            }).catch(function(e){var msg='未知错误';if(typeof e==='string')msg=e;else if(e&&typeof e.message==='string')msg=e.message;else if(e)try{msg=JSON.stringify(e)}catch(x){};if(th&&th.parentNode)th.remove();addChatBubble('assistant','抱歉，AI服务暂时不可用：'+msg)})
+            }).catch(function(){
+                // 流式不可用（老网关/代理缓冲/上游报错）：退回非流式，用户至少拿到回答
+                if(live)live.remove();
+                api('POST','/api/client/ai/chat',reqBody).then(function(r){
+                    var el=addChatBubble('assistant',r.data.reply);
+                    appendChatReferences(el,r.data.references);
+                    if(r.data.model){var st=document.getElementById('aiModelStatus');if(st)st.textContent='模型: '+r.data.model}
+                    if(!currentConversationId||r.data.conversation_id!==currentConversationId)currentConversationId=r.data.conversation_id;
+                    loadConversations();refreshTokenDisplay()
+                }).catch(function(e){
+                    var msg='未知错误';if(typeof e==='string')msg=e;else if(e&&typeof e.message==='string')msg=e.message;
+                    addChatBubble('assistant','抱歉，AI服务暂时不可用：'+msg)
+                })
+            })
             .finally(function(){t.disabled=false;document.getElementById('sendButton').disabled=false;t.focus();checkAiChatStatus()})
         }
         function loadAiModels(){api('GET','/api/client/ai/models').then(function(r){var sel=document.getElementById('aiModelSelect');if(!sel)return;var models=r.data.models||[];var def=r.data.default_model||'';if(!models.length){sel.innerHTML='<option value="">暂无可用模型</option>';var st=document.getElementById('aiModelStatus');if(st)st.textContent='未配置API密钥';return}sel.innerHTML='';var savedModel=localStorage.getItem('ai_selected_model')||def;var hasSaved=false;for(var i=0;i<models.length;i++){var m=models[i];var opt=document.createElement('option');opt.value=m.model;opt.textContent=m.provider+' - '+m.model;opt.title=m.provider+' / '+m.model;if(m.model===savedModel){opt.selected=true;hasSaved=true}sel.appendChild(opt)}if(!hasSaved&&def){sel.value=def}onModelChange(sel.value)}).catch(function(e){var sel=document.getElementById('aiModelSelect');if(sel)sel.innerHTML='<option value="">加载失败</option>'})}
