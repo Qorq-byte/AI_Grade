@@ -5978,3 +5978,91 @@ agent（LangGraph / DB 连接池），这三者用函数内延迟导入。
 5. **`wf_e2e` 不覆盖多模型路径**：真实对比要跑 2 个模型 × 14 步，成本高；
    本批只有单元层面与接口层面的验证。
 6. **前端没有浏览器级验证**：面板渲染与「采用」只做了 e2e 字符串检查。
+
+---
+
+# 批次 41：C1 第四步——搬「指标与评分」域，压到 2000 行以内
+
+> 产品线（B4/B5/B6）的第一步都落地了，回来清结构债。
+> `agent_routes.py` 2499 行 → **1888 行**（判定 ④ 的 ≤2000 达标）。
+
+## B41.1 起点
+
+| 事项 | 改造前 |
+|---|---|
+| `agent_routes.py` | 2499 行，仍是最大的单文件 |
+| 指标/评分链路 | 8 个端点 + 2 个解析函数（约 602 行）混在里头：取指标、重排、生成分析、保存得分、抽/确认扣分、逻辑校对、评分汇总 |
+| 跨域规则 | `_review_after`（改一步后谁该复核）同时被步骤编辑与评分保存使用，两处都在同一文件里 —— 搬走就必须先把它共享出去 |
+| 测试 | 只有 `test_engineering_regressions` 通过 HTTP 覆盖了保存/汇总两条，没有归属断言 |
+
+## B41.2 做法
+
+### 1）块边界（先确认再切）
+
+| 块 | 位置 | 内容 |
+|---|---|---|
+| A | 1546–2022 | 4 个请求模型 + 7 个端点（含 score-summary） |
+| B | 2142–2188 | `_parse_evaluation_points` / `_generate_score_table`（只被 A 用） |
+| C | 2191–2264 | 步骤 6 的 `/reorder-indicators` |
+
+三块单独 `ast.parse` 通过后才切；切完与 HEAD **逐字比对完全一致**。
+
+### 2）`_review_after` 与 `STEP_DEPENDENTS` 进 `_workflow_deps`
+
+它们同时被 `_apply_step_edit`（还在 agent_routes）与 `save-indicator-scores`（已搬走）使用。
+两处各留一份，会出现「改完指标后，界面说该复核 7/8/9，后端只标了 9」这种分叉。
+放进 `_workflow_deps` 后两个模块 import 的是**同一个函数对象**，有用例守着。
+
+### 3）`scoring_routes.py`（新增 640 行）
+
+- 路由前缀仍由 `main.py` 挂 `/api/agent`，路径一字不动；
+- 依赖：`_workflow_deps`（依赖/状态读写/复核）、`_shared_state`（模型配置）、
+  `score_validator`、`questionnaire_gen`、`settings`；
+- **不 import `agent_routes`**；`backend/routes/` 下反向导入仍是 0 处。
+
+### 4）顺手清掉搬走后才变成"未使用"的导入
+
+`re`、`ChatOpenAI`、`performance_agent`、`actual_indicator_score`、`score_number`、
+`indicator_leaves` —— 只清因本批搬家而失效的，原有未使用项（如 `Field`）不动（避免 diff 混入无关改动）。
+
+## B41.3 验证
+
+| 检查 | 改前 | 改后 |
+|---|---|---|
+| `agent_routes.py` 行数 | 2499 | **1888**（−611，≤2000 ✓） |
+| `scoring_routes.py` | — | **640** |
+| 路由快照 | 153 条 | **153 条零差异**（含 dependencies / body 模型） |
+| 逐字比对 | — | 三块与 HEAD **完全一致** |
+| `pytest` | 761 passed | **773 passed**（+12 条拆分验收） |
+| `test_all_apis` | 47/47 | **47/47** |
+| `frontend_e2e_check` | 114/0 | **114/0** |
+| `wf_e2e` | 47/0 | **47/0** |
+| 变异锚点守卫 | 27 条通过 | **27 条通过**（评分域没有被任何变异脚本锚定） |
+
+新增 `tests/test_route_split_41.py`：
+- 8 个端点的归属是 `scoring_routes`；
+- `backend/routes/` 下反向导入 0 处；
+- `_review_after` 在 agent_routes / scoring_routes / _workflow_deps 是**同一个对象**；
+- `agent_routes` ≤2000 行（判定标准写进用例，防止以后长回去）。
+
+**本批没有新增变异脚本**：这是纯搬家，新逻辑为零；锚点守卫 + 归属用例 + 快照覆盖了它。
+如果以后往评分域加逻辑，再补 `_mutate_scoring.py`。
+
+## B41.4 回滚
+
+- 代码：`git revert`。`scoring_routes.py` 删除，三块回到 `agent_routes`，
+  `_review_after` 留在 `_workflow_deps`（回滚后 agent_routes 从那里 import，行为不变）。
+- 数据：无。
+- 判据：回滚后 `pytest` 回到 761，`agent_routes` 回到 2499，快照仍 153 零差异。
+
+## B41.5 剩余风险与未验证项（诚实列出）
+
+1. **评分域两个端点要真模型**：`/generate-indicator-analysis` 与 `/verify-logic`
+   的单测只覆盖参数校验与落盘；模型输出质量仍只有 `wf_e2e` 能看见（而且它不走这两个端点）。
+2. **`agent_routes` 还有 1888 行**：SSE 流式（约 400）、上传（约 110）、
+   模板库（约 200）、语言风格/critique（约 130）、perspective（约 130）都还在。
+   再拆一轮可以到 ~1300，但收益边际递减。
+3. **`_review_after` 成了跨域共享规则**：改 `STEP_DEPENDENTS` 会同时影响步骤编辑与评分保存 ——
+   这是有意为之（同一份依赖表），但改它要跑两边的用例。
+4. **快照只比路径/方法/依赖函数名与 body 模型名**，不做字段级深比较（批次 33 遗留）。
+5. **OpenAPI 只验「能生成」**，不验 `$ref` 指向哪个模块（批次 33 遗留）。

@@ -16,8 +16,8 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `main` / 批次 40 提交，工作区干净 |
-| 已完成批次 | 第三轮 B1–B40（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
+| 分支 / HEAD | `main` / 批次 41 提交，工作区干净 |
+| 已完成批次 | 第三轮 B1–B41（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
 | 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），140 个端点 |
 | 前端 | 零构建，原生 HTML/CSS/JS + `frontend/shared/` |
 | 存储 | MySQL（库 `ai_grade_d`）+ `state_backups/*.json` 磁盘投影 |
@@ -26,7 +26,7 @@
 
 | 检查 | 命令 | 当前 |
 |---|---|---|
-| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **761 passed**（CI 也跑这一条） |
+| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **773 passed**（CI 也跑这一条） |
 | 前端共享层 / SSE | `node --test tests/test_*.cjs` | **48 pass**（5 个文件） |
 | 前端联通性 | `python frontend_e2e_check.py` | **114 通过 / 0 失败** |
 | 全接口 | `python test_all_apis.py` | **47/47** |
@@ -78,7 +78,7 @@
 
 | 编号 | 事项 | 现状 | 判定标准 |
 |---|---|---|---|
-| **C1** | 拆 `agent_routes.py` | ✅ **判定 ④ 达标：3719 → 2354 行**。三步：批次 33 拆问卷域；批次 34 抽 `_workflow_deps.py` + 搬导出域 + 可变状态进 `_shared_state`；批次 35 搬报告域（`report_routes.py` 590 行）+ 导出样式并入 `export_routes`。反向依赖 **5 → 0 处**，路由快照 148 条始终零差异 | 见 `progress_round3.md` B33/B34/B35。**剩余**：SSE、评分/扣分/逻辑校对、上传、critique、模板库仍在原文件（约 1200 行）；格式校验/模块生成无单测；快照 deps 只比函数名；OpenAPI 只验能生成 |
+| **C1** | 拆 `agent_routes.py` | ✅ **判定 ④ 达标：3719 → 1888 行**。四步：33 拆问卷域；34 抽 `_workflow_deps` + 搬导出域；35 搬报告域；41 搬指标与评分域（`scoring_routes.py` 640 行，含 `_review_after` 共享）。反向依赖 **5 → 0 处**，路由快照 153 条始终零差异 | 见 `progress_round3.md` B33/B34/B35/B41。**剩余**：SSE、上传、模板库、语言风格/critique、perspective 仍在原文件（约 1400 行，可再拆到 ~1300，但收益边际递减）；快照 deps 只比函数名；OpenAPI 只验能生成 |
 | **C2** | 进度 / 检查点持久化 | ❌ `REDIS_URL` 只在 config 里躺着；`MemorySaver` 仍是进程内 | 多 worker 与重启续跑成立；做不到就继续在启动日志与文档里**明确写单 worker** |
 | ~~**C3**~~ | ~~写放大治理~~ | ✅ **批次 25 已完成**：`step_results` 占备份体积 **64%**，其中 83% 是可证明的重复（`raw_outputs` 与 `content` 逐字相同占 47% 且无人读、`content` 与独立字段逐字相同占 37%）。新增 `backend/services/state_backup.py` 做「写时压缩 / 读时还原」，读入口单点 `load_state_backup` 返回形状不变、20+ 处调用方一行未改；存量 36 个会话 **22.1 MB → 9.7 MB（44%）**，备份/报告 **8.3x → 3.3x**，单会话总写入 **3,503 → 1,597 KB** | 见 `progress_round3.md` B25。**遗留**：①「≤ 报告 1.2 倍」不可达（其余 51% 是重启续跑必需的中间产物），判定标准应改为「可观测重复 == 0」；② 写放大**倍数**未降（5.7x → 6.3x，分子分母同步缩小），要降到 1.0x 得改增量/日志式落盘 |
 | **C4** | 可观测 | ❌ 无 `/metrics`；日志非结构化 | `/metrics` 覆盖步骤耗时/LLM 失败率/token/SSE 连接数；日志带 `request_id/session_id/step/user` |
@@ -347,22 +347,28 @@
 - **遗留**：分数是代理指标、权重是拍的；并列时自动选择按模型名排序；
   老会话没有候选；wf_e2e 不覆盖多模型路径；前端无浏览器验证。
 
-### 批次 41（建议）：C1 第四步——搬「指标评分」域
-- **为什么现在做**：产品线（B4/B5/B6）都完成了第一步，拆分欠账回到台面；
-  `agent_routes` 仍有 2400+ 行，评分域约 350 行，是最完整的一块。
-- **范围**：`/indicators-for-scoring`、`/generate-indicator-analysis`、
-  `/save-indicator-scores`、`/extract-deductions`、`/confirm-deductions`、
-  `/verify-logic`、`/score-summary`、`/reorder-indicators`、`_parse_evaluation_points`、
-  `_generate_score_table`。
-- **判定**：快照零差异（153 条）；`pytest` 全绿；`agent_routes` ≤2000 行；反向依赖 0。
-- **风险**：`/generate-indicator-analysis`、`/verify-logic` 要真模型，单测只能覆盖
-  参数校验与落盘；搬之前先 `rg "agent\._(parse_evaluation_points|generate_score_table)" tests/`。
+### 批次 41 = C1 第四步：搬「指标与评分」域 ✅ 已完成
+- 交付见 `progress_round3.md` B41。`agent_routes` **2499 → 1888**（≤2000 达标），
+  新增 `scoring_routes.py`（640 行，8 个端点 + 2 个解析函数）。
+- `_review_after` / `STEP_DEPENDENTS` 进 `_workflow_deps`：步骤编辑与评分保存
+  必须看同一份依赖表（有用例守着是同一个对象）。
+- 判定：快照 153 零差异、三块与 HEAD 逐字一致、反向依赖 0、`pytest` 761 → 773。
+- **本批没有新增变异脚本**：纯搬家、新逻辑为零，锚点守卫 + 归属用例 + 快照覆盖。
+- **遗留**：两个端点要真模型、单测薄；`agent_routes` 仍有 SSE/上传/模板等约 1400 行
+  （可再拆到 ~1300，但收益边际递减）。
 
-### 批次 42（备选，产品向）
-- **B6 第二步**：候选差异高亮（段落级）+ 选择审计（谁、何时、当时分数）；
-  注意不要再引入"模型当裁判"。
-- **B5 第三步**：建 20 条真实问题集，量化「带章节片段」的命中率 —— 没有评测，
-  B5 的收益只能靠体感。
+### 批次 42（建议）：B5 第三步——给聊天建一份真实问题集
+- **为什么现在做**：B5 的两步（B38/B39）都没有评测，收益只能靠体感。
+  再往下加功能（差异高亮、向量检索）之前，先知道现在到底准不准。
+- **要做**：写 20 条真实问题（扣分点/某章内容/缺哪章/数字核对/与指标无关的闲聊），
+  用一个已完成的会话跑，记录「回答是否引用了真实编号/片段」「是否编造」；
+  产出一份可重复运行的 `tests/chat_eval/`（像 `rag_eval` 一样，不接 CI 的真实模型用例）。
+- **判定**：Recall（问题 → 命中正确章节）与「编造率」两个数字；改动前后可对比。
+- **风险**：问题集是人工写的，样本小；不要用模型当裁判，判定标准要能人工复核。
+
+### 批次 43（备选，产品向）
+- **B6 第二步**：候选差异高亮（段落级）+ 选择审计（谁、何时、当时分数）。
+- **C1 第五步（可选）**：再拆 SSE/上传，把 `agent_routes` 压到 ~1300；收益边际递减。
 
 ---
 
@@ -378,7 +384,7 @@
 
 ```bash
 cd /d/python/AI_Grade
-NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 761
+NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 773
 node --test tests/test_*.cjs                                                          # 48
 NO_PROXY='*' .venv/Scripts/python.exe -c "import backend.main"                        # 导入自检
 ```
@@ -474,10 +480,10 @@ B3 质量门禁做完了（批次 27）。
 - **C 类的大头（拆 `agent_routes.py`、多 worker）不要先做**，除非要上线；
   但 **C5 最小 CI 已经做完（批次 28）**：641 条单测 + 48 条前端用例由 GitHub Actions 自动跑，
   22 个变异脚本仍靠人（它们会原地改源码，不能自动化，只能"记得跑 + 跑完验伤"）。
-- **C1 已经拆了三步（批次 33 问卷、34 依赖+导出、35 报告）**：3719 → **2354** 行，
-  反向依赖 5 → 0，判定 ④ 达标。经验是**一次只搬一个域、先抽依赖再搬端点**；
-  每多搬一个域，"公共依赖"属性就弱一分。再往下是评分域（约 350 行），
-  但它要真模型、单测覆盖薄，优先级低于产品项。
+- **C1 已经拆了四步（33 问卷、34 依赖+导出、35 报告、41 指标与评分）**：
+  3719 → **1888** 行，反向依赖 5 → 0，判定 ④ 达标。经验是**一次只搬一个域、
+  先抽依赖再搬端点**；跨域规则（`STEP_CONTENT_FIELDS`、`_review_after`）要先下沉到
+  `_workflow_deps`，否则搬完会出现两份不同答案。再拆到 ~1300 是可能的，但收益递减。
 
 **这一轮反复出现的同一个模式，值得记住**：每次「输出太长」都不是模型不会写短，而是
 **我们让它写了一份没人读的东西**（步骤 7 的正文冗余、步骤 6 的 JSON 副本、步骤 7 的 JSON 进正文）。
