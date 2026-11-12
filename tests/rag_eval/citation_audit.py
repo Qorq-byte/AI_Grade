@@ -14,6 +14,9 @@ from typing import Dict, List, Optional
 from backend.agents.performance_agent import PerformanceAgent
 
 CITE = re.compile(r"\[(P\d+-\d+-\d+)\]")
+#: 「缺失类结论」：缺/未提供/未取得… 后面 60 字内出现证据编号，就是一次违规引用。
+ABSENCE_WITH_ID = re.compile(
+    r"[^。\n]{0,60}(?:缺|未提供|未取得|未见|未附)[^。\n]{0,60}\[(P\d+-\d+-\d+)\]")
 SENTENCE = re.compile(r"[^。；\n]*\[(P\d+-\d+-\d+)\][^。\n]*[。]?")
 
 
@@ -45,15 +48,33 @@ def collect(values: dict, limit: int = 10) -> List[Dict]:
     return rows
 
 
+def absence_violations(values: dict) -> List[Dict]:
+    """「缺 X」却标了编号的引用 —— B51 抽读里那两条不贴题，就是这一类。"""
+    report = values.get("final_report") or ""
+    rows = []
+    for match in ABSENCE_WITH_ID.finditer(report):
+        rows.append({"id": match.group(1), "claim": match.group(0).strip()})
+    return rows
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="证据引用抽读")
     parser.add_argument("--session", required=True)
     parser.add_argument("--limit", type=int, default=10)
+    parser.add_argument("--violations", action="store_true",
+                        help="只列「缺失类结论却标了编号」的句子（批次 52 的判定指标）")
     args = parser.parse_args(argv)
 
     values = PerformanceAgent.load_state_backup(args.session)
     if not values:
         raise SystemExit(f"会话不存在：{args.session}")
+    if args.violations:
+        violations = absence_violations(values)
+        print(f"# 会话 {args.session}｜缺失类带编号 {len(violations)} 条\n")
+        for index, row in enumerate(violations, 1):
+            print(f"[{index}] {row['id']}  {row['claim']}")
+        return 0
+
     rows = collect(values, args.limit)
     print(f"# 会话 {args.session}｜抽 {len(rows)} 条\n")
     for index, row in enumerate(rows, 1):
