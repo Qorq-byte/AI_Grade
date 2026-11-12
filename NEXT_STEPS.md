@@ -16,8 +16,8 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `main` / 批次 51 提交，工作区干净 |
-| 已完成批次 | 第三轮 B1–B51（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
+| 分支 / HEAD | `main` / 批次 52 提交，工作区干净 |
+| 已完成批次 | 第三轮 B1–B52（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
 | 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），142 个端点 |
 | 前端 | 零构建，原生 HTML/CSS/JS + `frontend/shared/` |
 | 存储 | MySQL（库 `ai_grade_d`）+ `state_backups/*.json` 磁盘投影 |
@@ -26,7 +26,7 @@
 
 | 检查 | 命令 | 当前 |
 |---|---|---|
-| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **865 passed**（CI 也跑这一条） |
+| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **874 passed**（CI 也跑这一条） |
 | 前端共享层 / SSE | `node --test tests/test_*.cjs` | **48 pass**（5 个文件） |
 | 前端联通性 | `python frontend_e2e_check.py` | **120 通过 / 0 失败** |
 | 前端契约 | `pytest tests/test_frontend_contract.py -q` | **10 通过**：0 缺失 id、0 重复 id、0 未定义事件（**不是浏览器测试**，见 `docs/ui_contract.md`） |
@@ -34,7 +34,7 @@
 | 真实工作流 | `python wf_e2e.py` | **47 项 / 0 失败**（约 4~5 分钟，要真实模型） |
 | 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` / `_mutate_step9_critique.py` / `_mutate_critique_step10.py` / `_mutate_llm_resilience.py` / `_mutate_b7_enablement.py` / `_mutate_workflow_deps.py` / `_mutate_report_routes.py` / `_mutate_refine.py` / `_mutate_refine_llm.py` / `_mutate_chat_context.py` / `_mutate_chapter_refs.py` / `_mutate_candidates.py` / `_mutate_candidate_diff.py` / `_mutate_diff_all.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 / 10 / 7 / 11 / 8 / 11 / 9 / 9 / 8 / 8 / 6 / 7 / 7 / 7 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
 | 检索基线 | `python -m tests.rag_eval.run --check` | Recall@3 **0.552**、MRR 0.483、P 0.253（证据块带 ±2 行上下文） |
-| 证据引用抽读（手动，不进 CI） | `python -m tests.rag_eval.citation_audit --session <id>` | 2026-11-12 / 8 条：贴题 **3**、半贴题 3、不贴题 **2**（都是「证明缺失」类）；记录在 `docs/evidence_citation_audit.md` |
+| 证据引用抽读（手动，不进 CI） | `python -m tests.rag_eval.citation_audit --session <id> --violations` | 缺失类带编号：清理前 **10 条** → 清理后 **0**（回放验证）；端到端单次 0～8 条波动，记录在 `docs/evidence_citation_audit.md` |
 | 聊天评测 | `python -m tests.chat_eval.run --check` | **recall 1.0（40/40）**，平均上下文 716.5 字；对照组 **0.325** |
 | 聊天抽读（手动，不进 CI） | `python -m tests.chat_eval.live --session <id> --output <md>` | 2026-11-12 / deepseek-chat / 两会话：**编造 0/10 与 0/10、引用 9/9 与 8/9、弱相关 0/10**（`docs/chat_live_eval*.md`） |
 
@@ -459,20 +459,34 @@
 - 判定：半径可配置（`--radius`）；5 条变异全抓；`rag_eval` 与基线一致。
 - **遗留**：抽读只有 1 会话 1 份资料、判定是我一人读；缺失类引用未修。
 
-### 批次 52（建议）：缺失类结论的引用策略
-- **为什么**：B51 抽读的两条「不贴题」全是同一个模式——报告说「缺 X 材料」，
-  却引了项目概况/章节标题。这是文本证据的结构性缺口（只能证有，不能证无），
-  靠调检索半径修不了。
-- **要做**：
-  1. 提示词层：缺失类结论**只写材料名，不标具体行号**（如「缺立项批复」而不是「[P1-3-1]」）；
-  2. 或在证据块里加「本章节包含/不包含」的清单标记，让模型能引用「清单」而不是「标题」；
-  3. 用同一套 `citation_audit` 复读 8 条，对比不贴题条数。
-- **判定**：不贴题从 2/8 → 0/8；贴题数不降；`pytest`/`rag_eval` 不降。
-- **风险**：改提示词会影响所有步骤；「缺失」类结论失去行号后，审计可追溯性变弱。
+### 批次 52 = 缺失类引用：提示词失败，改用确定性清理 ✅ 已完成
+- 交付见 `progress_round3.md` B52 与 `docs/evidence_citation_audit.md` 的「后续」。
+- **提示词尝试失败**：加「缺失类结论不标编号」后，带编号比例 6% → **15%**
+  （175 条缺失表述里 10 条带编号 → 184 里 27 条）。规则提醒了「缺失」，模型反而更爱挂编号。
+  已撤回。
+- **确定性后处理有效**：`citation_policy.strip_absence_ids` 在组装报告时删掉
+  「缺/未提供/…」后 60 字内的编号（循环清理）；回放 10→0、27→0。
+- 判定：7 条清理用例 + 1 条端到端接线 + 变异 3/3；`wf_e2e` 47/0、`test_all_apis` 47/47、
+  快照 155 零差异。
+- **诚实记录**：本次端到端报告违规 0，但日志无清理记录——模型自己没产生违规，
+  不能把「0」全算成清理的功劳；指标在两次生成间波动 0～8 条。
+  另：第一次重跑忘了重启服务，跑的是旧代码（已修）。
 
-### 批次 53（备选）
+### 批次 53（建议）：把清理口径扩到步骤正文 + 长句
+- **为什么**：B52 只清 `final_report`，步骤正文里的「缺 X [P1-3-1]」还在；
+  导出单章时又会出现。60 字窗口对长句也可能漏。
+- **要做**：
+  1. 在步骤 7/9/10/11 落库前应用同一清理（或抽出共用函数）；
+  2. 窗口从"60 字"改成"同一分句"（按，。；！？切分，更稳）；
+  3. 用 `citation_audit --violations` 对**步骤正文**也统计一次，给出前后数字。
+- **判定**：步骤正文与报告的违规都降到 0；正向引用数不降；`pytest` 不降。
+- **风险**：在落库前改文本，会影响"步骤内容 = 模型原文"的假设（revisions/审计）；
+  要确认导出与引用校验都从同一份文本走。
+
+### 批次 54（备选）
 - **C1 第五步（可选）**：再拆 SSE/上传，把 `agent_routes` 压到 ~1300；收益边际递减。
 - **跨文档验证**：需要一份非样例资料的真实报告。
+- **真浏览器冒烟**：等环境能装 Playwright。
 
 ---
 
@@ -488,7 +502,7 @@
 
 ```bash
 cd /d/python/AI_Grade
-NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 865
+NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 874
 node --test tests/test_*.cjs                                                          # 48
 NO_PROXY='*' .venv/Scripts/python.exe -c "import backend.main"                        # 导入自检
 ```
