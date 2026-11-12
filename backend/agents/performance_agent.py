@@ -528,6 +528,10 @@ def refresh_disposition(previous: Dict[str, Any], score_map: Dict[str, Any],
 
 # ==================== PerformanceAgent ====================
 
+#: 落库前清理「缺失类结论编号」的步骤（散文类；步骤 7 含 JSON，保守跳过）。
+ABSENCE_CLEAN_STEPS = {8, 9, 10, 11, 12, 13}
+
+
 class PerformanceAgent:
     """企业级绩效评价报告生成Agent v2"""
 
@@ -1403,6 +1407,13 @@ class PerformanceAgent:
 
         step_name = STEP_META.get(step_number, {}).get("name", f"Step {step_number}")
         now = datetime.now()
+
+        # 缺失类结论不保留证据编号（批次 53）：散文类步骤在落库前清一次，
+        # 导出单章时也不会再带出错引。步骤 7 正文含评分 JSON，保守跳过。
+        if step_number in ABSENCE_CLEAN_STEPS:
+            from backend.services import citation_policy
+
+            content, _ = citation_policy.strip_absence_ids(content)
 
         result = {
             "step_number": step_number,

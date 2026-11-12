@@ -72,3 +72,56 @@ def test_strips_multiple_ids_hanging_on_one_absence_claim():
     assert removed == 2
     assert "[P1-3-1]" not in cleaned and "[P1-14-1]" not in cleaned
     assert "缺立项批复与预算依据" in cleaned
+
+
+def test_long_clause_is_still_cleaned():
+    """旧口径是"60 字内"，长句会漏；分句口径不该漏。"""
+    text = "缺" + "很长的说明" * 30 + "[P1-3-1]"
+
+    cleaned, removed = citation_policy.strip_absence_ids(text)
+
+    assert removed == 1
+    assert "[P1-3-1]" not in cleaned
+
+
+def test_only_the_absence_sentence_is_touched():
+    text = "缺立项批复[P1-3-1]。资金构成清楚[P1-14-1]。"
+
+    cleaned, removed = citation_policy.strip_absence_ids(text)
+
+    assert removed == 1
+    assert "[P1-3-1]" not in cleaned
+    assert "[P1-14-1]" in cleaned
+
+
+def test_citation_after_a_comma_in_the_same_sentence_is_also_stripped():
+    """中文的「缺 X，……（[P1]）」很常见，按逗号切会漏判。"""
+    text = "资金到位凭证未提供，相关指标计0分[P1-14-1]。"
+
+    cleaned, removed = citation_policy.strip_absence_ids(text)
+
+    assert removed == 1
+    assert "[P1-14-1]" not in cleaned
+
+
+def test_step_record_cleans_absence_ids(monkeypatch):
+    agent = PerformanceAgent.__new__(PerformanceAgent)
+    agent.model_name = "m"
+    state = {"step_results": {}, "step_control": {}}
+
+    agent._record_step_result(state, 9, "立项批复缺失[P1-3-1]。总投资5000万元[P1-3-1]。")
+
+    content = state["step_results"][9]["content"]
+    assert "立项批复缺失" in content
+    assert content.count("[P1-3-1]") == 1      # 只删缺失分句里的那一个
+
+
+def test_step7_json_is_left_alone():
+    """步骤 7 的正文里是评分 JSON，不在清理范围内（保守）。"""
+    agent = PerformanceAgent.__new__(PerformanceAgent)
+    agent.model_name = "m"
+    state = {"step_results": {}, "step_control": {}}
+
+    agent._record_step_result(state, 7, '{"reason": "缺佐证[P1-3-1]"}')
+
+    assert "[P1-3-1]" in state["step_results"][7]["content"]

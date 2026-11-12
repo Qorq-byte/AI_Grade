@@ -14,9 +14,10 @@ from typing import Dict, List, Optional
 from backend.agents.performance_agent import PerformanceAgent
 
 CITE = re.compile(r"\[(P\d+-\d+-\d+)\]")
-#: 「缺失类结论」：缺/未提供/未取得… 后面 60 字内出现证据编号，就是一次违规引用。
-ABSENCE_WITH_ID = re.compile(
-    r"[^。\n]{0,60}(?:缺|未提供|未取得|未见|未附)[^。\n]{0,60}\[(P\d+-\d+-\d+)\]")
+#: 「缺失类结论」按分句判定（批次 53 与 citation_policy 统一口径）。
+from backend.services.citation_policy import ABSENCE as _ABSENCE
+from backend.services.citation_policy import SENTENCE_SPLIT as _SENTENCE_SPLIT
+from backend.services.citation_policy import EVIDENCE_ID as _EVIDENCE_ID
 SENTENCE = re.compile(r"[^。；\n]*\[(P\d+-\d+-\d+)\][^。\n]*[。]?")
 
 
@@ -48,12 +49,17 @@ def collect(values: dict, limit: int = 10) -> List[Dict]:
     return rows
 
 
-def absence_violations(values: dict) -> List[Dict]:
+def absence_violations(values: dict, text: str = None) -> List[Dict]:
     """「缺 X」却标了编号的引用 —— B51 抽读里那两条不贴题，就是这一类。"""
-    report = values.get("final_report") or ""
+    source = values.get("final_report") if text is None else text
+    parts = _SENTENCE_SPLIT.split(source or "")
     rows = []
-    for match in ABSENCE_WITH_ID.finditer(report):
-        rows.append({"id": match.group(1), "claim": match.group(0).strip()})
+    for index in range(0, len(parts), 2):
+        clause = parts[index]
+        if not clause or not _ABSENCE.search(clause):
+            continue
+        for match in _EVIDENCE_ID.finditer(clause):
+            rows.append({"id": match.group(1), "claim": clause.strip()})
     return rows
 
 
