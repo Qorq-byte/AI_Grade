@@ -12,12 +12,12 @@
 
 ---
 
-## 1. 当前位置（截至 2026-11-11）
+## 1. 当前位置（截至 2026-11-13）
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `main` / 批次 53 提交，工作区干净 |
-| 已完成批次 | 第三轮 B1–B53（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
+| 分支 / HEAD | `main` / 批次 54 提交，工作区干净 |
+| 已完成批次 | 第三轮 B1–B54（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
 | 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），142 个端点 |
 | 前端 | 零构建，原生 HTML/CSS/JS + `frontend/shared/` |
 | 存储 | MySQL（库 `ai_grade_d`）+ `state_backups/*.json` 磁盘投影 |
@@ -26,15 +26,16 @@
 
 | 检查 | 命令 | 当前 |
 |---|---|---|
-| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **879 passed**（CI 也跑这一条） |
+| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **894 passed**（CI 也跑这一条） |
 | 前端共享层 / SSE | `node --test tests/test_*.cjs` | **48 pass**（5 个文件） |
 | 前端联通性 | `python frontend_e2e_check.py` | **120 通过 / 0 失败** |
 | 前端契约 | `pytest tests/test_frontend_contract.py -q` | **10 通过**：0 缺失 id、0 重复 id、0 未定义事件（**不是浏览器测试**，见 `docs/ui_contract.md`） |
 | 全接口 | `python test_all_apis.py` | **47/47** |
-| 真实工作流 | `python wf_e2e.py` | **47 项 / 0 失败**（约 4~5 分钟，要真实模型） |
-| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` / `_mutate_step9_critique.py` / `_mutate_critique_step10.py` / `_mutate_llm_resilience.py` / `_mutate_b7_enablement.py` / `_mutate_workflow_deps.py` / `_mutate_report_routes.py` / `_mutate_refine.py` / `_mutate_refine_llm.py` / `_mutate_chat_context.py` / `_mutate_chapter_refs.py` / `_mutate_candidates.py` / `_mutate_candidate_diff.py` / `_mutate_diff_all.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 / 10 / 7 / 11 / 8 / 11 / 9 / 9 / 8 / 8 / 6 / 7 / 7 / 7 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
+| 真实工作流 | `python wf_e2e.py` | **47 项 / 0 失败**（约 3.5~5 分钟，要真实模型） |
+| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` / `_mutate_step9_critique.py` / `_mutate_critique_step10.py` / `_mutate_llm_resilience.py` / `_mutate_b7_enablement.py` / `_mutate_workflow_deps.py` / `_mutate_report_routes.py` / `_mutate_refine.py` / `_mutate_refine_llm.py` / `_mutate_chat_context.py` / `_mutate_chapter_refs.py` / `_mutate_candidates.py` / `_mutate_candidate_diff.py` / `_mutate_diff_all.py` / `_mutate_citation_policy.py` / `_mutate_citation_cleanup.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 / 10 / 7 / 11 / 8 / 11 / 9 / 9 / 8 / 8 / 6 / 7 / 7 / 7 / 3 / 5 全抓**（串行跑，**留足超时**；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
 | 检索基线 | `python -m tests.rag_eval.run --check` | Recall@3 **0.552**、MRR 0.483、P 0.253（证据块带 ±2 行上下文） |
-| 证据引用抽读（手动，不进 CI） | `python -m tests.rag_eval.citation_audit --session <id> --violations` | 缺失类带编号（句子级口径）：清理前 **15 / 44 / 9 条** → 清理后 **0**（回放验证）；端到端单次 0～8 条波动，记录在 `docs/evidence_citation_audit.md` |
+| 证据引用抽读（手动，不进 CI） | `python -m tests.rag_eval.citation_audit --session <id> --violations [--clean]` | 缺失类带编号（句子级、八词口径）：清理前 **15 / 44 / 9 条** → `--clean` 后 **0 / 0 / 0**；端到端单次 0～8 条波动，记录在 `docs/evidence_citation_audit.md` |
+| 引用清理台账 | `GET /workflow/{sid}/status` 的 `citation_cleanup_summary` | 真实一轮 `7c4c5f5b`：**14 条 / 30 个编号**（步骤 8:1、11:6、14:7）；台账 4.4 KB，占备份 **1.3%** |
 | 聊天评测 | `python -m tests.chat_eval.run --check` | **recall 1.0（40/40）**，平均上下文 716.5 字；对照组 **0.325** |
 | 聊天抽读（手动，不进 CI） | `python -m tests.chat_eval.live --session <id> --output <md>` | 2026-11-12 / deepseek-chat / 两会话：**编造 0/10 与 0/10、引用 9/9 与 8/9、弱相关 0/10**（`docs/chat_live_eval*.md`） |
 
@@ -483,20 +484,28 @@
 - **遗留**：步骤内容不再等于"模型原文"（revisions 基线也是清理后的）；句子级会连带删
   同句正向引用；词表有限（暂无/未能获取不覆盖）；步骤 7 未覆盖。
 
-### 批次 54（建议）：记录"清理前原文" + 扩词表
-- **为什么**：B53 把步骤文本改在落库前，代价是**可追溯性**——审计想看"模型原本写了什么"
-  已经没有地方可查。这是审计类系统的硬伤，应该先补。
-- **要做**：
-  1. 清理时把去掉的编号与命中句记进 `state["citation_cleanup"]`（步骤号、句、编号）；
-  2. 扩缺失词表：暂无 / 未能获取 / 未附 / 空白；
-  3. 在报告里保留一个「引用清理台账」（可选，导出时附）。
-- **判定**：清理台账能回读；扩词表后违规仍为 0；`pytest` 不降。
-- **风险**：台账会让备份再涨一点；"原文"与"清理后"两套文本容易混用。
+### 批次 54 = 清理台账 + 扩词表 ✅ 已完成
+- 交付见 `progress_round3.md` 的 B54。
+- **台账两处记**：`_record_step_result`（步骤 8–13）与 `_node_step14`（报告）。
+  只记前者会漏掉"报告被改过"这一笔 —— 真实一轮 14 条里有 **7 条来自第 14 步**。
+- **扩词表的收益要先量再说**：65 份备份上旧五词删 3,505 个编号、新八词 3,509 个（**+4**），
+  只有 1 句是新触发，且那句是**误删正向引用**（「暂无法」命中「暂无」）。
+  三份回放会话的违规数一个新词都没多命中（还是 15/44/9）。这是**口径完整性**，不是修 bug。
+- 回放 `--violations --clean`：15 / 44 / 9 → **0 / 0 / 0**；台账 14 条 / 30 个编号。
+- 判定：`pytest 879 → 894`、变异 **5/5**、`wf_e2e 47/0`、`test_all_apis 47/47`、
+  `frontend_e2e 120/0`、快照 155 零差异。
+- **遗留**：台账只有"被删的那一句"，不是整段原文；步骤 7 仍未覆盖；
+  `/status` 摘要**没有前端消费方**（下一批要么接、要么删）；重启续跑时台账连续性未验。
 
-### 批次 55（备选）
-- **C1 第五步（可选）**：再拆 SSE/上传，把 `agent_routes` 压到 ~1300；收益边际递减。
-- **跨文档验证**：需要一份非样例资料的真实报告。
-- **真浏览器冒烟**：等环境能装 Playwright。
+### 批次 55（建议）：台账接前端 + 步骤 7 的同类问题
+- **先问消费方**（B27 的教训）：`/status` 的 `citation_cleanup_summary` 现在只有接口，
+  没人读。要么在报告页加一个「引用清理」小面板（条数 + 最近 3 句），
+  要么按「没消费方就删」处理 —— 不要让它变成第二个 `standard_purity`。
+- **步骤 7 的 `reason` 字段**：仍可能写「缺 X[P1-y]」且不进台账。
+  动手前先量：65 份备份里步骤 7 正文（JSON 内的 reason）有多少条缺失类带编号。
+  若量级是 0～1，就别为它破坏 JSON 结构；有量级再考虑"只清 reason 字段"。
+- **备选**：跨文档验证（需要一份非样例资料的真实报告）；真浏览器冒烟（等 Playwright 可装）；
+  C1 第五步（再拆 SSE/上传，`agent_routes` 压到 ~1300，收益边际递减）。
 
 ---
 
@@ -564,6 +573,7 @@ NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 98/0
 | **变异脚本跑完没还原** | 批次 18 遇到：工作树里 `list_questionnaires` 被留成了「裸 open」变异体，而注释还写着「必须走持锁的读入口」；下一次全量回归照样 322 passed（守门用例当时没覆盖到）。→ **每跑完一批变异脚本先 `git status --short`**，只应看到自己的改动；发现多出来的文件改动先用 `git diff` 看清再 `git checkout --` 还原 |
 | **变异脚本会「静默失效」** | 跑之前文件**已经被上一次中断的变异污染**时，锚点找不到 → 替换不生效 → 用例当然全绿，脚本报成「变异存活 / 变异点未找到」，看起来像覆盖不足，其实是根本没跑到。批次 21 复核踩到：盘上留着 `"no_evidence": False`，害得两个脚本各报一条假问题。→ **跑之前先 `git diff` 对着安全副本验一遍关键行；跑完除了 `git status --short` 还要 `grep` 关键行**；`.mutation_backup/` 残留别急着删，先 `diff` 看看它是干净版还是污染版 |
 | **变异跑着的时候，源码就是变异体** | 批次 34 想在变异脚本运行期间顺手做「搬运前后逐字比对」，读到的是被改坏的 `_workflow_deps.py`，得出「`_owned_workflows` 不一致」的假结论。→ **变异脚本运行期间不要读、不要比、不要提交源码**；要取证就等它跑完（脚本 `finally` 会还原） |
+| **变异脚本被中途杀掉 = 源码留在变异态，下一轮会把它当基线** | 批次 54 第一次跑 `_mutate_citation_cleanup.py`，在「台账不进备份」那一条被外部 SIGTERM（工具默认 120s 超时）打断：`finally` 不执行，盘上留下 `"citation_cleanup_typo"`。第二轮脚本读到的 `originals` 就是**污染版**，于是那条变异打印「跳过（变异点未找到）」，而它的「还原」把变异体又写回去了 —— 脚本输出「漏掉：无」，实际源码是坏的。→ ① 变异脚本一律**留足超时**（5 条变异 ≈ 75~120s，给 300s+）或后台跑；② 跑完除了 `git status --short`，还要 **`grep` 被锚定的那一行**；③ 看到「跳过」先怀疑盘上的文件，而不是锚点 |
 | **快照把依赖的「模块名」当契约** | `_dep_name()` 原来返回 `module.name`，批次 34 把 `_require_*` 搬进 `_workflow_deps` 后，148 条里一批路由报「deps 变了」——接口一个字没改。→ 依赖比对只比**函数名**（丢依赖、换函数仍抓得住），并写用例钉住；否则每次拆分都假红，快照就会被人为无视 |
 | **给模型的"格式示例"会被当成真实数据** | B47 为了要求「照抄编号」，在提示词里写了 `（S7P1）、（P1-3-1）、REPORT_CHAPTER_MISSING#1` 当例子，模型直接把 `REPORT_CHAPTER_MISSING#1` 当成本报告的编号引用（该报告并没有这个问题）。→ 提示词里不写具体编号；必须举例时用占位符（`<片段编号>`） |
 | **判定模型输出的正则，先拿真实样本校准** | 批次 44 的抽取指标只认 `[P1]`，而模型实际写 `（S11P0）`、`[P1-3-1]` —— 先误报「10 条全未引用」，再误报「1 条编造」，两轮才修对。→ 写检测器前先跑一条真样本打印出来看；长格式要排在短格式前面 |
@@ -635,3 +645,10 @@ B3 质量门禁做完了（批次 27）。
 也没落盘 —— 直到批次 27 的质量门禁想读它，才发现 38 份备份里 0 份有值。
 **「算出来」不等于「完成」**：一个指标要有三件事才算交付 —— 有消费方、能落盘、有朝它断言的用例。
 缺任何一件，它就会在这次这种情况里变成一个 0。
+
+**B53/B54 连起来看是同一个道理**：B53 为了"不让错引流出去"，把清理前移到落库，
+代价是**产出物不再等于模型原文**；B54 立刻把账补回来（记下哪一句、删了哪些编号）。
+**凡是"改写产出物"的确定性后处理，必须同时产出"我改了什么"的台账** ——
+否则下一次审计问「原本写了什么」，答案只有日志里一行"N 处"。
+另外，B54 顺手证伪了一个想当然：**扩词表几乎不改变结果**（+4 个编号、唯一新增的那句还是误删）。
+做"补词表/补枚举"这类改动前，先在存量数据上量一遍增量 —— 收益常常是 0。
