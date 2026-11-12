@@ -2171,6 +2171,14 @@ class PerformanceAgent:
         # 不依赖LLM，直接从各步骤结果拼装完整报告
         # 支持自定义章节排序（通过 state 中的 report_section_order）
         content = self._assemble_final_report(state)
+        # 缺失类结论不保留证据编号：文本证据只能证明"有什么"，不能证明"缺什么"，
+        # 挂着编号会被读成"这一行就是缺失的证明"。提示词试过、反而更糟（6%→15%），
+        # 所以放在组装时做确定性清理（批次 52）。
+        from backend.services import citation_policy
+
+        content, stripped = citation_policy.strip_absence_ids(content)
+        if stripped:
+            logger.info(f"[Step 14] 去掉缺失类结论里的证据编号 {stripped} 处")
         state["final_report"] = content
         self._record_step_result(state, 14, content)
         # 报告成型后立刻做一次纯程序的步骤间一致性检查（不调模型）
