@@ -14,7 +14,7 @@ SERVICE = "backend/services/workflow_evidence.py"
 
 MUTATIONS = [
     ("扩展没接上（返回原始单行）", SERVICE,
-     "    return _expand_context(ranked, state)",
+     "    return _expand_context(ranked, state, context_radius)",
      "    return ranked"),
     ("扩展半径改为 0", SERVICE,
      "CONTEXT_RADIUS = 2",
@@ -23,8 +23,11 @@ MUTATIONS = [
      '        expanded.append({**hit, "text": "\\n".join(lines[low:high])})',
      '        hit["text"] = "\\n".join(lines[low:high]); expanded.append(hit)'),
     ("边界不裁剪", SERVICE,
-     "        low = max(0, index - CONTEXT_RADIUS)",
-     "        low = index - CONTEXT_RADIUS"),
+     "        low = max(0, index - radius)",
+     "        low = index - radius"),
+    ("忽略传入的半径（网格失效）", SERVICE,
+     "    return _expand_context(ranked, state, context_radius)",
+     "    return _expand_context(ranked, state)"),
 ]
 
 originals = Path(SERVICE).read_text(encoding="utf-8")
