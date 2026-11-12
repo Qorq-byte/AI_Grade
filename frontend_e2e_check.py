@@ -388,6 +388,11 @@ log("showCandidateDiff" in html, "候选可看段落级差异")
 log("cmp-diff-row" in html, "差异按段落着色")
 log("cmp-audit" in html, "显示「谁在何时采用」")
 
+# 批次 46（B6 第三步）：全量差异与采用后再编辑
+log("showAllDiffs" in html, "一次看全部候选差异")
+log("全部差异" in html, "对比面板有「全部差异」入口")
+log("edited_after_select" in html, "显示「采用后已被人工修改」")
+
 r = req("GET", "/api/agent/workflow/fe-no-such-session/critique/10", token=user_token)
 log(r.status_code == 404, "GET 不存在会话的步骤10补全台账 → 404（不 500）", f"status={r.status_code}")
 

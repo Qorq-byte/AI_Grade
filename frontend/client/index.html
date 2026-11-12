@@ -744,6 +744,9 @@ function buildComparisonPanel(sn){
         h+='<p class="cmp-audit">当前采用：'+esc(cmp.selected_best)
           +'（'+(cmp.selected_by==='manual'?'人工选择':'自动选择')+when+'）</p>';
     }
+    if(cmp.edited_after_select){
+        h+='<p class="cmp-audit">采用后已被人工修改（v'+esc(cmp.edited_after_select.version)+'）</p>';
+    }
     h+='<div class="cmp-list">';
     for(var i=0;i<cmp.models.length;i++){
         var m=cmp.models[i],sc=(cmp.scores&&cmp.scores[m])||0;
@@ -757,15 +760,41 @@ function buildComparisonPanel(sn){
           +'<button class="refine-btn" onclick="selectCandidate('+sn+',\''+esc(m)+'\')">采用</button>'
           +'</div>';
     }
-    h+='</div><div id="cmpDiff'+sn+'"></div></div>';
+    h+='</div><button class="refine-btn" onclick="showAllDiffs('+sn+')">全部差异</button>'
+      +'<div id="cmpDiff'+sn+'"></div></div>';
     return h;
+}
+function showAllDiffs(sn){
+    var host=document.getElementById('cmpDiff'+sn);if(!host)return;
+    if(host.getAttribute('data-all')==='1'&&host.innerHTML){
+        host.innerHTML='';host.removeAttribute('data-all');return;
+    }
+    host.setAttribute('data-all','1');host.removeAttribute('data-pair');
+    host.innerHTML='<p class="cmp-audit">差异加载中…</p>';
+    api('GET','/api/agent/workflow/'+wfSessionId+'/comparison/'+sn+'/diff-all').then(function(r){
+        if(!r.success)throw new Error(r.message||'读取失败');
+        var labels={same:'同',changed:'改',only_left:'仅基准',only_right:'仅该候选'};
+        var h='<div class="cmp-diff-head">基准：'+esc(r.data.base)+'</div>';
+        for(var c=0;c<r.data.comparisons.length;c++){
+            var d=r.data.comparisons[c];
+            h+='<div class="cmp-diff-head">'+esc(d.model)+'（相同 '+d.stats.same+' / 改动 '+d.stats.changed
+              +' / 仅基准 '+d.stats.only_left+' / 仅该候选 '+d.stats.only_right+'）</div>';
+            for(var i=0;i<d.rows.length;i++){
+                var row=d.rows[i];
+                h+='<div class="cmp-diff-row '+esc(row.kind)+'"><span class="cmp-diff-tag">'
+                  +(labels[row.kind]||'')+'</span>'+esc(row.text)+'</div>';
+            }
+        }
+        host.innerHTML=h;
+    }).catch(function(e){host.innerHTML='<p class="cmp-tie">差异读取失败：'+esc(e.message)+'</p>'});
 }
 function showCandidateDiff(sn,left,right){
     var host=document.getElementById('cmpDiff'+sn);if(!host||left===right)return;
     if(host.getAttribute('data-pair')===left+'>'+right&&host.innerHTML){
         host.innerHTML='';host.removeAttribute('data-pair');return;
     }
-    host.setAttribute('data-pair',left+'>'+right);host.innerHTML='<p class="cmp-audit">差异加载中…</p>';
+    host.setAttribute('data-pair',left+'>'+right);host.removeAttribute('data-all');
+    host.innerHTML='<p class="cmp-audit">差异加载中…</p>';
     api('GET','/api/agent/workflow/'+wfSessionId+'/comparison/'+sn+'/diff?left='+encodeURIComponent(left)+'&right='+encodeURIComponent(right)).then(function(r){
         if(!r.success)throw new Error(r.message||'读取失败');
         var d=r.data,labels={same:'同',changed:'改',only_left:'仅左',only_right:'仅右'};
