@@ -96,6 +96,14 @@
         .cmp-current{background:#f0fff4;color:#22543d;border-radius:10px;padding:1px 8px;font-size:11px}
         .cmp-tie{color:#b7791f;font-size:12px;margin:0 0 6px}
         .cmp-row .refine-btn{margin-left:auto}
+        .cmp-audit{color:#4a5568;font-size:12px;margin:0 0 6px}
+        .cmp-diff-head{font-size:12px;color:#4a5568;margin:4px 0 6px}
+        .cmp-diff-row{font-size:12px;line-height:1.6;padding:4px 6px;border-radius:6px;margin-bottom:4px;white-space:pre-wrap}
+        .cmp-diff-row.same{color:#a0aec0}
+        .cmp-diff-row.changed{background:#fffaf0;color:#744210}
+        .cmp-diff-row.only_left{background:#fff5f5;color:#822727}
+        .cmp-diff-row.only_right{background:#f0fff4;color:#22543d}
+        .cmp-diff-tag{display:inline-block;min-width:28px;font-weight:600;margin-right:6px}
         .grade-badge{display:inline-block;padding:4px 16px;border-radius:20px;font-size:16px;font-weight:700}
         .grade-badge.excellent{background:#f0fff4;color:#22543d;border:2px solid #48bb78}
         .grade-badge.good{background:#ebf5ff;color:#2c5282;border:2px solid #4299e1}
@@ -731,18 +739,47 @@ function buildComparisonPanel(sn){
     if(cmp.models.length>1&&!cmp.recommended){
         h+='<p class="cmp-tie">两个候选得分相同，不自动推荐 —— 请自己判断。</p>';
     }
+    if(cmp.selected_best&&cmp.selected_by){
+        var when=cmp.selected_at?(' · '+esc(cmp.selected_at.slice(0,19).replace('T',' '))):'';
+        h+='<p class="cmp-audit">当前采用：'+esc(cmp.selected_best)
+          +'（'+(cmp.selected_by==='manual'?'人工选择':'自动选择')+when+'）</p>';
+    }
     h+='<div class="cmp-list">';
     for(var i=0;i<cmp.models.length;i++){
         var m=cmp.models[i],sc=(cmp.scores&&cmp.scores[m])||0;
+        var other=cmp.recommended&&cmp.recommended!==m?cmp.recommended:(cmp.models[0]!==m?cmp.models[0]:'');
         h+='<div class="cmp-row'+(m===cmp.selected_best?' selected':'')+'">'
           +'<span class="cmp-model">'+esc(m)+'</span>'
           +'<span class="cmp-score">'+sc+' 分</span>'
           +(m===cmp.recommended?'<span class="cmp-badge">推荐</span>':'')
           +(m===cmp.selected_best?'<span class="cmp-current">当前采用</span>':'')
+          +(other?'<button class="refine-btn" onclick="showCandidateDiff('+sn+',\''+esc(m)+'\',\''+esc(other)+'\')">差异</button>':'')
           +'<button class="refine-btn" onclick="selectCandidate('+sn+',\''+esc(m)+'\')">采用</button>'
           +'</div>';
     }
-    return h+'</div></div>';
+    h+='</div><div id="cmpDiff'+sn+'"></div></div>';
+    return h;
+}
+function showCandidateDiff(sn,left,right){
+    var host=document.getElementById('cmpDiff'+sn);if(!host||left===right)return;
+    if(host.getAttribute('data-pair')===left+'>'+right&&host.innerHTML){
+        host.innerHTML='';host.removeAttribute('data-pair');return;
+    }
+    host.setAttribute('data-pair',left+'>'+right);host.innerHTML='<p class="cmp-audit">差异加载中…</p>';
+    api('GET','/api/agent/workflow/'+wfSessionId+'/comparison/'+sn+'/diff?left='+encodeURIComponent(left)+'&right='+encodeURIComponent(right)).then(function(r){
+        if(!r.success)throw new Error(r.message||'读取失败');
+        var d=r.data,labels={same:'同',changed:'改',only_left:'仅左',only_right:'仅右'};
+        var h='<div class="cmp-diff-head">'+esc(d.left)+' → '+esc(d.right)
+            +'（相同 '+d.stats.same+' 段 / 改动 '+d.stats.changed+' 段 / 仅左 '+d.stats.only_left
+            +' / 仅右 '+d.stats.only_right+'）</div>';
+        for(var i=0;i<d.rows.length;i++){
+            var row=d.rows[i];
+            h+='<div class="cmp-diff-row '+esc(row.kind)+'"><span class="cmp-diff-tag">'
+              +(labels[row.kind]||'')+'</span>'+esc(row.text)+'</div>';
+        }
+        if(d.truncated)h+='<div class="cmp-diff-row">…（差异过长，仅显示前 '+d.rows.length+' 段）</div>';
+        host.innerHTML=h;
+    }).catch(function(e){host.innerHTML='<p class="cmp-tie">差异读取失败：'+esc(e.message)+'</p>'});
 }
 function selectCandidate(sn,model){
     api('POST','/api/agent/workflow/comparison/select',{session_id:wfSessionId,step_number:sn,model:model}).then(function(r){
