@@ -58,3 +58,12 @@ def test_context_never_exceeds_the_budget():
         context = chat_context.build_report_context(
             fixture.state(), fixture.PROJECT, query=case["question"])
         assert len(context["text"]) <= chat_context.MAX_CONTEXT_CHARS
+
+
+def test_live_detector_matches_full_evidence_ids():
+    """真实证据编号是 `P1-3-1`；只匹配 `P1` 会把真实引用误判成编造（踩过）。"""
+    from tests.chat_eval import live
+
+    found = live.REF_RE.findall("见 [P1-3-1] 与（S11P0）、PARTIAL_SCORE_PRESENTED#1 和 [P2]")
+
+    assert found == ["P1-3-1", "S11P0", "PARTIAL_SCORE_PRESENTED#1", "P2"]
