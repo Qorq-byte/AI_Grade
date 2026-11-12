@@ -3,9 +3,9 @@
   "fixture": "tests/chat_eval/fixture.py",
   "metrics": {
     "recall": 1.0,
-    "hits": 20,
-    "total": 20,
-    "avg_context_chars": 554.5,
-    "max_context_chars": 710
+    "hits": 21,
+    "total": 21,
+    "avg_context_chars": 675.4,
+    "max_context_chars": 794
   }
 }
