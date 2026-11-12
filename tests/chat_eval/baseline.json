@@ -1,0 +1,11 @@
+{
+  "date": "2026-11-12",
+  "fixture": "tests/chat_eval/fixture.py",
+  "metrics": {
+    "recall": 1.0,
+    "hits": 20,
+    "total": 20,
+    "avg_context_chars": 554.5,
+    "max_context_chars": 710
+  }
+}
