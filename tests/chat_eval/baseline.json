@@ -2,10 +2,10 @@
   "date": "2026-11-12",
   "fixture": "tests/chat_eval/fixture.py",
   "metrics": {
-    "recall": 1.0,
-    "hits": 21,
-    "total": 21,
-    "avg_context_chars": 675.4,
-    "max_context_chars": 794
+    "recall": 0.975,
+    "hits": 39,
+    "total": 40,
+    "avg_context_chars": 714.3,
+    "max_context_chars": 834
   }
 }
