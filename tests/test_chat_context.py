@@ -404,3 +404,101 @@ def test_report_and_step_corpus_do_not_duplicate_the_same_paragraph():
     assert all(not item["id"].startswith("S7") for item in snippets), snippets
     texts = ["".join(item["text"].split()) for item in snippets]
     assert len(texts) == len(set(texts)), texts
+
+
+# ─── 批次 48：同义词查询扩展 ───
+
+def _synonym_state():
+    return {
+        "project_name": "某某项目",
+        "final_report": (
+            "# 报告\n\n## 一、基本情况\n\n项目 2023 年立项。\n\n"
+            "## 二、评价工作开展情况\n\n采用资料审查、现场核查与问卷相结合的方式。"
+        ),
+        "step_results": {},
+    }
+
+
+def test_synonyms_let_method_match_way():
+    """问「方法」、正文写「方式」—— 这是 Q33 在真实评测里漏掉的那类。"""
+    values = _synonym_state()
+
+    snippets = chat_context.retrieve_chapter_snippets(values, "评价用了哪些方法？")
+
+    assert snippets
+    assert "资料审查" in snippets[0]["text"]
+
+
+def test_synonyms_work_in_the_reverse_direction():
+    values = _synonym_state()
+
+    snippets = chat_context.retrieve_chapter_snippets(values, "用了哪些手段？")
+
+    assert snippets
+    assert "资料审查" in snippets[0]["text"]
+
+
+def test_synonym_expansion_does_not_rewrite_the_snippet_text():
+    """扩展只作用于查询，展示给模型的原文必须一字不改。"""
+    values = _synonym_state()
+
+    snippet = chat_context.retrieve_chapter_snippets(values, "评价用了哪些方法？")[0]
+
+    assert "方式" in snippet["text"]
+    assert "方法" not in snippet["text"]
+
+
+def test_expand_query_keeps_the_original_and_adds_peers():
+    expanded = chat_context.expand_query("资金怎么安排")
+
+    assert expanded.startswith("资金怎么安排")
+    assert "经费" in expanded
+
+
+# ─── 批次 48：同义词查询扩展 ───
+
+def _synonym_state():
+    return {
+        "project_name": "某某项目",
+        "final_report": (
+            "# 报告\n\n## 一、基本情况\n\n项目 2023 年立项。\n\n"
+            "## 二、评价工作开展情况\n\n采用资料审查、现场核查与问卷相结合的方式。"
+        ),
+        "step_results": {},
+    }
+
+
+def test_synonyms_let_method_match_way():
+    """问「方法」、正文写「方式」—— 这是 Q33 在真实评测里漏掉的那类。"""
+    values = _synonym_state()
+
+    snippets = chat_context.retrieve_chapter_snippets(values, "评价用了哪些方法？")
+
+    assert snippets
+    assert "资料审查" in snippets[0]["text"]
+
+
+def test_synonyms_work_in_the_reverse_direction():
+    values = _synonym_state()
+
+    snippets = chat_context.retrieve_chapter_snippets(values, "用了哪些手段？")
+
+    assert snippets
+    assert "资料审查" in snippets[0]["text"]
+
+
+def test_synonym_expansion_does_not_rewrite_the_snippet_text():
+    """扩展只作用于查询，展示给模型的原文必须一字不改。"""
+    values = _synonym_state()
+
+    snippet = chat_context.retrieve_chapter_snippets(values, "评价用了哪些方法？")[0]
+
+    assert "方式" in snippet["text"]
+    assert "方法" not in snippet["text"]
+
+
+def test_expand_query_keeps_the_original_and_adds_peers():
+    expanded = chat_context.expand_query("资金怎么安排")
+
+    assert expanded.startswith("资金怎么安排")
+    assert "经费" in expanded

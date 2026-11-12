@@ -243,6 +243,42 @@ def _corpus(values: dict, max_chars: int):
     return chunks, meta
 
 
+#: 高频同义词组：只用于**查询扩展**，不改语料原文（批次 48）。
+#: 为什么是"扩查询"而不是"改写语料"：snippet 要原样给模型看，
+#: 改写会让模型引用到"报告里并不存在的词"。
+SYNONYM_GROUPS = (
+    ("方法", "方式", "手段", "做法"),
+    ("资金", "经费", "款项"),
+    ("建议", "意见", "对策"),
+    ("问题", "缺陷", "不足", "短板"),
+    ("证据", "佐证", "材料", "凭证"),
+    ("完成率", "达成率", "完成比例"),
+    ("满意度", "满意程度"),
+    ("投资", "投资额", "总投资"),
+    ("得分", "分值", "分数"),
+    ("等级", "评级", "档次"),
+    ("范围", "边界"),
+    ("工期", "期限"),
+    ("验收", "交付"),
+    ("立项", "批复"),
+)
+
+
+def expand_query(query: str) -> str:
+    """在查询后追加同组词，让「方法/方式」这类写法差异能互相命中。
+
+    实测漏掉的那条：问「评价用了哪些方法」，正文写「……相结合的方式」。
+    """
+    query = query or ""
+    extra = []
+    for group in SYNONYM_GROUPS:
+        if any(term in query for term in group):
+            extra.extend(term for term in group if term not in query)
+    if not extra:
+        return query
+    return f"{query} {' '.join(dict.fromkeys(extra))}"
+
+
 def _normalize(text: str) -> str:
     return re.sub(r"\s+", "", text or "")
 
@@ -269,7 +305,8 @@ def retrieve_chapter_snippets(values: Optional[dict], query: str,
     if not chunks:
         return []
 
-    hits = retrieval.build_index(chunks).search(query, limit=max(limit * 3, limit))
+    hits = retrieval.build_index(chunks).search(expand_query(query),
+                                                limit=max(limit * 3, limit))
     picked: List[Dict] = []
     seen: List[str] = []
     for score, chunk in hits:
