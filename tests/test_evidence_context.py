@@ -66,3 +66,17 @@ def test_corpus_docs_are_line_addressable():
     """扩展依赖「locator 里的行号能对上原文」——这条不成立，扩展就会错位。"""
     for name, text in corpus.DOCS.items():
         assert text.splitlines(), name
+
+
+def test_radius_is_configurable_for_grid():
+    """半径网格要用同一个入口跑 0/1/2/3，不能各写一套。"""
+    state = run.make_state()
+
+    narrow = [hit for hit in run.retrieve("项目总投资是多少？", 2, state, radius=0)
+              if hit.get("kind") == "project"]
+    wide = [hit for hit in run.retrieve("项目总投资是多少？", 2, state, radius=2)
+            if hit.get("kind") == "project"]
+
+    assert narrow and wide
+    assert all(len(hit["text"].splitlines()) == 1 for hit in narrow)
+    assert sum(len(hit["text"]) for hit in wide) > sum(len(hit["text"]) for hit in narrow)

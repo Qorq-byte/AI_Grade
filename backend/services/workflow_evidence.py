@@ -299,7 +299,8 @@ def effective_project_limit(project: List[dict], step: int, limit: int) -> int:
 
 def retrieve_step_evidence(db, state, step, include_knowledge=False, query=None,
                           project_limit: Optional[int] = None,
-                          knowledge_limit: Optional[int] = None):
+                          knowledge_limit: Optional[int] = None,
+                          context_radius: Optional[int] = None):
     """返回一组可定位的原文摘录，项目资料与通用知识分开计数。
 
     query 为空 → 线上路径：按「取证面」多查询选证据（每面一条），再用步骤意图补满；
@@ -340,7 +341,7 @@ def retrieve_step_evidence(db, state, step, include_knowledge=False, query=None,
         ranked = _legacy_rank(state, step, project_limit, knowledge_limit, knowledge)
     if adaptive:
         ranked = _augment_with_unscored(ranked, project, project_limit)
-    return _expand_context(ranked, state)
+    return _expand_context(ranked, state, context_radius)
 
 
 def _augment_with_unscored(ranked: List[dict], project: List[dict], target: int) -> List[dict]:
@@ -374,11 +375,13 @@ def _augment_with_unscored(ranked: List[dict], project: List[dict], target: int)
 _LINE_NO = re.compile(r"第(\d+)行")
 
 
-def _expand_context(hits: List[dict], state: dict) -> List[dict]:
+def _expand_context(hits: List[dict], state: dict,
+                    radius: Optional[int] = None) -> List[dict]:
     """给每条项目证据补上前后各 CONTEXT_RADIUS 行，返回**副本**（不改进度缓存）。
 
     编号与 locator 原样保留 —— 扩的只是"可读范围"，不是放宽引用判定。
     """
+    radius = CONTEXT_RADIUS if radius is None else max(0, int(radius))
     docs = state.get("all_raw_texts") or {}
     expanded: List[dict] = []
     for hit in hits:
@@ -392,8 +395,8 @@ def _expand_context(hits: List[dict], state: dict) -> List[dict]:
             continue
         lines = doc.splitlines()
         index = int(match.group(1)) - 1
-        low = max(0, index - CONTEXT_RADIUS)
-        high = min(len(lines), index + CONTEXT_RADIUS + 1)
+        low = max(0, index - radius)
+        high = min(len(lines), index + radius + 1)
         expanded.append({**hit, "text": "\n".join(lines[low:high])})
     return expanded
 

@@ -44,7 +44,8 @@ def make_state(docs: Optional[Dict[str, str]] = None) -> dict:
 
 
 def retrieve(question: str, step: int, state: dict, include_knowledge: bool = False,
-             limit: Optional[int] = None, use_question: bool = False) -> List[dict]:
+             limit: Optional[int] = None, use_question: bool = False,
+             radius: Optional[int] = None) -> List[dict]:
     """当前检索器的适配层。
 
     `use_question=False`（默认）复刻线上行为：查询由「步骤意图」构成，与提问无关；
@@ -55,6 +56,7 @@ def retrieve(question: str, step: int, state: dict, include_knowledge: bool = Fa
         None, state, step, include_knowledge,
         query=question if use_question else None,
         project_limit=limit,
+        context_radius=radius,
     )
 
 
@@ -88,12 +90,13 @@ def anchor_covered(anchor: str, docs: Optional[Dict[str, str]] = None) -> bool:
     return False
 
 
-def evaluate(verbose: bool = False, limit: Optional[int] = None, use_question: bool = False) -> dict:
+def evaluate(verbose: bool = False, limit: Optional[int] = None, use_question: bool = False,
+             radius: Optional[int] = None) -> dict:
     state = make_state()
     rows = []
     for sample in samples.SAMPLES:
         hits = retrieve(sample["question"], sample["step"], state,
-                        limit=limit, use_question=use_question)
+                        limit=limit, use_question=use_question, radius=radius)
         rank = _first_relevant_rank(hits, sample["expect"])
         rows.append({
             "id": sample["id"], "step": sample["step"], "question": sample["question"],
