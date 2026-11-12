@@ -233,7 +233,25 @@ def _apply_step_edit(session_id, step, content, source, expected_version=None):
                      "updated_at": datetime.now(timezone.utc).isoformat(),
                      "revisions": [*previous.get("revisions", []), prior_revision]}
     review = _review_after(values, step)
-    _persist_state(session_id, {**updates, "step_results": results, "review_steps": review})
+    # 采用过某个候选之后又被人工改：记一笔，导出/审计时能回答
+    # 「这个版本是模型写的还是人改的」。重新采用时会清掉这个标记。
+    extra = {}
+    from backend.services import candidates
+
+    entry = candidates.entry_for(values, step)
+    if source != "compare_select" and entry and entry.get("selected_best"):
+        history = dict(values.get("comparison_history") or {})
+        key = step if step in history else str(step)
+        item = dict(history.get(key) or {})
+        item["edited_after_select"] = {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "version": version + 1,
+            "by": source,
+        }
+        history[key] = item
+        extra["comparison_history"] = history
+    _persist_state(session_id, {**updates, "step_results": results,
+                                "review_steps": review, **extra})
     return {"session_id": session_id, "step_number": step, "refined_content": content,
             "version": version + 1, "review_steps": review}
 
@@ -345,6 +363,9 @@ async def get_step_comparison(session_id: str, step: int):
         "candidates": ranked,
         "recommended": next((item["model"] for item in ranked if item.get("recommended")), None),
         "selected_best": entry.get("selected_best"),
+        "selected_by": entry.get("selected_by"),
+        "selected_at": entry.get("selected_at"),
+        "edited_after_select": entry.get("edited_after_select"),
     }}
 
 
@@ -364,6 +385,34 @@ async def get_candidate_diff(session_id: str, step: int,
         raise HTTPException(status_code=422, detail="同一模型没有可比差异")
     result = candidates.diff_paragraphs(outputs[left], outputs[right])
     return {"success": True, "data": {"left": left, "right": right, **result}}
+
+
+@router.get("/workflow/{session_id}/comparison/{step}/diff-all",
+            dependencies=[Depends(_require_path_workflow)])
+async def get_candidate_diff_all(session_id: str, step: int,
+                                 base: Optional[str] = Query(None)):
+    """以推荐（或指定）候选为基准，一次给出与其他所有候选的段落差异。
+
+    三个候选两两比是 3 组差异、六次阅读；以推荐为基准只要 2 组。
+    """
+    from backend.services import candidates
+
+    values = _get_workflow_values(session_id)
+    outputs = candidates.candidates_of(values, step)
+    if len(outputs) < 2:
+        raise HTTPException(status_code=422, detail="候选不足两个，无法比较")
+    if base is not None:
+        if base not in outputs:
+            raise HTTPException(status_code=404, detail=f"找不到候选：{base}")
+    else:
+        ranked = candidates.rank(values, step)
+        base = next((item["model"] for item in ranked if item.get("recommended")),
+                    ranked[0]["model"] if ranked else None)
+    comparisons = [
+        {"model": model, **candidates.diff_paragraphs(outputs[base], outputs[model])}
+        for model in sorted(outputs) if model != base
+    ]
+    return {"success": True, "data": {"base": base, "comparisons": comparisons}}
 
 
 @router.post("/workflow/comparison/select", dependencies=[Depends(_require_body_workflow)])
@@ -389,6 +438,7 @@ async def select_comparison_candidate(req: SelectCandidateRequest):
     entry["selected_at"] = datetime.now(timezone.utc).isoformat()
     entry["scores_snapshot"] = {item["model"]: item["score"]
                                 for item in candidates.rank(values, req.step_number)}
+    entry.pop("edited_after_select", None)   # 又回到模型原文，标记作废
     history[key] = entry
     _persist_state(req.session_id, {"comparison_history": history})
     data["selected_best"] = req.model
@@ -1255,6 +1305,7 @@ async def get_workflow_status(session_id: str, db: Session = Depends(get_db), af
                 "selected_best": entry.get("selected_best"),
                 "selected_by": entry.get("selected_by"),
                 "selected_at": entry.get("selected_at"),
+                "edited_after_select": entry.get("edited_after_select"),
             }
         summaries.append(summary)
     return AgentResponse(success=True, data={

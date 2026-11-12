@@ -156,7 +156,7 @@ def api(tmp_path, monkeypatch):
         "step_results": {"8": {"content": GOOD, "version": 1}},
         "comparison_history": {"8": {
             "step_number": 8, "models_used": ["a", "b"],
-            "individual_outputs": {"a": GOOD, "b": WEAK}, "selected_best": None,
+            "individual_outputs": {"a": GOOD, "b": WEAK, "c": MEDIUM}, "selected_best": None,
         }},
     }, ensure_ascii=False), encoding="utf-8")
     with factory.begin() as db:
@@ -177,7 +177,7 @@ def test_comparison_endpoint_lists_candidates_with_scores(api):
     body = client.get("/api/agent/workflow/s1/comparison/8", headers=headers).json()
 
     models = [item["model"] for item in body["data"]["candidates"]]
-    assert models == ["a", "b"]
+    assert set(models) == {"a", "b", "c"}
     assert body["data"]["recommended"] == "a"
     assert body["data"]["candidates"][0]["score"] > body["data"]["candidates"][1]["score"]
 
@@ -210,7 +210,7 @@ def test_status_exposes_comparison_summary(api):
     summaries = {item["step_number"]: item for item in data["step_summaries"]}
 
     assert summaries[8]["comparison"]["recommended"] == "a"
-    assert summaries[8]["comparison"]["models"] == ["a", "b"]
+    assert set(summaries[8]["comparison"]["models"]) == {"a", "b", "c"}
 
 
 # ─── 批次 43：段落级差异与选择审计 ───
@@ -327,3 +327,85 @@ def test_status_exposes_the_selection_audit(api):
 
     assert summaries[8]["comparison"]["selected_by"] == "manual"
     assert summaries[8]["comparison"]["selected_at"]
+
+
+# ─── 批次 46：全量差异 + 采用后再编辑 ───
+
+MEDIUM = """一、总体情况
+
+完成率 92%。[P1]"""
+
+
+def _diff_all(api, base=None):
+    client, headers = api
+    query = f"?base={base}" if base else ""
+    return client.get(f"/api/agent/workflow/s1/comparison/8/diff-all{query}", headers=headers)
+
+
+def test_diff_all_compares_base_with_every_other_candidate(api):
+    resp = _diff_all(api)
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["base"] == "a"                       # 推荐候选默认当基准
+    assert [item["model"] for item in data["comparisons"]] == ["b", "c"]
+    assert all(item["rows"] for item in data["comparisons"])
+
+
+def test_diff_all_accepts_an_explicit_base(api):
+    data = _diff_all(api, base="b").json()["data"]
+
+    assert data["base"] == "b"
+    assert [item["model"] for item in data["comparisons"]] == ["a", "c"]
+
+
+def test_diff_all_404_for_unknown_base(api):
+    assert _diff_all(api, base="nope").status_code == 404
+
+
+def test_diff_all_422_with_a_single_candidate(api, monkeypatch):
+    monkeypatch.setattr("backend.services.candidates.candidates_of",
+                        lambda values, step: {"a": GOOD})
+
+    assert _diff_all(api).status_code == 422
+
+
+def test_edit_after_select_is_recorded(api):
+    client, headers = api
+    client.post("/api/agent/workflow/comparison/select", headers=headers,
+                json={"session_id": "s1", "step_number": 8, "model": "b"})
+
+    resp = client.put("/api/agent/workflow/s1/steps/8", headers=headers,
+                      json={"content": WEAK + "\n\n人工补了一句。", "version": 2})
+
+    assert resp.status_code == 200, resp.text
+    marker = _state()["comparison_history"]["8"]["edited_after_select"]
+    assert marker["version"] == 3
+    assert marker["by"] == "manual"
+    assert marker["at"]
+
+
+def test_new_selection_clears_the_edit_marker(api):
+    client, headers = api
+    client.post("/api/agent/workflow/comparison/select", headers=headers,
+                json={"session_id": "s1", "step_number": 8, "model": "b"})
+    client.put("/api/agent/workflow/s1/steps/8", headers=headers,
+               json={"content": WEAK + "\n\n人工补了一句。", "version": 2})
+
+    client.post("/api/agent/workflow/comparison/select", headers=headers,
+                json={"session_id": "s1", "step_number": 8, "model": "a"})
+
+    assert "edited_after_select" not in _state()["comparison_history"]["8"]
+
+
+def test_status_exposes_the_edit_marker(api):
+    client, headers = api
+    client.post("/api/agent/workflow/comparison/select", headers=headers,
+                json={"session_id": "s1", "step_number": 8, "model": "b"})
+    client.put("/api/agent/workflow/s1/steps/8", headers=headers,
+               json={"content": WEAK + "\n\n人工补了一句。", "version": 2})
+
+    data = client.get("/api/agent/workflow/s1/status", headers=headers).json()["data"]
+    summaries = {item["step_number"]: item for item in data["step_summaries"]}
+
+    assert summaries[8]["comparison"]["edited_after_select"]["version"] == 3
