@@ -16,9 +16,9 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `main` / 批次 45 提交，工作区干净 |
-| 已完成批次 | 第三轮 B1–B45（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
-| 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），141 个端点 |
+| 分支 / HEAD | `main` / 批次 46 提交，工作区干净 |
+| 已完成批次 | 第三轮 B1–B46（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
+| 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），142 个端点 |
 | 前端 | 零构建，原生 HTML/CSS/JS + `frontend/shared/` |
 | 存储 | MySQL（库 `ai_grade_d`）+ `state_backups/*.json` 磁盘投影 |
 
@@ -26,12 +26,12 @@
 
 | 检查 | 命令 | 当前 |
 |---|---|---|
-| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **827 passed**（CI 也跑这一条） |
+| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **835 passed**（CI 也跑这一条） |
 | 前端共享层 / SSE | `node --test tests/test_*.cjs` | **48 pass**（5 个文件） |
-| 前端联通性 | `python frontend_e2e_check.py` | **117 通过 / 0 失败** |
+| 前端联通性 | `python frontend_e2e_check.py` | **120 通过 / 0 失败** |
 | 全接口 | `python test_all_apis.py` | **47/47** |
 | 真实工作流 | `python wf_e2e.py` | **47 项 / 0 失败**（约 4~5 分钟，要真实模型） |
-| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` / `_mutate_step9_critique.py` / `_mutate_critique_step10.py` / `_mutate_llm_resilience.py` / `_mutate_b7_enablement.py` / `_mutate_workflow_deps.py` / `_mutate_report_routes.py` / `_mutate_refine.py` / `_mutate_refine_llm.py` / `_mutate_chat_context.py` / `_mutate_chapter_refs.py` / `_mutate_candidates.py` / `_mutate_candidate_diff.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 / 10 / 7 / 11 / 8 / 11 / 9 / 9 / 8 / 8 / 6 / 7 / 7 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
+| 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` / `_mutate_step9_critique.py` / `_mutate_critique_step10.py` / `_mutate_llm_resilience.py` / `_mutate_b7_enablement.py` / `_mutate_workflow_deps.py` / `_mutate_report_routes.py` / `_mutate_refine.py` / `_mutate_refine_llm.py` / `_mutate_chat_context.py` / `_mutate_chapter_refs.py` / `_mutate_candidates.py` / `_mutate_candidate_diff.py` / `_mutate_diff_all.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 / 10 / 7 / 11 / 8 / 11 / 9 / 9 / 8 / 8 / 6 / 7 / 7 / 7 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
 | 检索基线 | `python -m tests.rag_eval.run --check` | Recall@3 **0.448**、MRR 0.391、P 0.161 |
 | 聊天评测 | `python -m tests.chat_eval.run --check` | **recall 1.0（21/21）**，平均上下文 675.4 字；对照组（关章节检索）**0.381** |
 | 聊天抽读（手动，不进 CI） | `python -m tests.chat_eval.live --session <id> --write` | 2026-11-12 / deepseek-chat：**编造 0/10、引用 9/9**，L09 已修复、L10 拒答不引用（记录在 `docs/chat_live_eval.md`） |
@@ -73,7 +73,7 @@
 | ~~**B3**~~ | ~~质量门禁 `GET /workflow/{id}/quality`~~ | ✅ **批次 27 已完成**：新增 `backend/services/quality.py`，输出「每步字数事实 + 可解释 flags + 无从判断项」，**刻意不打 0–100 分**（取证发现台账一半缺失、一半恒满分，分数既不能排序也不改变行为）。判据：缺步骤/字数低于该步中位数 20%/落地率 <0.5（样本≥5）/标准夹带结论；缺章等结构性缺陷复用 `consistency` 的 blocking，不另起一套。四态 `review`/`partial`/`pass`/`unknown`，不变量 `verified ∩ unavailable == ∅`。`/client/reports` 每条带 `review`（现算 1.2 ms/份 + mtime 缓存，失败降级 `unknown`），`/client` 卡片按四态显示徽标；顺带修掉 `standard_purity` 未落盘（白名单第三次复发） | 见 `progress_round3.md` B27。**遗留**：① 存量 21 份永久 `partial`（历史未落盘）；② 字数阈值是经验值、不分项目类型；③ 只抓"断在半截"，抓不到"写得很空"；④ 质量 warn **不参与导出闸门**，仍是"建议"；⑤ 详情面板没做，接口的每步事实无界面在读 |
 | **B4** | refine 增强 | ✅ **批次 36 第一步 + 批次 37 第二步**：证据注入、首尾保留截断、preview → 采用/丢弃、版本历史 + 回滚；refine 已接上重试 + 降级链（`services/llm_resilience.py`），失败映射 502/503，降级稿有前端标注 | 见 `progress_round3.md` B36/B37。**遗留**：① agent 的 `_invoke_llm` 还没切到同一实现（两份编排）；② 重试固定 1 次、退避线性；③ 预览成本不落账；④ 导出标注分不清「refine 改写」与「工作流那一步」；⑤ 前端无浏览器级验证 |
 | **B5** | AI 聊天升级 | ✅ **批次 38/39/42/44/45 五步完成**：报告上下文（问题 + 证据 + 报告正文/分步正文双源章节片段）、历史预算、SSE 流式 + 回退、引用可展开、强制标注来源；离线 recall **1.0（21/21，对照 0.381）**；真模型抽读 **编造 0/10、引用 9/9** | 见 `progress_round3.md` B38/B39/B42/B44/B45 与 `docs/chat_live_eval.md`。**遗留**：① 报告/步骤正文影子重复靠文本去重，改标点就漏；② 强制引用可能过度引用（L10 已用「无关请求别引用」压住一类）；③ 引用真实但可能不贴题；④ 评测样本小、单模型、无人复核；⑤ 前端无浏览器验证 |
-| **B6** | 多模型对比择优 | ✅ **批次 40 第一步 + 批次 43 第二步**：候选留存、确定性评分（并列不推荐）、`/comparison/{step}` 与 `/select`、**段落级差异**（same/changed/only_left/only_right，阈值 0.4，封顶 60 行）、**选择审计**（谁/何时/当时分数快照，人工与自动都记）、前端对比与差异面板 | 见 `progress_round3.md` B40/B43。**遗留**：① 对齐是启发式、阈值 0.4 是拍的；② 只支持两两对比；③ 差异文本截断 400 字/段；④ 自动选择时间是 naive 本地时间，人工是 UTC（未统一）；⑤ 前端无浏览器验证 |
+| **B6** | 多模型对比择优 | ✅ **批次 40 / 43 / 46 三步完成**：候选留存、确定性评分（并列不推荐）、两两差异、**全量差异（推荐为基准）**、选择审计（谁/何时/分数快照）与**采用后再编辑标记**；前端对比、差异、审计面板齐全 | 见 `progress_round3.md` B40/B43/B46。**遗留**：① 全量差异仍是「每候选 vs 基准」，不是 N 方对齐；② 基准取推荐（权重是拍的）；③ 编辑标记只记最后一次，未与 revisions 打通；④ `by` 是来源串不是用户 id；⑤ 前端无浏览器验证 |
 | ~~**B7**~~ | ~~模型调用韧性剩余~~ | ✅ **批次 31 + 32 已完成**：分级超时（长文 300/其余 120）、先重试同一模型再降级（429/超时/5xx 才降，400/401/403 直接抛）、`llm_attempts` 每次尝试记账、管理后台可配「备用模型（最多 2 个）」、新会话从设置读默认链、导出件自动标注「哪一步由备选模型完成」。真实 429 故障注入两场景通过；`pytest 624` / 变异 19/19（两批合计） | 见 `progress_round3.md` B31/B32。**遗留**：① 重试+降级最多 3 次调用，配额耗尽时是白等；② 退避只有线性 2 秒、无抖动/熔断；③ 设置是全局的，不能按会话配；④ 前端是自由输入框（填错模型名到降级时才炸）；⑤ 导出标注只在整报导出；⑥ 标注靠「第一条尝试=主模型」推断，续跑可能判反 |
 
 ### P1 · 工程底座（任务书阶段五剩余）
@@ -401,16 +401,29 @@
 - **遗留**：报告/步骤正文影子重复靠文本去重，改标点就漏；引用真实但可能不贴题；
   样本小、单模型、无人复核；前端无浏览器验证。
 
-### 批次 46（建议）：B6 第三步——三方差异 + 采用后再编辑的关联审计
-- **现状**：差异只支持两两；审计记录了「谁何时采用」，但没关联「采用后有没有再手工编辑过」。
-- **要做**：`/comparison/{step}/diff` 支持 3 个候选的一次性差异视图（或明确"逐对"）；
-  把「采用」与后续 `edited_by` 串起来，回答"这个最终版本是模型写的还是人改的"。
-- **判定**：3 候选能看全差异；审计能回答「采用后是否改过」。
-- **风险**：3 路 diff 的 UI 复杂；审计字段让备份再涨一点。
+### 批次 46 = B6 第三步：全量差异 + 采用后再编辑的审计 ✅ 已完成
+- 交付见 `progress_round3.md` B46。`GET /comparison/{step}/diff-all`（推荐为基准，
+  未知 404 / 单候选 422）；`_apply_step_edit` 写 `edited_after_select`，重新采用时清除；
+  `/comparison/{step}` 与 `/status` 回读；前端「全部差异」+ 编辑提示。
+- 判定：全量对比、显式基准、两类拒绝、标记写入/清除/回读 —— 7 条用例 + 7 条变异全抓。
+- **遗留**：仍是「每候选 vs 基准」不是 N 方对齐；基准取推荐（权重是拍的）；
+  编辑标记只记最后一次、未与 revisions 打通；`by` 不是用户 id；前端无浏览器验证。
 
-### 批次 47（备选）
+### 批次 47（建议）：B5 收尾——扩样本、换会话/模型，验证不是过拟合
+- **为什么是它**：B45 的数字（离线 21/21、抽读引用 9/9、编造 0/10）都来自
+  **一份夹具 + 一个真实会话 + 一个模型**。再往下加功能之前，先证明它不是"调出来的"。
+- **要做**：
+  1. 离线样本从 21 条扩到 40 条（补：数字核对、跨章一致、多轮追问）；
+  2. 换**第二个真实会话**（`6f506305…`）重跑 `live.py`，换一个模型（如有）；
+  3. 记录两次的差异；若掉分，定位是检索、指令还是样本问题。
+- **判定**：两个会话的抽读都跑完并留记录；引用率与编造率各自有数字；
+  离线 recall 不低于 0.9。
+- **风险**：第二个会话的文档质量可能更差（资料不足），拒答会变多——这是正常结果，
+  不要为了让数字好看去改判定口径。
+
+### 批次 48（备选）
 - **C1 第五步（可选）**：再拆 SSE/上传，把 `agent_routes` 压到 ~1300；收益边际递减。
-- **B5 收尾**：离线样本从 21 条扩到 50 条、换第二个真实会话/模型重跑抽读，验证不是过拟合。
+- **B6 第四步（可选）**：N 方差异视图；UI 复杂度高，价值低于 B5 收尾。
 
 ---
 
@@ -426,7 +439,7 @@
 
 ```bash
 cd /d/python/AI_Grade
-NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 827
+NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 835
 node --test tests/test_*.cjs                                                          # 48
 NO_PROXY='*' .venv/Scripts/python.exe -c "import backend.main"                        # 导入自检
 ```
