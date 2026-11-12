@@ -42,6 +42,23 @@ STEP_CONTENT_FIELDS = {
 }
 
 
+#: 改某一步之后，哪些已完成步骤需要重新复核。
+#: 步骤编辑（`_apply_step_edit`）与评分保存（`save-indicator-scores`）共用一份 ——
+#: 两处各写一份的话，改完指标后"哪些步骤该复核"会给出不同答案。
+STEP_DEPENDENTS = {
+    1: range(2, 15), 2: range(3, 15), 3: range(4, 15), 4: range(5, 15),
+    5: range(6, 15), 6: (7, 8, 9, 10, 11, 14), 7: (8, 9, 10, 11, 14),
+    8: (14,), 9: (10, 11, 14), 10: (11, 14), 11: (14,), 12: (14,), 13: (14,),
+}
+
+
+def _review_after(values, step):
+    completed = {int(key) for key in values.get("step_results", {})}
+    return sorted((set(values.get("review_steps", [])) - {step})
+                  | (completed & set(STEP_DEPENDENTS.get(step, ()))))
+
+
+
 class AgentResponse(BaseModel):
     """Agent响应基础模型"""
     success: bool
