@@ -1,6 +1,6 @@
-"""变异检验：批次 52——缺失类结论的编号清理。
+"""变异检验：批次 53——句子级清理。
 
-风险：不清理 / 只清一遍（多编号漏网）/ 跨句误删正向引用。
+风险：不清理 / 不切句（跨句误删正向引用）/ 无差别删所有编号。
 """
 import subprocess
 import sys
@@ -14,32 +14,32 @@ SERVICE = "backend/services/citation_policy.py"
 
 MUTATIONS = [
     ("完全不清理", SERVICE,
-     "        return ABSENCE_WITH_ID.sub(_replace, source), removed",
-     "        return source, 0"),
-    ("只清一遍（多个编号漏网）", SERVICE,
-     "    for _ in range(10):",
-     "    for _ in range(1):"),
-    ("跨句也删（会误伤正向引用）", SERVICE,
-     '    r"[^。\\n]{0,60}(?:缺|未提供|未取得|未见|未附)[^。\\n]{0,60}?\\[(P\\d+-\\d+-\\d+)\\]"',
-     '    r"(?:缺|未提供|未取得|未见|未附).{0,200}?\\[(P\\d+-\\d+-\\d+)\\]"'),
+     "        if clause and ABSENCE.search(clause):",
+     "        if False:"),
+    ("不切句（跨句误删）", SERVICE,
+     'SENTENCE_SPLIT = re.compile(r"([。；！？\\n])")',
+     'SENTENCE_SPLIT = re.compile(r"(§)")'),
+    ("无差别删所有编号", SERVICE,
+     "        if clause and ABSENCE.search(clause):",
+     "        if clause:"),
 ]
 
 originals = Path(SERVICE).read_text(encoding="utf-8")
 failures = []
 try:
-    for name, _, old, new in MUTATIONS:
+    for name, path, old, new in MUTATIONS:
         if old not in originals:
             failures.append(f"{name}: 变异点未找到")
             print(f"跳过  {name}   （变异点未找到）")
             continue
-        Path(SERVICE).write_text(originals.replace(old, new, 1), encoding="utf-8")
+        Path(path).write_text(originals.replace(old, new, 1), encoding="utf-8")
         result = subprocess.run(TESTS, capture_output=True, text=True)
         line = [item for item in result.stdout.splitlines() if "passed" in item or "failed" in item]
         caught = result.returncode != 0
         print(f"{'抓住' if caught else '漏掉'}  {name}   {line[-1] if line else ''}")
         if not caught:
             failures.append(name)
-        Path(SERVICE).write_text(originals, encoding="utf-8")
+        Path(path).write_text(originals, encoding="utf-8")
 finally:
     Path(SERVICE).write_text(originals, encoding="utf-8")
 
