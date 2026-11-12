@@ -38,12 +38,10 @@ def test_fixture_has_the_structures_the_questions_rely_on():
 
 
 def test_eval_does_not_drop_below_the_known_floor():
-    """扩到 40 条后是 39/40 —— 唯一失分是 Q33「评价用了哪些方法」：
+    """40 条里现在 40/40（批次 48 的同义词查询扩展补上了 Q33）。
 
-    夹具正文写的是「采用资料审查、现场核查与问卷相结合的**方式**」，
-    问题问的是「**方法**」，BM25 没有同义词，命中不到。
-    这是已知缺陷（见 B47 记录），不是回归；门槛设在 0.95，
-    低于它才说明切块/预算/检索真的坏了。
+    门槛仍设在 0.95：单条样本的措辞变化（比如"方法/方式"这种）
+    不该让整套评测变红，但掉两条以上就说明检索/预算真的坏了。
     """
     assert run.evaluate()["metrics"]["recall"] >= 0.95
 
@@ -81,3 +79,42 @@ def test_live_detector_ignores_plain_p_numbers_when_refs_have_none():
 
     assert live._cited_ids("（P0）与（P1-3-1）", {"P1-3-1"}) == {"P1-3-1"}
     assert live._cited_ids("（P2）", {"P1", "P2"}) == {"P2"}
+
+
+# ─── 批次 48：弱相关引用 ───
+
+def _ctx():
+    return ("【相关章节】\n"
+            "- [R1] 报告·四、评价范围·第1段：评价范围覆盖 2024 年 1 月至 2025 年 6 月。\n"
+            "- [S7P1] 步骤7·第2段：综合得分 92 分，扣分项为设备采购。\n"
+            "- [P1-3-1] 施工合同.pdf · 第 3 行")
+
+
+def test_weak_citation_flags_relevant_mismatch():
+    from tests.chat_eval import live
+
+    weak = live.weak_citations("综合得分是 92 分（R1）", _ctx(), "综合得分是多少？")
+
+    assert weak == ["R1"]
+
+
+def test_weak_citation_accepts_the_right_one():
+    from tests.chat_eval import live
+
+    assert live.weak_citations("得分见（S7P1）", _ctx(), "综合得分是多少？") == []
+
+
+def test_weak_citation_skips_evidence_ids():
+    """证据编号在索引里只有来源/行号，没有可判文本。"""
+    from tests.chat_eval import live
+
+    assert live.weak_citations("见（P1-3-1）", _ctx(), "项目叫什么？") == []
+
+
+def test_weak_citation_skips_retrieved_snippets():
+    """本次检索出来的片段不该被判"弱"——它本来就是按这个问题取的。"""
+    from tests.chat_eval import live
+
+    weak = live.weak_citations("（R1）", _ctx(), "综合得分是多少？", snippet_ids={"R1"})
+
+    assert weak == []

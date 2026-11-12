@@ -66,6 +66,44 @@ def _cited_ids(answer: str, ref_ids) -> set:
     return cited
 
 
+#: 问题里的高频虚词二元组，不参与"是否相关"的判断。
+_STOP_GRAMS = {"什么", "多少", "怎么", "哪些", "是否", "这份", "报告", "用了", "覆盖",
+               "如何", "可以", "有没", "没有", "我们", "这个", "那个", "一份", "一下"}
+
+
+def _context_items(context_text: str) -> Dict[str, str]:
+    """把上下文里的 `- [编号] 说明` 行抽成 {编号: 说明}。"""
+    items = {}
+    for line in (context_text or "").splitlines():
+        match = re.match(r"- \[([^\]]+)\]\s*(.*)", line)
+        if match:
+            items[match.group(1)] = match.group(2)
+    return items
+
+
+def weak_citations(answer: str, context_text: str, question: str,
+                  snippet_ids=()) -> List[str]:
+    """引用编号真实存在、但与被问内容无关 —— **启发式，只提示，不算编造**。
+
+    已经作为检索片段进来的编号不判弱（它本来就是按这个问题检索出来的，
+    再判"无关"等于否定检索）；证据编号只有来源/行号，也跳过。
+    """
+    items = _context_items(context_text)
+    grams = {question[index:index + 2] for index in range(len(question) - 1)} - _STOP_GRAMS
+    weak = []
+    for cid in set(REF_RE.findall(answer)):
+        if cid in set(snippet_ids):
+            continue
+        if cid.startswith(("P", "K")) and "-" in cid:
+            continue
+        text = items.get(cid)
+        if text is None or not grams:
+            continue
+        if not any(gram in text for gram in grams):
+            weak.append(cid)
+    return sorted(weak)
+
+
 def _ask(client, model: str, system: str, question: str) -> str:
     response = client.chat.completions.create(
         model=model,
@@ -105,6 +143,10 @@ def run(session_id: str, limit: int = 10, model: Optional[str] = None) -> Dict:
             "cited": sorted(cited),
             "fabricated": sorted(cited - ref_ids),
             "refused": any(hint in answer for hint in REFUSAL_HINTS),
+            "weak": weak_citations(
+                answer, context["text"], case["question"],
+                snippet_ids={item["id"] for item in chat_context.retrieve_chapter_snippets(
+                    values, case["question"])}),
             "context_chars": len(context["text"]),
         })
         print(f"[{case['id']}] 引用={len(cited)} 编造={len(rows[-1]['fabricated'])} "
@@ -121,6 +163,7 @@ def run(session_id: str, limit: int = 10, model: Optional[str] = None) -> Dict:
         "cited_rows": sum(1 for row in report_rows if row["cited"]),
         "report_rows": len(report_rows),
         "chitchat_cited": sum(1 for row in chitchat_rows if row["cited"]),
+        "weak_rows": sum(1 for row in rows if row["weak"]),
     }
     return {"summary": summary, "rows": rows}
 
@@ -142,16 +185,17 @@ def render_markdown(result: Dict) -> str:
         f"| 编造编号（回答了上下文里不存在的编号） | **{summary['fabricated']} / {summary['total']}** |",
         f"| 报告类问题给出了可核对引用 | {summary['cited_rows']} / {summary['report_rows']} |",
         f"| 无关请求却引用了报告编号 | {summary['chitchat_cited']}（应为 0） |",
+        f"| 弱相关引用（编号真实但与被问内容无关） | {summary['weak_rows']} / {summary['total']} |",
         "",
         "## 逐条",
         "",
-        "| # | 问题 | 引用编号 | 编造 | 拒答 | 上下文 |",
-        "|---|---|---|---|---|---|",
+        "| # | 问题 | 引用编号 | 编造 | 弱相关 | 拒答 | 上下文 |",
+        "|---|---|---|---|---|---|---|",
     ]
     for row in result["rows"]:
         lines.append(f"| {row['id']} | {row['question']} | {', '.join(row['cited']) or '—'} | "
-                     f"{', '.join(row['fabricated']) or '—'} | {'是' if row['refused'] else '—'} | "
-                     f"{row['context_chars']} 字 |")
+                     f"{', '.join(row['fabricated']) or '—'} | {', '.join(row['weak']) or '—'} | "
+                     f"{'是' if row['refused'] else '—'} | {row['context_chars']} 字 |")
     lines += ["", "## 回答原文", ""]
     for row in result["rows"]:
         lines += [f"### {row['id']} {row['question']}", "", "```", row["answer"].strip(), "```", ""]
