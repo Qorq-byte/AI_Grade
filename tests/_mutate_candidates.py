@@ -35,8 +35,10 @@ MUTATIONS = [
      "    if req.model not in outputs:",
      "    if False:"),
     ("status 不暴露对比摘要", ROUTES,
-     "        if candidates.entry_for(values, step):",
-     "        if False:"),
+     """        entry = candidates.entry_for(values, step)
+        if entry:""",
+     """        entry = candidates.entry_for(values, step)
+        if False:"""),
 ]
 
 originals = {}
