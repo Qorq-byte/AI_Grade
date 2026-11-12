@@ -16,8 +16,8 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `main` / 批次 44 提交，工作区干净 |
-| 已完成批次 | 第三轮 B1–B44（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
+| 分支 / HEAD | `main` / 批次 45 提交，工作区干净 |
+| 已完成批次 | 第三轮 B1–B45（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
 | 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），141 个端点 |
 | 前端 | 零构建，原生 HTML/CSS/JS + `frontend/shared/` |
 | 存储 | MySQL（库 `ai_grade_d`）+ `state_backups/*.json` 磁盘投影 |
@@ -26,15 +26,15 @@
 
 | 检查 | 命令 | 当前 |
 |---|---|---|
-| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **824 passed**（CI 也跑这一条） |
+| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **827 passed**（CI 也跑这一条） |
 | 前端共享层 / SSE | `node --test tests/test_*.cjs` | **48 pass**（5 个文件） |
 | 前端联通性 | `python frontend_e2e_check.py` | **117 通过 / 0 失败** |
 | 全接口 | `python test_all_apis.py` | **47/47** |
 | 真实工作流 | `python wf_e2e.py` | **47 项 / 0 失败**（约 4~5 分钟，要真实模型） |
 | 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` / `_mutate_step9_critique.py` / `_mutate_critique_step10.py` / `_mutate_llm_resilience.py` / `_mutate_b7_enablement.py` / `_mutate_workflow_deps.py` / `_mutate_report_routes.py` / `_mutate_refine.py` / `_mutate_refine_llm.py` / `_mutate_chat_context.py` / `_mutate_chapter_refs.py` / `_mutate_candidates.py` / `_mutate_candidate_diff.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 / 10 / 7 / 11 / 8 / 11 / 9 / 9 / 8 / 8 / 6 / 7 / 7 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
 | 检索基线 | `python -m tests.rag_eval.run --check` | Recall@3 **0.448**、MRR 0.391、P 0.161 |
-| 聊天评测 | `python -m tests.chat_eval.run --check` | **recall 1.0（20/20）**，平均上下文 554.5 字；对照组（关章节检索）**0.4** |
-| 聊天抽读（手动，不进 CI） | `python -m tests.chat_eval.live --session <id> --write` | 2026-11-12 / deepseek-chat：**编造 0/10**、引用 6/9、人工判答到点 7/9（记录在 `docs/chat_live_eval.md`） |
+| 聊天评测 | `python -m tests.chat_eval.run --check` | **recall 1.0（21/21）**，平均上下文 675.4 字；对照组（关章节检索）**0.381** |
+| 聊天抽读（手动，不进 CI） | `python -m tests.chat_eval.live --session <id> --write` | 2026-11-12 / deepseek-chat：**编造 0/10、引用 9/9**，L09 已修复、L10 拒答不引用（记录在 `docs/chat_live_eval.md`） |
 
 ---
 
@@ -72,7 +72,7 @@
 | ~~**B2**~~ | ~~步骤间一致性**从「检测」升级为「拦截」**~~ | ✅ **批次 26 已完成**：每条 issue 带 `id`（`CODE#序号`）与 `blocking`，`BLOCKING_CODES` 只放 4 类结构性缺陷（拦太宽用户会学会绕过）；新增 `chapters`（占位句回溯到章节标题）与 `problem_suggestion_coverage`（低分指标未点名，**聚合**一条）两项检查，`CHECKS` 4 → 6；`/workflow/export` 按 `blocking` 拦 409 + `X-Export-Blocked`，`force` 放行且记日志，读不到状态时 **fail-open**；步骤 11 的得分替换从静默 `re.sub` 改为按行判定 + 写入 `warnings` | 见 `progress_round3.md` B26。**遗留**：① 分步导出（`/workflow/export-step`）不受闸门约束；② 覆盖缺口只做子串匹配，78% 这个数字方向可信、量级虚高；③ `LOW_SCORE_RATIO=0.6` 是拍的 |
 | ~~**B3**~~ | ~~质量门禁 `GET /workflow/{id}/quality`~~ | ✅ **批次 27 已完成**：新增 `backend/services/quality.py`，输出「每步字数事实 + 可解释 flags + 无从判断项」，**刻意不打 0–100 分**（取证发现台账一半缺失、一半恒满分，分数既不能排序也不改变行为）。判据：缺步骤/字数低于该步中位数 20%/落地率 <0.5（样本≥5）/标准夹带结论；缺章等结构性缺陷复用 `consistency` 的 blocking，不另起一套。四态 `review`/`partial`/`pass`/`unknown`，不变量 `verified ∩ unavailable == ∅`。`/client/reports` 每条带 `review`（现算 1.2 ms/份 + mtime 缓存，失败降级 `unknown`），`/client` 卡片按四态显示徽标；顺带修掉 `standard_purity` 未落盘（白名单第三次复发） | 见 `progress_round3.md` B27。**遗留**：① 存量 21 份永久 `partial`（历史未落盘）；② 字数阈值是经验值、不分项目类型；③ 只抓"断在半截"，抓不到"写得很空"；④ 质量 warn **不参与导出闸门**，仍是"建议"；⑤ 详情面板没做，接口的每步事实无界面在读 |
 | **B4** | refine 增强 | ✅ **批次 36 第一步 + 批次 37 第二步**：证据注入、首尾保留截断、preview → 采用/丢弃、版本历史 + 回滚；refine 已接上重试 + 降级链（`services/llm_resilience.py`），失败映射 502/503，降级稿有前端标注 | 见 `progress_round3.md` B36/B37。**遗留**：① agent 的 `_invoke_llm` 还没切到同一实现（两份编排）；② 重试固定 1 次、退避线性；③ 预览成本不落账；④ 导出标注分不清「refine 改写」与「工作流那一步」；⑤ 前端无浏览器级验证 |
-| **B5** | AI 聊天升级 | ✅ **批次 38/39/42/44 四步完成**：报告上下文（问题 + 证据 + 章节片段）、历史预算、SSE 流式 + 回退、引用可展开；离线评测 recall **1.0（对照 0.4）**；真模型抽读 **编造 0/10、引用 6/9、答到点 7/9** | 见 `progress_round3.md` B38/B39/B42/B44 与 `docs/chat_live_eval.md`。**遗留**：① 「评价范围」这类单句事实召回不稳（L09 错失）；② 模型常说对但不给编号（L05/L07）；③ 引用≠正确（错引抓不到）；④ 抽读样本小、单模型、无人复核 |
+| **B5** | AI 聊天升级 | ✅ **批次 38/39/42/44/45 五步完成**：报告上下文（问题 + 证据 + 报告正文/分步正文双源章节片段）、历史预算、SSE 流式 + 回退、引用可展开、强制标注来源；离线 recall **1.0（21/21，对照 0.381）**；真模型抽读 **编造 0/10、引用 9/9** | 见 `progress_round3.md` B38/B39/B42/B44/B45 与 `docs/chat_live_eval.md`。**遗留**：① 报告/步骤正文影子重复靠文本去重，改标点就漏；② 强制引用可能过度引用（L10 已用「无关请求别引用」压住一类）；③ 引用真实但可能不贴题；④ 评测样本小、单模型、无人复核；⑤ 前端无浏览器验证 |
 | **B6** | 多模型对比择优 | ✅ **批次 40 第一步 + 批次 43 第二步**：候选留存、确定性评分（并列不推荐）、`/comparison/{step}` 与 `/select`、**段落级差异**（same/changed/only_left/only_right，阈值 0.4，封顶 60 行）、**选择审计**（谁/何时/当时分数快照，人工与自动都记）、前端对比与差异面板 | 见 `progress_round3.md` B40/B43。**遗留**：① 对齐是启发式、阈值 0.4 是拍的；② 只支持两两对比；③ 差异文本截断 400 字/段；④ 自动选择时间是 naive 本地时间，人工是 UTC（未统一）；⑤ 前端无浏览器验证 |
 | ~~**B7**~~ | ~~模型调用韧性剩余~~ | ✅ **批次 31 + 32 已完成**：分级超时（长文 300/其余 120）、先重试同一模型再降级（429/超时/5xx 才降，400/401/403 直接抛）、`llm_attempts` 每次尝试记账、管理后台可配「备用模型（最多 2 个）」、新会话从设置读默认链、导出件自动标注「哪一步由备选模型完成」。真实 429 故障注入两场景通过；`pytest 624` / 变异 19/19（两批合计） | 见 `progress_round3.md` B31/B32。**遗留**：① 重试+降级最多 3 次调用，配额耗尽时是白等；② 退避只有线性 2 秒、无抖动/熔断；③ 设置是全局的，不能按会话配；④ 前端是自由输入框（填错模型名到降级时才炸）；⑤ 导出标注只在整报导出；⑥ 标注靠「第一条尝试=主模型」推断，续跑可能判反 |
 
@@ -390,19 +390,27 @@
 - **遗留**：① L09「评价范围」这类**单句事实**召回不稳；② L05/L07 内容对但不给编号；
   ③ 引用≠正确；④ 样本小、单模型、无第二人复核。
 
-### 批次 45（建议）：B5 第五步——修单句事实召回 + 强制标注来源
-- **为什么是它**：B44 的两个问题都有明确的可测目标，且都在同一处（上下文构建）。
-- **要做**：
-  1. 召回：对「一句短事实」增加**整句/关键词双路**检索（BM25 之外，补一个「问题 n-gram 命中即加分」），
-     目标 L09 能命中步骤 13 的评价范围；
-  2. 引用：在上下文指令里要求「每条结论后用（编号）标注来源」，并在 `live.py` 里统计引用率；
-  3. 可选：把 `anchors` 加进 `questions.py` 的真实会话版本，用于回归。
-- **判定**：L09 命中；引用率 6/9 → **≥8/9**；编造仍为 0；离线评测 recall 不降。
-- **风险**：加召回会挤占 3000 字预算；强制引用可能让回答变啰嗦。
+### 批次 45 = B5 第五步：报告正文进检索 + 强制标注来源 ✅ 已完成
+- 交付见 `progress_round3.md` B45。检索改双源（`final_report` + `step_results`，报告优先，
+  按文本归一化去重）；指令加「逐条标注来源」+「无关请求别引用」；夹具报告补全为忠实全文，
+  离线样本 +1（评价范围）。
+- **数字**：离线 recall 1.0（21/21，对照 0.381，平均上下文 675.4 字）；
+  真模型抽读 **编造 0/10、引用 6/9 → 9/9**，L09「评价范围」由错失变答对，
+  L10「订机票」保持拒答且不引用（第一版指令让 L10 也开始翻报告，加了一句才压住）。
+- 先纠正 B44 的事实：步骤 13 正文是空的，「评价范围」只在报告第四章——旧的检索只索引分步正文。
+- **遗留**：报告/步骤正文影子重复靠文本去重，改标点就漏；引用真实但可能不贴题；
+  样本小、单模型、无人复核；前端无浏览器验证。
 
-### 批次 46（备选）
+### 批次 46（建议）：B6 第三步——三方差异 + 采用后再编辑的关联审计
+- **现状**：差异只支持两两；审计记录了「谁何时采用」，但没关联「采用后有没有再手工编辑过」。
+- **要做**：`/comparison/{step}/diff` 支持 3 个候选的一次性差异视图（或明确"逐对"）；
+  把「采用」与后续 `edited_by` 串起来，回答"这个最终版本是模型写的还是人改的"。
+- **判定**：3 候选能看全差异；审计能回答「采用后是否改过」。
+- **风险**：3 路 diff 的 UI 复杂；审计字段让备份再涨一点。
+
+### 批次 47（备选）
 - **C1 第五步（可选）**：再拆 SSE/上传，把 `agent_routes` 压到 ~1300；收益边际递减。
-- **B6 第三步**：三方差异 / 采用后再手工编辑的关联审计。
+- **B5 收尾**：离线样本从 21 条扩到 50 条、换第二个真实会话/模型重跑抽读，验证不是过拟合。
 
 ---
 
@@ -418,7 +426,7 @@
 
 ```bash
 cd /d/python/AI_Grade
-NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 824
+NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 827
 node --test tests/test_*.cjs                                                          # 48
 NO_PROXY='*' .venv/Scripts/python.exe -c "import backend.main"                        # 导入自检
 ```
