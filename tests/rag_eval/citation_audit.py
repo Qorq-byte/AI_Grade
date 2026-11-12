@@ -69,14 +69,24 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--violations", action="store_true",
                         help="只列「缺失类结论却标了编号」的句子（批次 52 的判定指标）")
+    parser.add_argument("--clean", action="store_true",
+                        help="先按落库清理口径清一遍再判（批次 54：回放「清理后仍为 0」）")
     args = parser.parse_args(argv)
 
     values = PerformanceAgent.load_state_backup(args.session)
     if not values:
         raise SystemExit(f"会话不存在：{args.session}")
     if args.violations:
-        violations = absence_violations(values)
-        print(f"# 会话 {args.session}｜缺失类带编号 {len(violations)} 条\n")
+        source = values.get("final_report") or ""
+        note = ""
+        if args.clean:
+            from backend.services import citation_policy
+
+            source, removals = citation_policy.strip_absence_ids_detailed(source)
+            stripped = sum(len(item["removed_ids"]) for item in removals)
+            note = f"（清理后：删掉 {stripped} 个编号 / {len(removals)} 句）"
+        violations = absence_violations(values, source)
+        print(f"# 会话 {args.session}｜缺失类带编号 {len(violations)} 条{note}\n")
         for index, row in enumerate(violations, 1):
             print(f"[{index}] {row['id']}  {row['claim']}")
         return 0
