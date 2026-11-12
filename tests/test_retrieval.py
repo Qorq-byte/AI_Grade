@@ -148,10 +148,15 @@ def test_index_is_cached_between_steps(monkeypatch):
 
 
 def test_evidence_text_is_verbatim_from_source():
+    """证据必须逐字来自原文（忽略空白）。
+
+    批次 50 起证据块会带前后各两行上下文，块内保留换行；比较时把空白
+    （含换行）统一去掉，校验的仍是"每个字都能在原文里找到"。
+    """
     state = _state()
-    source = "".join(state["all_raw_texts"].values()).replace("\n", "")
+    source = "".join(state["all_raw_texts"].values()).replace("\n", "").replace(" ", "")
     for hit in workflow_evidence.retrieve_step_evidence(None, state, 2):
-        assert hit["text"].replace(" ", "") in source.replace(" ", "")
+        assert hit["text"].replace("\n", "").replace(" ", "") in source
 
 
 # ═══════════════════════════════════════════════════════

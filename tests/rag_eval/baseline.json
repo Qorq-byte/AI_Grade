@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-11-07",
+  "recorded_at": "2026-11-12",
   "retriever": "workflow_evidence.retrieve_step_evidence（BM25 + 中文二元组，查询=步骤意图，项目≤3 条 + 知识≤2 条）",
   "mode": {
     "query": "step_intent",
@@ -13,15 +13,15 @@
   "metrics": {
     "samples": 29,
     "recall": {
-      "@1": 0.3448,
-      "@3": 0.4483,
-      "@5": 0.4483
+      "@1": 0.4138,
+      "@3": 0.5517,
+      "@5": 0.5517
     },
-    "mrr": 0.3908,
-    "precision": 0.1609,
+    "mrr": 0.4828,
+    "precision": 0.2529,
     "empty_rate": 0.0,
     "returned_avg": 3.0,
-    "evidence_chars_avg": 93.2,
+    "evidence_chars_avg": 300.3,
     "query_insensitivity": 1.0,
     "citation_verbatim_rate": 1.0
   },
@@ -34,14 +34,14 @@
     },
     "2": {
       "samples": 10,
-      "recall@3": 0.2,
-      "mrr": 0.15,
+      "recall@3": 0.3,
+      "mrr": 0.2,
       "empty": 0
     },
     "3": {
       "samples": 2,
       "recall@3": 1.0,
-      "mrr": 0.6667,
+      "mrr": 1.0,
       "empty": 0
     },
     "4": {
@@ -64,8 +64,8 @@
     },
     "7": {
       "samples": 3,
-      "recall@3": 0.3333,
-      "mrr": 0.3333,
+      "recall@3": 0.6667,
+      "mrr": 0.5,
       "empty": 0
     },
     "8": {
@@ -94,8 +94,8 @@
     },
     "12": {
       "samples": 2,
-      "recall@3": 0.5,
-      "mrr": 0.5,
+      "recall@3": 1.0,
+      "mrr": 1.0,
       "empty": 0
     },
     "13": {
@@ -155,12 +155,6 @@
       "rank": 0
     },
     {
-      "id": "S10",
-      "step": 2,
-      "question": "二标段征拆滞后了多久？",
-      "rank": 0
-    },
-    {
       "id": "S11",
       "step": 1,
       "question": "项目是否提供了合同与验收材料？",
@@ -176,12 +170,6 @@
       "id": "S16",
       "step": 5,
       "question": "设计变更超过多少金额需要重新审批？",
-      "rank": 0
-    },
-    {
-      "id": "S19",
-      "step": 7,
-      "question": "汛期积水点消除目标完成了吗？",
       "rank": 0
     },
     {
@@ -201,12 +189,6 @@
       "step": 9,
       "question": "进度滞后的直接原因是什么？",
       "rank": 0
-    },
-    {
-      "id": "S26",
-      "step": 12,
-      "question": "项目基本情况和主要建设内容是什么？",
-      "rank": 0
     }
   ],
   "previous": {
@@ -215,35 +197,54 @@
     "metrics": {
       "samples": 29,
       "recall": {
-        "@1": 0.3103,
-        "@3": 0.4138,
-        "@5": 0.4138
+        "@1": 0.3448,
+        "@3": 0.4483,
+        "@5": 0.4483
       },
-      "mrr": 0.3621,
-      "precision": 0.1494,
+      "mrr": 0.3908,
+      "precision": 0.1609,
       "empty_rate": 0.0,
       "returned_avg": 3.0,
-      "evidence_chars_avg": 90.7,
+      "evidence_chars_avg": 93.2,
       "query_insensitivity": 1.0,
       "citation_verbatim_rate": 1.0
     },
     "previous": {
       "recorded_at": "2026-11-07",
-      "retriever": "workflow_evidence.retrieve_step_evidence（按步骤固定词表打分，项目≤3 条 + 知识≤2 条）",
+      "retriever": "workflow_evidence.retrieve_step_evidence（BM25 + 中文二元组，查询=步骤意图，项目≤3 条 + 知识≤2 条）",
       "metrics": {
         "samples": 29,
         "recall": {
-          "@1": 0.0345,
-          "@3": 0.1724,
-          "@5": 0.1724
+          "@1": 0.3103,
+          "@3": 0.4138,
+          "@5": 0.4138
         },
-        "mrr": 0.0862,
-        "precision": 0.0714,
-        "empty_rate": 0.0345,
-        "returned_avg": 2.83,
-        "evidence_chars_avg": 82.6,
+        "mrr": 0.3621,
+        "precision": 0.1494,
+        "empty_rate": 0.0,
+        "returned_avg": 3.0,
+        "evidence_chars_avg": 90.7,
         "query_insensitivity": 1.0,
         "citation_verbatim_rate": 1.0
+      },
+      "previous": {
+        "recorded_at": "2026-11-07",
+        "retriever": "workflow_evidence.retrieve_step_evidence（按步骤固定词表打分，项目≤3 条 + 知识≤2 条）",
+        "metrics": {
+          "samples": 29,
+          "recall": {
+            "@1": 0.0345,
+            "@3": 0.1724,
+            "@5": 0.1724
+          },
+          "mrr": 0.0862,
+          "precision": 0.0714,
+          "empty_rate": 0.0345,
+          "returned_avg": 2.83,
+          "evidence_chars_avg": 82.6,
+          "query_insensitivity": 1.0,
+          "citation_verbatim_rate": 1.0
+        }
       }
     }
   },
@@ -251,34 +252,34 @@
     {
       "query": "step_intent",
       "project_limit": 3,
-      "recall@3": 0.4483,
-      "recall@5": 0.4483,
-      "mrr": 0.3908,
-      "precision": 0.1609
+      "recall@3": 0.5517,
+      "recall@5": 0.5517,
+      "mrr": 0.4828,
+      "precision": 0.2529
     },
     {
       "query": "step_intent",
       "project_limit": 10,
-      "recall@3": 0.4483,
-      "recall@5": 0.5172,
-      "mrr": 0.4219,
-      "precision": 0.069
+      "recall@3": 0.5517,
+      "recall@5": 0.6207,
+      "mrr": 0.5139,
+      "precision": 0.1138
     },
     {
       "query": "question",
       "project_limit": 3,
-      "recall@3": 0.8276,
-      "recall@5": 0.8276,
-      "mrr": 0.7241,
-      "precision": 0.3333
+      "recall@3": 0.8621,
+      "recall@5": 0.8621,
+      "mrr": 0.7759,
+      "precision": 0.4023
     },
     {
       "query": "question",
       "project_limit": 10,
-      "recall@3": 0.8276,
+      "recall@3": 0.8621,
       "recall@5": 0.8966,
-      "mrr": 0.7431,
-      "precision": 0.1475
+      "mrr": 0.7862,
+      "precision": 0.1966
     }
   ]
 }

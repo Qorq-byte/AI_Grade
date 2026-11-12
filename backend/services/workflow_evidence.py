@@ -22,6 +22,10 @@ from backend.services import retrieval
 # 返回条数。只改排序、不改预算，基线的提升才归因于排序本身。
 PROJECT_LIMIT = 3
 KNOWLEDGE_LIMIT = 2
+#: 证据块向上下各扩几行（批次 50）。
+#: 单行摘录经常缺主语/表头：模型看到「78%」却不知道是什么的 78%，
+#: 于是引用对了、话说不全。扩两行能让一句事实带上它的上下文。
+CONTEXT_RADIUS = 2
 
 # ── 小材料全给（Batch 19）────────────────────────────────────────────
 # 实测（29 份备份）：材料只有 16 行时，3 条块合计 **53 字**；而分类原文里一个块编号都没有，
@@ -336,7 +340,7 @@ def retrieve_step_evidence(db, state, step, include_knowledge=False, query=None,
         ranked = _legacy_rank(state, step, project_limit, knowledge_limit, knowledge)
     if adaptive:
         ranked = _augment_with_unscored(ranked, project, project_limit)
-    return ranked
+    return _expand_context(ranked, state)
 
 
 def _augment_with_unscored(ranked: List[dict], project: List[dict], target: int) -> List[dict]:
@@ -365,6 +369,33 @@ def _augment_with_unscored(ranked: List[dict], project: List[dict], target: int)
         have.add(chunk.get("id"))
         project_have += 1
     return kept
+
+
+_LINE_NO = re.compile(r"第(\d+)行")
+
+
+def _expand_context(hits: List[dict], state: dict) -> List[dict]:
+    """给每条项目证据补上前后各 CONTEXT_RADIUS 行，返回**副本**（不改进度缓存）。
+
+    编号与 locator 原样保留 —— 扩的只是"可读范围"，不是放宽引用判定。
+    """
+    docs = state.get("all_raw_texts") or {}
+    expanded: List[dict] = []
+    for hit in hits:
+        if hit.get("kind") != "project":
+            expanded.append(hit)
+            continue
+        doc = docs.get(hit.get("source") or "")
+        match = _LINE_NO.search(hit.get("locator") or "")
+        if not doc or not match:
+            expanded.append(hit)
+            continue
+        lines = doc.splitlines()
+        index = int(match.group(1)) - 1
+        low = max(0, index - CONTEXT_RADIUS)
+        high = min(len(lines), index + CONTEXT_RADIUS + 1)
+        expanded.append({**hit, "text": "\n".join(lines[low:high])})
+    return expanded
 
 
 def render_evidence(hits):
