@@ -850,6 +850,9 @@ class PerformanceAgent:
                 chosen = picked["model"] if picked else next(iter(outputs))
                 state["comparison_history"][step_number]["auto_selected"] = chosen
                 state["comparison_history"][step_number]["selected_best"] = chosen
+                # 审计：自动选择也留「谁选的、什么时候」，否则界面只能显示"当前采用"
+                state["comparison_history"][step_number]["selected_by"] = "auto"
+                state["comparison_history"][step_number]["selected_at"] = datetime.now().isoformat()
                 return outputs[chosen]
             raise RuntimeError("对比模型未返回结果")
 

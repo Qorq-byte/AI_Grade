@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import difflib
 import re
 from typing import Dict, List, Optional
 
@@ -24,6 +25,22 @@ WEIGHT_LENGTH = 15
 _REF = re.compile(r"\[([A-Za-z]{1,2}\d{1,3})\]")
 #: 标题行（与 chat_context 的启发式保持一致）。
 _HEADING = re.compile(r"^\s*(#{1,4}\s|[一二三四五六七八九十]+、|（[一二三]+）|\d+[.、])", re.M)
+#: 段落差异的展示上限：再多前端也读不完，而且会把响应撑大。
+MAX_DIFF_ROWS = 60
+MAX_DIFF_CHARS = 400
+#: 相似度低于这个值就不算「改过」，拆成「只在左 / 只在右」两行。
+#: 0.4 是拍的：实测「换了个小标题」这类整段替换的相似度在 0.1–0.3，
+#: 而「同一句话改了几个数字」在 0.6 以上。
+SIMILARITY_THRESHOLD = 0.4
+
+#: 段落差异的展示上限：再多前端也读不完，而且会把响应撑大。
+MAX_DIFF_ROWS = 60
+MAX_DIFF_CHARS = 400
+#: 相似度低于这个值就不算「改过」，拆成「只在左 / 只在右」两行。
+#: 0.4 是拍的：实测「换了个小标题」这类整段替换的相似度在 0.1–0.3，
+#: 而「同一句话改了几个数字」在 0.6 以上。
+SIMILARITY_THRESHOLD = 0.4
+
 #: 合理的正文篇幅区间（字）。太短是没写完，太长通常是复述资料。
 MIN_CHARS = 300
 MAX_CHARS = 4000
@@ -146,3 +163,69 @@ def auto_pick(values: dict, step: int) -> Optional[Dict]:
         return None
     return {"model": ranked[0]["model"], "score": ranked[0]["score"],
             "recommended": bool(ranked[0].get("recommended")), "ranked": ranked}
+
+def paragraphs(text: str) -> List[str]:
+    """切段落：先按空行，空行切不出来再按行。
+
+    与 `chat_context` 的切块规则不同 —— 那边要按标题分组（为了检索），
+    这边要的是**逐段对齐**，标题单独成段更容易看出「哪一段被换了」。
+    """
+    text = text or ""
+    parts = [item.strip() for item in re.split(r"\n{2,}", text) if item.strip()]
+    if len(parts) <= 1:
+        parts = [line.strip() for line in text.splitlines() if line.strip()]
+    return parts
+
+
+def _clip(text: str, limit: int = MAX_DIFF_CHARS) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def diff_paragraphs(left_text: str, right_text: str,
+                    max_rows: int = MAX_DIFF_ROWS) -> Dict:
+    """按段落对齐两个候选，标出 same / changed / only_left / only_right。
+
+    为什么不是行级 diff：两段长文逐行比，会得到几百行噪音（换行位置一改全红）。
+    段落级对齐 + 相似度阈值，能回答用户真正的问题：「他比它多了什么、少了什么」。
+    """
+    left, right = paragraphs(left_text), paragraphs(right_text)
+    matcher = difflib.SequenceMatcher(a=left, b=right, autojunk=False)
+    rows: List[Dict] = []
+    stats = {"same": 0, "changed": 0, "only_left": 0, "only_right": 0}
+
+    def add(kind: str, li=None, ri=None, text: str = "", similarity=None) -> None:
+        stats[kind] += 1
+        rows.append({"kind": kind, "left_index": li, "right_index": ri,
+                     "text": _clip(text), "similarity": similarity})
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for offset in range(i2 - i1):
+                add("same", i1 + offset, j1 + offset, left[i1 + offset])
+        elif tag == "replace":
+            for offset in range(max(i2 - i1, j2 - j1)):
+                li = i1 + offset if i1 + offset < i2 else None
+                ri = j1 + offset if j1 + offset < j2 else None
+                if li is not None and ri is not None:
+                    ratio = round(difflib.SequenceMatcher(
+                        a=left[li], b=right[ri], autojunk=False).ratio(), 3)
+                    if ratio >= SIMILARITY_THRESHOLD:
+                        add("changed", li, ri, right[ri], ratio)
+                    else:
+                        # 整段换了内容：不是「改过」，是「这段没了 + 那段是新的」
+                        add("only_left", li, None, left[li])
+                        add("only_right", None, ri, right[ri])
+                elif li is not None:
+                    add("only_left", li, None, left[li])
+                else:
+                    add("only_right", None, ri, right[ri])
+        elif tag == "delete":
+            for offset in range(i2 - i1):
+                add("only_left", i1 + offset, None, left[i1 + offset])
+        else:  # insert
+            for offset in range(j2 - j1):
+                add("only_right", None, j1 + offset, right[j1 + offset])
+
+    truncated = len(rows) > max_rows
+    return {"rows": rows[:max_rows], "stats": stats, "truncated": truncated,
+            "left_paragraphs": len(left), "right_paragraphs": len(right)}

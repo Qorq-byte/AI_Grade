@@ -211,3 +211,119 @@ def test_status_exposes_comparison_summary(api):
 
     assert summaries[8]["comparison"]["recommended"] == "a"
     assert summaries[8]["comparison"]["models"] == ["a", "b"]
+
+
+# ─── 批次 43：段落级差异与选择审计 ───
+
+LEFT = """一、总体情况
+
+完成率 85%，满意度 88%。
+
+二、存在问题
+
+资金到位率偏低。"""
+
+RIGHT = """一、总体情况
+
+完成率 92%，满意度 90%。
+
+三、下一步
+
+加快资金拨付。"""
+
+
+def test_paragraphs_split_on_blank_lines():
+    parts = candidates.paragraphs(LEFT)
+
+    assert parts == ["一、总体情况", "完成率 85%，满意度 88%。", "二、存在问题", "资金到位率偏低。"]
+
+
+def test_paragraphs_fall_back_to_lines_when_there_are_no_blank_lines():
+    assert candidates.paragraphs("第一行\n第二行") == ["第一行", "第二行"]
+
+
+def test_diff_aligns_by_paragraph_not_by_position():
+    rows = candidates.diff_paragraphs(LEFT, RIGHT)["rows"]
+
+    kinds = [row["kind"] for row in rows]
+    assert kinds[0] == "same"                     # 标题一样
+    assert "changed" in kinds                     # 指标那句改过
+    assert "only_left" in kinds                   # 「二、存在问题」只在左边
+    assert "only_right" in kinds                  # 「三、下一步」只在右边
+    changed = [row for row in rows if row["kind"] == "changed"][0]
+    assert 0 < changed["similarity"] < 1
+
+
+def test_diff_is_symmetric_on_kinds():
+    forward = [row["kind"] for row in candidates.diff_paragraphs(LEFT, RIGHT)["rows"]]
+    backward = [row["kind"] for row in candidates.diff_paragraphs(RIGHT, LEFT)["rows"]]
+
+    assert forward.count("only_left") == backward.count("only_right")
+    assert forward.count("only_left") or forward.count("only_right")
+
+
+def test_diff_caps_rows_and_marks_truncation():
+    left = "\n\n".join(f"左第{index}段" for index in range(80))
+    right = "\n\n".join(f"右第{index}段" for index in range(80))
+
+    result = candidates.diff_paragraphs(left, right, max_rows=20)
+
+    assert isinstance(result, dict)
+    assert len(result["rows"]) == 20
+    assert result["truncated"] is True
+
+
+def test_diff_identical_text_has_no_changes():
+    result = candidates.diff_paragraphs(LEFT, LEFT)
+
+    assert result["stats"] == {"same": 4, "changed": 0, "only_left": 0, "only_right": 0}
+    assert result["truncated"] is False
+
+
+def _diff(api, left="a", right="b"):
+    client, headers = api
+    return client.get(f"/api/agent/workflow/s1/comparison/8/diff?left={left}&right={right}",
+                      headers=headers)
+
+
+def test_diff_endpoint_returns_rows_and_stats(api):
+    resp = _diff(api)
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["left"] == "a" and data["right"] == "b"
+    assert data["stats"]["only_left"] >= 1
+    assert data["rows"]
+
+
+def test_diff_endpoint_404_for_unknown_model(api):
+    assert _diff(api, left="a", right="nope").status_code == 404
+
+
+def test_diff_endpoint_422_for_same_model(api):
+    assert _diff(api, left="a", right="a").status_code == 422
+
+
+def test_manual_select_records_who_and_when(api):
+    client, headers = api
+
+    resp = client.post("/api/agent/workflow/comparison/select", headers=headers,
+                       json={"session_id": "s1", "step_number": 8, "model": "b"})
+
+    assert resp.status_code == 200, resp.text
+    entry = _state()["comparison_history"]["8"]
+    assert entry["selected_by"] == "manual"
+    assert entry["selected_at"]
+    assert entry["scores_snapshot"]["a"] > entry["scores_snapshot"]["b"]
+
+
+def test_status_exposes_the_selection_audit(api):
+    client, headers = api
+    client.post("/api/agent/workflow/comparison/select", headers=headers,
+                json={"session_id": "s1", "step_number": 8, "model": "b"})
+
+    data = client.get("/api/agent/workflow/s1/status", headers=headers).json()["data"]
+    summaries = {item["step_number"]: item for item in data["step_summaries"]}
+
+    assert summaries[8]["comparison"]["selected_by"] == "manual"
+    assert summaries[8]["comparison"]["selected_at"]

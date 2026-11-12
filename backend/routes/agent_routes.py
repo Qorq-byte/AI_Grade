@@ -348,6 +348,24 @@ async def get_step_comparison(session_id: str, step: int):
     }}
 
 
+@router.get("/workflow/{session_id}/comparison/{step}/diff",
+            dependencies=[Depends(_require_path_workflow)])
+async def get_candidate_diff(session_id: str, step: int,
+                             left: str = Query(...), right: str = Query(...)):
+    """两个候选的段落级差异。同一模型没有可比差异 → 422，未知候选 → 404。"""
+    from backend.services import candidates
+
+    values = _get_workflow_values(session_id)
+    outputs = candidates.candidates_of(values, step)
+    for model in (left, right):
+        if model not in outputs:
+            raise HTTPException(status_code=404, detail=f"找不到候选：{model}")
+    if left == right:
+        raise HTTPException(status_code=422, detail="同一模型没有可比差异")
+    result = candidates.diff_paragraphs(outputs[left], outputs[right])
+    return {"success": True, "data": {"left": left, "right": right, **result}}
+
+
 @router.post("/workflow/comparison/select", dependencies=[Depends(_require_body_workflow)])
 async def select_comparison_candidate(req: SelectCandidateRequest):
     """人工改选：把该候选写回步骤正文，并记住是谁被选中。"""
@@ -367,6 +385,10 @@ async def select_comparison_candidate(req: SelectCandidateRequest):
     entry = dict(history.get(key) or {})
     entry["selected_best"] = req.model
     entry["selected_by"] = "manual"
+    # 审计：谁选的、什么时候、选的时候各候选多少分（分数会随内容变化，必须快照）
+    entry["selected_at"] = datetime.now(timezone.utc).isoformat()
+    entry["scores_snapshot"] = {item["model"]: item["score"]
+                                for item in candidates.rank(values, req.step_number)}
     history[key] = entry
     _persist_state(req.session_id, {"comparison_history": history})
     data["selected_best"] = req.model
@@ -1223,13 +1245,16 @@ async def get_workflow_status(session_id: str, db: Session = Depends(get_db), af
         # 多模型对比的摘要（只给模型名/分数/推荐，全文走 /comparison/{step}）
         from backend.services import candidates
 
-        if candidates.entry_for(values, step):
+        entry = candidates.entry_for(values, step)
+        if entry:
             ranked = candidates.rank(values, step)
             summary["comparison"] = {
                 "models": [item["model"] for item in ranked],
                 "scores": {item["model"]: item["score"] for item in ranked},
                 "recommended": next((item["model"] for item in ranked if item.get("recommended")), None),
-                "selected_best": (candidates.entry_for(values, step) or {}).get("selected_best"),
+                "selected_best": entry.get("selected_best"),
+                "selected_by": entry.get("selected_by"),
+                "selected_at": entry.get("selected_at"),
             }
         summaries.append(summary)
     return AgentResponse(success=True, data={
