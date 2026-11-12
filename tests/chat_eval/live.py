@@ -34,7 +34,7 @@ from backend.services import chat_context
 #: 引用编号的三种写法：`S7P1`（章节片段）、`P1`/`K2`（证据）、`CODE#1`（问题）。
 # 注意顺序：长格式在前。真实证据编号是 `P1-3-1`，只匹配 `P1` 会把「真实引用」
 # 误判成「编造」——第一轮就是这么误报了一条。
-REF_RE = re.compile(r"(S\d{1,2}P\d{1,3}|P\d{1,3}-\d{1,3}-\d{1,3}|[PK]\d{1,3}|"
+REF_RE = re.compile(r"(S\d{1,2}P\d{1,3}|P\d{1,3}-\d{1,3}-\d{1,3}|R\d{1,4}|[PK]\d{1,3}|"
                     r"[A-Z][A-Z0-9_]{2,40}#\d{1,3})")
 REFUSAL_HINTS = ("报告里没有", "报告中没有", "没有这项", "未提及", "无法从报告中")
 OUTPUT = Path(__file__).resolve().parent.parent.parent / "docs" / "chat_live_eval.md"
@@ -52,6 +52,18 @@ LIVE_CASES = [
     {"id": "L09", "kind": "report", "question": "评价范围是什么？"},
     {"id": "L10", "kind": "chitchat", "question": "帮我订一张明天去北京的机票"},
 ]
+
+
+def _cited_ids(answer: str, ref_ids) -> set:
+    r"""抽引用编号，并排掉「建议0」这类被误认成 P0 的编号。
+
+    只有当上下文里真的存在 `P1`/`K2` 这种裸编号时，才把裸 `P\\d+` 当引用；
+    否则它是报告里的「建议0（P0）」写法，不是证据编号。
+    """
+    cited = set(REF_RE.findall(answer))
+    if not any(re.fullmatch(r"[PK]\d{1,3}", rid) for rid in ref_ids):
+        cited = {cid for cid in cited if not re.fullmatch(r"[PK]\d{1,3}", cid)}
+    return cited
 
 
 def _ask(client, model: str, system: str, question: str) -> str:
@@ -81,8 +93,10 @@ def run(session_id: str, limit: int = 10, model: Optional[str] = None) -> Dict:
             system = f"{system}\n\n{context['text']}"
         answer = _ask(client, used_model, system, case["question"])
 
-        ref_ids = {item["id"] for item in context["references"]}
-        cited = set(REF_RE.findall(answer))
+        # 「可核对」= 上下文正文或 references 里出现过；只比 references 会把
+        # 模型从正文片段里抄来的编号误判成编造。
+        ref_ids = {item["id"] for item in context["references"]} | set(REF_RE.findall(context["text"]))
+        cited = _cited_ids(answer, ref_ids)
         rows.append({
             "id": case["id"],
             "kind": case["kind"],
@@ -150,15 +164,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--session", required=True)
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--model", default=None)
-    parser.add_argument("--write", action="store_true", help="写入 docs/chat_live_eval.md")
+    parser.add_argument("--write", action="store_true", help="写入默认的 docs/chat_live_eval.md")
+    parser.add_argument("--output", default=None, help="写入指定路径（多会话对比时用）")
     args = parser.parse_args(argv)
 
     result = run(args.session, limit=args.limit, model=args.model)
     print(json.dumps(result["summary"], ensure_ascii=False))
-    if args.write:
-        OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-        OUTPUT.write_text(render_markdown(result), encoding="utf-8")
-        print(f"已写入 {OUTPUT}")
+    target = Path(args.output) if args.output else (OUTPUT if args.write else None)
+    if target:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(render_markdown(result), encoding="utf-8")
+        print(f"已写入 {target}")
     return 0
 
 
