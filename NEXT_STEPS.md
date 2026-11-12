@@ -16,8 +16,8 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `main` / 批次 46 提交，工作区干净 |
-| 已完成批次 | 第三轮 B1–B46（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
+| 分支 / HEAD | `main` / 批次 47 提交，工作区干净 |
+| 已完成批次 | 第三轮 B1–B47（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
 | 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），142 个端点 |
 | 前端 | 零构建，原生 HTML/CSS/JS + `frontend/shared/` |
 | 存储 | MySQL（库 `ai_grade_d`）+ `state_backups/*.json` 磁盘投影 |
@@ -26,15 +26,15 @@
 
 | 检查 | 命令 | 当前 |
 |---|---|---|
-| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **835 passed**（CI 也跑这一条） |
+| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **836 passed**（CI 也跑这一条） |
 | 前端共享层 / SSE | `node --test tests/test_*.cjs` | **48 pass**（5 个文件） |
 | 前端联通性 | `python frontend_e2e_check.py` | **120 通过 / 0 失败** |
 | 全接口 | `python test_all_apis.py` | **47/47** |
 | 真实工作流 | `python wf_e2e.py` | **47 项 / 0 失败**（约 4~5 分钟，要真实模型） |
 | 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` / `_mutate_step9_critique.py` / `_mutate_critique_step10.py` / `_mutate_llm_resilience.py` / `_mutate_b7_enablement.py` / `_mutate_workflow_deps.py` / `_mutate_report_routes.py` / `_mutate_refine.py` / `_mutate_refine_llm.py` / `_mutate_chat_context.py` / `_mutate_chapter_refs.py` / `_mutate_candidates.py` / `_mutate_candidate_diff.py` / `_mutate_diff_all.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 / 10 / 7 / 11 / 8 / 11 / 9 / 9 / 8 / 8 / 6 / 7 / 7 / 7 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
 | 检索基线 | `python -m tests.rag_eval.run --check` | Recall@3 **0.448**、MRR 0.391、P 0.161 |
-| 聊天评测 | `python -m tests.chat_eval.run --check` | **recall 1.0（21/21）**，平均上下文 675.4 字；对照组（关章节检索）**0.381** |
-| 聊天抽读（手动，不进 CI） | `python -m tests.chat_eval.live --session <id> --write` | 2026-11-12 / deepseek-chat：**编造 0/10、引用 9/9**，L09 已修复、L10 拒答不引用（记录在 `docs/chat_live_eval.md`） |
+| 聊天评测 | `python -m tests.chat_eval.run --check` | **recall 0.975（39/40）**，平均上下文 714.3 字；对照组 **0.325**（唯一失分是 Q33 同义词「方法/方式」） |
+| 聊天抽读（手动，不进 CI） | `python -m tests.chat_eval.live --session <id> --output <md>` | 2026-11-12 / deepseek-chat / 两会话：**编造 0/10 与 0/10、引用 9/9 与 8/9**（`docs/chat_live_eval*.md`） |
 
 ---
 
@@ -72,7 +72,7 @@
 | ~~**B2**~~ | ~~步骤间一致性**从「检测」升级为「拦截」**~~ | ✅ **批次 26 已完成**：每条 issue 带 `id`（`CODE#序号`）与 `blocking`，`BLOCKING_CODES` 只放 4 类结构性缺陷（拦太宽用户会学会绕过）；新增 `chapters`（占位句回溯到章节标题）与 `problem_suggestion_coverage`（低分指标未点名，**聚合**一条）两项检查，`CHECKS` 4 → 6；`/workflow/export` 按 `blocking` 拦 409 + `X-Export-Blocked`，`force` 放行且记日志，读不到状态时 **fail-open**；步骤 11 的得分替换从静默 `re.sub` 改为按行判定 + 写入 `warnings` | 见 `progress_round3.md` B26。**遗留**：① 分步导出（`/workflow/export-step`）不受闸门约束；② 覆盖缺口只做子串匹配，78% 这个数字方向可信、量级虚高；③ `LOW_SCORE_RATIO=0.6` 是拍的 |
 | ~~**B3**~~ | ~~质量门禁 `GET /workflow/{id}/quality`~~ | ✅ **批次 27 已完成**：新增 `backend/services/quality.py`，输出「每步字数事实 + 可解释 flags + 无从判断项」，**刻意不打 0–100 分**（取证发现台账一半缺失、一半恒满分，分数既不能排序也不改变行为）。判据：缺步骤/字数低于该步中位数 20%/落地率 <0.5（样本≥5）/标准夹带结论；缺章等结构性缺陷复用 `consistency` 的 blocking，不另起一套。四态 `review`/`partial`/`pass`/`unknown`，不变量 `verified ∩ unavailable == ∅`。`/client/reports` 每条带 `review`（现算 1.2 ms/份 + mtime 缓存，失败降级 `unknown`），`/client` 卡片按四态显示徽标；顺带修掉 `standard_purity` 未落盘（白名单第三次复发） | 见 `progress_round3.md` B27。**遗留**：① 存量 21 份永久 `partial`（历史未落盘）；② 字数阈值是经验值、不分项目类型；③ 只抓"断在半截"，抓不到"写得很空"；④ 质量 warn **不参与导出闸门**，仍是"建议"；⑤ 详情面板没做，接口的每步事实无界面在读 |
 | **B4** | refine 增强 | ✅ **批次 36 第一步 + 批次 37 第二步**：证据注入、首尾保留截断、preview → 采用/丢弃、版本历史 + 回滚；refine 已接上重试 + 降级链（`services/llm_resilience.py`），失败映射 502/503，降级稿有前端标注 | 见 `progress_round3.md` B36/B37。**遗留**：① agent 的 `_invoke_llm` 还没切到同一实现（两份编排）；② 重试固定 1 次、退避线性；③ 预览成本不落账；④ 导出标注分不清「refine 改写」与「工作流那一步」；⑤ 前端无浏览器级验证 |
-| **B5** | AI 聊天升级 | ✅ **批次 38/39/42/44/45 五步完成**：报告上下文（问题 + 证据 + 报告正文/分步正文双源章节片段）、历史预算、SSE 流式 + 回退、引用可展开、强制标注来源；离线 recall **1.0（21/21，对照 0.381）**；真模型抽读 **编造 0/10、引用 9/9** | 见 `progress_round3.md` B38/B39/B42/B44/B45 与 `docs/chat_live_eval.md`。**遗留**：① 报告/步骤正文影子重复靠文本去重，改标点就漏；② 强制引用可能过度引用（L10 已用「无关请求别引用」压住一类）；③ 引用真实但可能不贴题；④ 评测样本小、单模型、无人复核；⑤ 前端无浏览器验证 |
+| **B5** | AI 聊天升级 | ✅ **批次 38/39/42/44/45/47 六步完成**：报告上下文（问题 + 证据 + 报告正文/分步正文双源片段）、历史预算、SSE 流式 + 回退、引用可展开、强制标注来源；离线 **39/40（对照 0.325）**；真模型两会话 **编造 0/10、引用 9/9 与 8/9** | 见 `progress_round3.md` B38–B47 与 `docs/chat_live_eval_compare.md`。**遗留**：① 两会话同源，不能说明跨文档泛化；② 单模型；③ 抽读有随机性；④ 同义词缺失（Q33「方法/方式」）未修；⑤ 错引抓不到；⑥ 前端无浏览器验证 |
 | **B6** | 多模型对比择优 | ✅ **批次 40 / 43 / 46 三步完成**：候选留存、确定性评分（并列不推荐）、两两差异、**全量差异（推荐为基准）**、选择审计（谁/何时/分数快照）与**采用后再编辑标记**；前端对比、差异、审计面板齐全 | 见 `progress_round3.md` B40/B43/B46。**遗留**：① 全量差异仍是「每候选 vs 基准」，不是 N 方对齐；② 基准取推荐（权重是拍的）；③ 编辑标记只记最后一次，未与 revisions 打通；④ `by` 是来源串不是用户 id；⑤ 前端无浏览器验证 |
 | ~~**B7**~~ | ~~模型调用韧性剩余~~ | ✅ **批次 31 + 32 已完成**：分级超时（长文 300/其余 120）、先重试同一模型再降级（429/超时/5xx 才降，400/401/403 直接抛）、`llm_attempts` 每次尝试记账、管理后台可配「备用模型（最多 2 个）」、新会话从设置读默认链、导出件自动标注「哪一步由备选模型完成」。真实 429 故障注入两场景通过；`pytest 624` / 变异 19/19（两批合计） | 见 `progress_round3.md` B31/B32。**遗留**：① 重试+降级最多 3 次调用，配额耗尽时是白等；② 退避只有线性 2 秒、无抖动/熔断；③ 设置是全局的，不能按会话配；④ 前端是自由输入框（填错模型名到降级时才炸）；⑤ 导出标注只在整报导出；⑥ 标注靠「第一条尝试=主模型」推断，续跑可能判反 |
 
@@ -409,21 +409,31 @@
 - **遗留**：仍是「每候选 vs 基准」不是 N 方对齐；基准取推荐（权重是拍的）；
   编辑标记只记最后一次、未与 revisions 打通；`by` 不是用户 id；前端无浏览器验证。
 
-### 批次 47（建议）：B5 收尾——扩样本、换会话/模型，验证不是过拟合
-- **为什么是它**：B45 的数字（离线 21/21、抽读引用 9/9、编造 0/10）都来自
-  **一份夹具 + 一个真实会话 + 一个模型**。再往下加功能之前，先证明它不是"调出来的"。
-- **要做**：
-  1. 离线样本从 21 条扩到 40 条（补：数字核对、跨章一致、多轮追问）；
-  2. 换**第二个真实会话**（`6f506305…`）重跑 `live.py`，换一个模型（如有）；
-  3. 记录两次的差异；若掉分，定位是检索、指令还是样本问题。
-- **判定**：两个会话的抽读都跑完并留记录；引用率与编造率各自有数字；
-  离线 recall 不低于 0.9。
-- **风险**：第二个会话的文档质量可能更差（资料不足），拒答会变多——这是正常结果，
-  不要为了让数字好看去改判定口径。
+### 批次 47 = B5 收尾：扩样本、换会话，验证不是过拟合 ✅ 已完成
+- 交付见 `progress_round3.md` B47 与 `docs/chat_live_eval_compare.md`。
+- 离线样本 21 → 40：**39/40（0.975）**，对照 0.325；唯一失分 Q33「方法/方式」同义词。
+- 真模型两会话：**编造 0/10、0/10；引用 9/9、8/9**；L09 的修复在两个会话上都成立。
+- **四个指标/提示词问题**（都不是模型的问题）：漏 `R` 编号 / 把「建议0（P0）」当证据 /
+  指令示例编号被照抄 / 「可核对」口径太窄。第 3 条最值得记：**示例即候选**。
+- **遗留**：两会话同源（同一份样例资料），不能说明跨文档泛化；单模型；抽读有随机性；
+  Q33 同义词未修；错引抓不到。
 
-### 批次 48（备选）
+### 批次 48（建议）：B5 第七步——同义词检索 + 错引检测
+- **为什么**：B47 留下两个具体、可测的问题：Q33 问「方法」而正文写「方式」；
+  「错引」（引用真实但与被问内容无关的编号）目前完全抓不到。
+- **要做**：
+  1. 检索前做一层**轻量同义词归一**（方法/方式/手段、资金/经费、完成率/达成率…），
+     只作用于查询与语料的分词，不改原文；目标 Q33 命中、离线 40/40；
+  2. 错引检测：对每个引用编号，检查它所在的片段/问题是否与问题关键词有交集，
+     没有则标「弱相关引用」；只做提示，不算编造。
+- **判定**：离线 recall 回到 1.0；两个会话抽读「弱相关引用」有数字；
+  上下文长度不超基线 1.2 倍。
+- **风险**：同义词表容易越写越长，先只收 20 组高频词；错引判定是启发式，别当成判决。
+
+### 批次 49（备选）
 - **C1 第五步（可选）**：再拆 SSE/上传，把 `agent_routes` 压到 ~1300；收益边际递减。
-- **B6 第四步（可选）**：N 方差异视图；UI 复杂度高，价值低于 B5 收尾。
+- **找一个非样例资料的真实报告**跑抽读——这是唯一能证明「跨文档泛化」的事，
+  但需要用户提供材料。
 
 ---
 
@@ -439,7 +449,7 @@
 
 ```bash
 cd /d/python/AI_Grade
-NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 835
+NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 836
 node --test tests/test_*.cjs                                                          # 48
 NO_PROXY='*' .venv/Scripts/python.exe -c "import backend.main"                        # 导入自检
 ```
@@ -492,6 +502,7 @@ NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 98/0
 | **变异脚本会「静默失效」** | 跑之前文件**已经被上一次中断的变异污染**时，锚点找不到 → 替换不生效 → 用例当然全绿，脚本报成「变异存活 / 变异点未找到」，看起来像覆盖不足，其实是根本没跑到。批次 21 复核踩到：盘上留着 `"no_evidence": False`，害得两个脚本各报一条假问题。→ **跑之前先 `git diff` 对着安全副本验一遍关键行；跑完除了 `git status --short` 还要 `grep` 关键行**；`.mutation_backup/` 残留别急着删，先 `diff` 看看它是干净版还是污染版 |
 | **变异跑着的时候，源码就是变异体** | 批次 34 想在变异脚本运行期间顺手做「搬运前后逐字比对」，读到的是被改坏的 `_workflow_deps.py`，得出「`_owned_workflows` 不一致」的假结论。→ **变异脚本运行期间不要读、不要比、不要提交源码**；要取证就等它跑完（脚本 `finally` 会还原） |
 | **快照把依赖的「模块名」当契约** | `_dep_name()` 原来返回 `module.name`，批次 34 把 `_require_*` 搬进 `_workflow_deps` 后，148 条里一批路由报「deps 变了」——接口一个字没改。→ 依赖比对只比**函数名**（丢依赖、换函数仍抓得住），并写用例钉住；否则每次拆分都假红，快照就会被人为无视 |
+| **给模型的"格式示例"会被当成真实数据** | B47 为了要求「照抄编号」，在提示词里写了 `（S7P1）、（P1-3-1）、REPORT_CHAPTER_MISSING#1` 当例子，模型直接把 `REPORT_CHAPTER_MISSING#1` 当成本报告的编号引用（该报告并没有这个问题）。→ 提示词里不写具体编号；必须举例时用占位符（`<片段编号>`） |
 | **判定模型输出的正则，先拿真实样本校准** | 批次 44 的抽取指标只认 `[P1]`，而模型实际写 `（S11P0）`、`[P1-3-1]` —— 先误报「10 条全未引用」，再误报「1 条编造」，两轮才修对。→ 写检测器前先跑一条真样本打印出来看；长格式要排在短格式前面 |
 | **同一模块里别让同一个函数定义两次** | 用脚本追加代码时被执行了两遍：`paragraphs`/`diff_paragraphs` 各两份，后者静默覆盖前者。功能看着正常，**变异打在第一份上等于没打**，三条变异全被漏掉，差点误判成"用例太弱"。→ `tests/test_module_hygiene.py` 按 AST 扫 `backend/services|routes/*.py`，顶层重名直接失败 |
 | **评测夹具要固定，别读运行产物** | `state_backups/` 不进 git、每次跑完内容都变，拿它做评测基准，指标只会跟着跑分时间漂移。→ 评测用写死的 `tests/chat_eval/fixture.py`；真实会话只用于人工抽读，不进自动指标 |
