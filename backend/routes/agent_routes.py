@@ -1338,7 +1338,28 @@ async def get_workflow_status(session_id: str, db: Session = Depends(get_db), af
             "9": bool((values.get("step_control") or {}).get("critique_step9")),
             "10": bool((values.get("step_control") or {}).get("critique_step10")),
         },
+        # 引用清理台账的摘要（批次 54）：条数 + 总删除数 + 最近 3 条。
+        # 正文已被清理、不等于模型原文，这张表是唯一能回答「原本引了哪一行」的地方；
+        # 只读，不改任何产出物。老会话没有这个字段 → 全 0，前端不展示。
+        "citation_cleanup_summary": _citation_cleanup_summary(values),
     })
+
+
+def _citation_cleanup_summary(values: dict, recent: int = 3) -> dict:
+    """把 `citation_cleanup` 压成「条数 + 总删除数 + 最近 N 条」。
+
+    轮询接口不该把几百条台账整份吐出来（每条含一句原文，几百字），
+    完整台账在备份里，需要审计时按会话读。
+    """
+    entries = values.get("citation_cleanup")
+    if not isinstance(entries, list):
+        return {"count": 0, "removed_ids": 0, "recent": []}
+    rows = [item for item in entries if isinstance(item, dict)]
+    return {
+        "count": len(rows),
+        "removed_ids": sum(len(item.get("removed_ids") or []) for item in rows),
+        "recent": rows[-recent:] if recent > 0 else [],
+    }
 
 
 def _raw_workflow_values(session_id: str) -> dict:

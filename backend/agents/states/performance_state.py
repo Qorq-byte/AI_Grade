@@ -297,6 +297,9 @@ class PerformanceState(TypedDict, total=False):
     execution_log: List[Dict[str, Any]]   # 执行日志
     # 输出被长度上限截断的步骤（finish_reason=length），供复核与统计
     truncated_steps: List[int]
+    # 缺失类结论的编号清理台账（批次 54）：每条 {step, at, sentence, removed_ids}。
+    # 清理在落库前发生，步骤正文因此不等于模型原文；这张表是唯一的「原本引了什么」。
+    citation_cleanup: List[Dict[str, Any]]
 
     # ── Token统计 ──
     token_usage: Dict[str, int]           # model_name -> total_tokens_used

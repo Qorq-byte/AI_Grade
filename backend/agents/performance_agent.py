@@ -531,6 +531,12 @@ def refresh_disposition(previous: Dict[str, Any], score_map: Dict[str, Any],
 #: 落库前清理「缺失类结论编号」的步骤（散文类；步骤 7 含 JSON，保守跳过）。
 ABSENCE_CLEAN_STEPS = {8, 9, 10, 11, 12, 13}
 
+#: 引用清理台账保留多少条（一条 = 一句被删过编号的句子）。
+#: 长期会话会累积；只留最近的，够复盘又不至于把备份撑大（同 `llm_attempts` 的 200）。
+CITATION_CLEANUP_LIMIT = 200
+#: 台账里单句最多留多少字。超长句（整行表格）截断，编号清单仍是全的。
+CITATION_CLEANUP_SENTENCE_CHARS = 300
+
 
 class PerformanceAgent:
     """企业级绩效评价报告生成Agent v2"""
@@ -1398,6 +1404,40 @@ class PerformanceAgent:
 
     # ─── 结果记录 ────────────────────────────────────────
 
+    def _note_citation_cleanup(self, state: PerformanceState, step_number: int,
+                               removals: List[Dict[str, Any]]) -> None:
+        """把「第几步、哪一句、删了哪些编号」记进 `state["citation_cleanup"]`。
+
+        为什么必须有这张表：批次 53 把清理前移到落库，`step_results[n]["content"]`
+        从此**不等于模型原文**，`revisions` 的基线也是清理后的文本。审计问
+        「模型原本引了哪一行」时，除了这张表没有第二个地方可查。
+
+        **必须存实例再镜像**：LangGraph 每个节点拿到的是状态副本，追加型字段各改各的
+        最后按"后写覆盖"合并 —— 和 `llm_attempts` 是同一个坑（B31），一轮跑完只会剩
+        最后一步的几条。存在 `self._citation_cleanup`（跨节点存活），再镜像给当前 state。
+        """
+        if not removals:
+            return
+        entries = getattr(self, "_citation_cleanup", None)
+        if entries is None:
+            # 续跑时把备份里已有的接上，别从零开始
+            entries = list(state.get("citation_cleanup") or [])
+        at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        for removal in removals:
+            ids = [str(item) for item in (removal.get("removed_ids") or [])]
+            if not ids:
+                continue
+            entries.append({
+                "step": int(step_number),
+                "at": at,
+                "sentence": str(removal.get("sentence") or "")[:CITATION_CLEANUP_SENTENCE_CHARS],
+                "removed_ids": ids,
+            })
+        if len(entries) > CITATION_CLEANUP_LIMIT:
+            del entries[:-CITATION_CLEANUP_LIMIT]
+        self._citation_cleanup = entries
+        state["citation_cleanup"] = list(entries)
+
     def _record_step_result(self, state: PerformanceState, step_number: int, content: str,
                             structured: Any = None):
         if not content or not content.strip():
@@ -1410,10 +1450,12 @@ class PerformanceAgent:
 
         # 缺失类结论不保留证据编号（批次 53）：散文类步骤在落库前清一次，
         # 导出单章时也不会再带出错引。步骤 7 正文含评分 JSON，保守跳过。
+        # 清掉的句子与编号进台账（批次 54）—— 否则「模型原本引了什么」永久丢失。
         if step_number in ABSENCE_CLEAN_STEPS:
             from backend.services import citation_policy
 
-            content, _ = citation_policy.strip_absence_ids(content)
+            content, removals = citation_policy.strip_absence_ids_detailed(content)
+            self._note_citation_cleanup(state, step_number, removals)
 
         result = {
             "step_number": step_number,
@@ -1542,6 +1584,10 @@ class PerformanceAgent:
                 # 批次 40：多模型候选正文与择优记录。不含它，重启后候选全部消失，
                 # 「选哪个更好」就只剩日志里一句话 —— 第十次「字段白名单」复发。
                 "comparison_history",
+                # 批次 54：缺失类结论的引用清理台账。批次 53 把清理前移到落库，
+                # 步骤正文因此不等于模型原文；不落这张表，「模型原本引了什么」就
+                # 永久查不到了（审计类系统的硬伤）。又一次「字段白名单」检查项。
+                "citation_cleanup",
             )
             backup = {key: state[key] for key in fields if key in state}
             backup["step_results"] = {
@@ -2187,9 +2233,13 @@ class PerformanceAgent:
         # 所以放在组装时做确定性清理（批次 52）。
         from backend.services import citation_policy
 
-        content, stripped = citation_policy.strip_absence_ids(content)
-        if stripped:
+        content, removals = citation_policy.strip_absence_ids_detailed(content)
+        if removals:
+            stripped = sum(len(item["removed_ids"]) for item in removals)
             logger.info(f"[Step 14] 去掉缺失类结论里的证据编号 {stripped} 处")
+            # 报告是读者唯一会看的东西：这一处的清理单独记一笔（第 14 步），
+            # 否则台账里只有 8–13 步，而真正被改过的偏偏是报告
+            self._note_citation_cleanup(state, 14, removals)
         state["final_report"] = content
         self._record_step_result(state, 14, content)
         # 报告成型后立刻做一次纯程序的步骤间一致性检查（不调模型）
