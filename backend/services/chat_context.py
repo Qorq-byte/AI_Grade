@@ -71,6 +71,9 @@ def build_report_context(values: Optional[dict], project_name: str = "",
         # 指令放在**顶部**：整体截断时不能被吃掉，否则模型会开始编
         "请只依据以下信息回答；问到报告里没有的内容时，直接说「报告里没有这项」，"
         "不要编造章节号、数字或引用编号。",
+        "回答报告相关问题时，每条结论后用（编号）标注来源，例如（S7P1）、（P1-3-1）、"
+        "（INDICATOR_MISSING#1）；没有编号支撑的话不要写成结论。",
+        "与报告无关的请求，只说明不在服务范围内即可，不要展开报告内容、不要引用编号。",
     ]
 
     try:
@@ -97,7 +100,7 @@ def build_report_context(values: Optional[dict], project_name: str = "",
                          f"{snippet['text']}")
             references.append({
                 "id": snippet["id"],
-                "label": f"步骤{snippet['step']}·{snippet['locator']}",
+                "label": snippet.get("label") or f"步骤{snippet['step']}·{snippet['locator']}",
                 "detail": snippet["text"][:120],
                 "step": snippet["step"], "chapter": snippet["chapter"],
                 "offset": snippet["offset"],
@@ -185,26 +188,41 @@ def _blocks(text: str, target: int = MAX_SNIPPET_CHARS) -> List[Tuple[int, str]]
     return [(offset, text.strip()) for offset, text in blocks if text.strip()]
 
 
-def retrieve_chapter_snippets(values: Optional[dict], query: str,
-                              limit: int = MAX_SNIPPETS,
-                              max_chars: int = MAX_SNIPPET_CHARS) -> List[Dict]:
-    """按问题在报告正文里找最相关的几段（BM25，中文二元组）。
+def _corpus(values: dict, max_chars: int):
+    """检索语料：**报告正文**（主）+ 分步正文（辅）。
 
-    为什么不用整章：一章动辄几千字，塞进 3000 字预算会把问题清单和证据挤掉；
-    只给命中的片段，模型才能回答「第四章怎么写的」而不跑题。
+    为什么两个都要：
+    - 报告是拼装后的产物，有些内容只在报告里（比如「评价范围」那一章，
+      对应步骤的正文可能是空的）；
+    - 分步正文里有报告没有的细节（表格、JSON 片段、扣分台账）。
+    只索引其中一个，都会出现「明明有，却答没有」。
     """
-    query = (query or "").strip()
-    values = values or {}
-    if not query:
-        return []
-
     from backend.agents.prompts.default_prompts import STEP_META
-    from backend.services import retrieval
 
     chunks, meta = [], {}
     budget = 0
+
+    report = values.get("final_report") or ""
+    if isinstance(report, str) and report.strip():
+        heading = ""
+        for index, (offset, text) in enumerate(_blocks(report, max_chars)):
+            first = text.splitlines()[0].strip()
+            if HEADING_RE.match(first):
+                heading = first.lstrip("#").strip()[:24]
+            chunk_id = f"R{index}"
+            chunks.append({"id": chunk_id, "source": heading or "报告", "locator": f"第{index + 1}段",
+                           "kind": "report", "text": _clip(text, max_chars), "step_number": None})
+            meta[chunk_id] = {"step": None, "chapter": heading or "报告正文", "offset": offset,
+                              "locator": f"第{index + 1}段",
+                              "label": f"报告·{heading or '正文'}·第{index + 1}段"}
+            budget += len(text)
+            if budget >= MAX_REPORT_CHARS:
+                break
+
     results = values.get("step_results") or {}
     for key in sorted(results, key=lambda item: int(item)):
+        if budget >= MAX_REPORT_CHARS:
+            break
         item = results[key]
         content = item.get("content") if isinstance(item, dict) else None
         if not isinstance(content, str) or not content.strip():
@@ -217,20 +235,52 @@ def retrieve_chapter_snippets(values: Optional[dict], query: str,
             chunk_id = f"S{step}P{index}"
             chunks.append({"id": chunk_id, "source": chapter, "locator": f"第{index + 1}段",
                            "kind": "report", "text": _clip(text, max_chars), "step_number": step})
-            meta[chunk_id] = {"step": step, "chapter": chapter,
-                              "offset": offset, "locator": f"第{index + 1}段"}
+            meta[chunk_id] = {"step": step, "chapter": chapter, "offset": offset,
+                              "locator": f"第{index + 1}段",
+                              "label": f"步骤{step}·第{index + 1}段"}
             budget += len(text)
+    return chunks, meta
+
+
+def _normalize(text: str) -> str:
+    return re.sub(r"\s+", "", text or "")
+
+
+def retrieve_chapter_snippets(values: Optional[dict], query: str,
+                              limit: int = MAX_SNIPPETS,
+                              max_chars: int = MAX_SNIPPET_CHARS) -> List[Dict]:
+    """按问题在**报告 + 分步正文**里找最相关的几段（BM25，中文二元组）。
+
+    为什么不用整章：一章动辄几千字，塞进 3000 字预算会把问题清单和证据挤掉；
+    只给命中的片段，模型才能回答「第四章怎么写的」而不跑题。
+
+    报告由步骤正文拼成，同一段会在两个源里各出现一次 —— 命中后按文本去重，
+    否则前 3 个名额可能被同一段话占掉两个。
+    """
+    query = (query or "").strip()
+    values = values or {}
+    if not query:
+        return []
+
+    from backend.services import retrieval
+
+    chunks, meta = _corpus(values, max_chars)
     if not chunks:
         return []
 
     hits = retrieval.build_index(chunks).search(query, limit=max(limit * 3, limit))
     picked: List[Dict] = []
+    seen: List[str] = []
     for score, chunk in hits:
+        key = _normalize(chunk.text)
+        if any(key and (key in prev or prev in key) for prev in seen):
+            continue
         info = meta[chunk.id]
+        seen.append(key)
         picked.append({
             "id": chunk.id, "step": info["step"], "chapter": info["chapter"],
             "locator": info["locator"], "offset": info["offset"],
-            "text": chunk.text, "score": round(score, 4),
+            "label": info["label"], "text": chunk.text, "score": round(score, 4),
         })
         if len(picked) >= limit:
             break

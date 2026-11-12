@@ -70,6 +70,7 @@ def test_context_carries_real_issues_and_evidence_ids():
     assert "步骤 3 没有产出指标体系" in built["text"]
     assert "[P1]" in built["text"]
     assert "报告里没有这项" in built["text"]                # 明确要求不要编造
+    assert "标注来源" in built["text"]                        # 要求逐条标注编号
     ids = [item["id"] for item in built["references"]]
     assert "INDICATOR_MISSING#1" in ids and "P1" in ids
 
@@ -321,3 +322,85 @@ def test_chat_passes_the_user_question_to_retrieval(api):
     system = owner.calls[0]["messages"][0]["content"]
     assert "设备采购完成率不足" in system
     assert any(item.get("step") for item in resp.json()["data"]["references"])
+
+
+# ─── 批次 45：报告正文也是检索源 ───
+
+def test_report_only_facts_are_retrievable():
+    """「评价范围」写在组装后的报告里、步骤正文是空的 —— 检索必须能搜到报告。"""
+    values = {
+        "project_name": "某某项目",
+        "final_report": (
+            "# 某某项目绩效评价报告\n\n"
+            "## 一、项目基本情况\n\n项目 2023 年立项，总投资 4860 万元。\n\n"
+            "## 四、评价范围\n\n评价范围覆盖 2024 年 1 月至 2025 年 6 月的全部支出。\n\n"
+            "## 五、建议\n\n建议纳入年初预算。"
+        ),
+        "step_results": {13: {"content": ""}},
+    }
+
+    snippets = chat_context.retrieve_chapter_snippets(values, "评价范围是什么")
+
+    assert snippets
+    assert "2024 年 1 月至 2025 年 6 月" in snippets[0]["text"]
+    assert snippets[0]["chapter"].endswith("评价范围")
+    assert snippets[0]["label"].startswith("报告·")
+    assert snippets[0]["offset"] > 0
+
+
+def test_report_and_step_corpus_do_not_duplicate_the_same_paragraph():
+    """报告由步骤正文拼成，同一段会同时出现在两个源里 —— 不能占两个名额。"""
+    text = "一、总体得分情况\n\n本项目综合得分 92 分。"
+    values = {
+        "final_report": f"## 四、指标得分及分析\n\n{text}",
+        "step_results": {7: {"content": text}},
+    }
+
+    snippets = chat_context.retrieve_chapter_snippets(values, "综合得分")
+
+    assert snippets
+    # 报告已有这一段，就不该再出现步骤 7 的同一份
+    assert all(not item["id"].startswith("S7") for item in snippets), snippets
+    texts = ["".join(item["text"].split()) for item in snippets]
+    assert len(texts) == len(set(texts)), texts
+
+
+# ─── 批次 45：报告正文也是检索源 ───
+
+def test_report_only_facts_are_retrievable():
+    """「评价范围」写在组装后的报告里、步骤正文是空的 —— 检索必须能搜到报告。"""
+    values = {
+        "project_name": "某某项目",
+        "final_report": (
+            "# 某某项目绩效评价报告\n\n"
+            "## 一、项目基本情况\n\n项目 2023 年立项，总投资 4860 万元。\n\n"
+            "## 四、评价范围\n\n评价范围覆盖 2024 年 1 月至 2025 年 6 月的全部支出。\n\n"
+            "## 五、建议\n\n建议纳入年初预算。"
+        ),
+        "step_results": {13: {"content": ""}},
+    }
+
+    snippets = chat_context.retrieve_chapter_snippets(values, "评价范围是什么")
+
+    assert snippets
+    assert "2024 年 1 月至 2025 年 6 月" in snippets[0]["text"]
+    assert snippets[0]["chapter"].endswith("评价范围")
+    assert snippets[0]["label"].startswith("报告·")
+    assert snippets[0]["offset"] > 0
+
+
+def test_report_and_step_corpus_do_not_duplicate_the_same_paragraph():
+    """报告由步骤正文拼成，同一段会同时出现在两个源里 —— 不能占两个名额。"""
+    text = "一、总体得分情况\n\n本项目综合得分 92 分。"
+    values = {
+        "final_report": f"## 四、指标得分及分析\n\n{text}",
+        "step_results": {7: {"content": text}},
+    }
+
+    snippets = chat_context.retrieve_chapter_snippets(values, "综合得分")
+
+    assert snippets
+    # 报告已有这一段，就不该再出现步骤 7 的同一份
+    assert all(not item["id"].startswith("S7") for item in snippets), snippets
+    texts = ["".join(item["text"].split()) for item in snippets]
+    assert len(texts) == len(set(texts)), texts
