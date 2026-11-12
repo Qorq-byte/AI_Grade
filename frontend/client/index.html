@@ -1300,7 +1300,6 @@ function setLayoutMode(md,el){
     var sel=document.getElementById('wfLayoutSel');if(!sel)return;
     sel.querySelectorAll('button').forEach(function(b){b.classList.remove('active')});
     if(el)el.classList.add('active');
-    var lbl=document.getElementById('wfLayoutLabel');if(lbl)lbl.textContent=md==='classic'?'经典':'自动';
     showToast('布局模式切换为: '+(md==='classic'?'经典排版':'自动排版'));
 }
 function exportStep(sn,fmt){
@@ -1435,20 +1434,6 @@ function rollbackStep(sn,version,btn){
             var done=wfCompletedSteps.length;document.getElementById('wfProgressText')&&(document.getElementById('wfProgressText').textContent='已完成 '+done+' / 14 步 · '+(workflowStatusLabels[wfStatus]||wfStatus)+(wfCurrentStep?' · '+C.STEP_NAMES[wfCurrentStep]:''));
             document.getElementById('wfProgressFill')&&(document.getElementById('wfProgressFill').style.width=Math.round(done/14*100)+'%');
         }
-
-        function handleWfFiles(e){var fs=e.target.files;if(!fs.length)return;
-            for(var i=0;i<fs.length;i++){(function(f){var fd=new FormData();fd.append('file',f);
-                uploadApi('/api/agent/upload',fd).then(function(r){if(r.success){wfUploadedFiles.push({name:r.data.original_name,path:r.data.file_path,size:r.data.file_size});renderWfFiles()}}).catch(function(e){showToast('上传失败: '+e.message,'error')})
-            })(fs[i])}e.target.value=''
-        }
-
-        function renderWfFiles(){var l=document.getElementById('wfFileList');if(!l)return;l.innerHTML='';
-            for(var i=0;i<wfUploadedFiles.length;i++){(function(idx){var f=wfUploadedFiles[idx];var t=document.createElement('div');t.className='wf-file-tag';
-                var kb=f.size>1024*1024?(f.size/1024/1024).toFixed(1)+'MB':(f.size/1024).toFixed(0)+'KB';
-                t.innerHTML='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22543d" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span>'+esc(f.name)+' ('+kb+')</span><button class="remove" onclick="removeWfFile('+idx+')">x</button>';l.appendChild(t)})(i)}
-        }
-
-        function removeWfFile(idx){wfUploadedFiles.splice(idx,1);renderWfFiles()}
 
         function startWorkflow(){
             var t=getToken();if(!t){showToast('请先登录','error');return}
