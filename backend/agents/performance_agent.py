@@ -11,7 +11,7 @@ PerformanceAgent — 绩效评价报告生成Agent（企业级LangGraph编排 v2
   7. 多模型对比模式切换
 """
 from typing import TypedDict, List, Dict, Any, Optional, AsyncIterator
-from datetime import datetime
+from datetime import datetime, timezone
 import time, json, uuid, re
 import os
 import tempfile
@@ -852,7 +852,7 @@ class PerformanceAgent:
                 state["comparison_history"][step_number]["selected_best"] = chosen
                 # 审计：自动选择也留「谁选的、什么时候」，否则界面只能显示"当前采用"
                 state["comparison_history"][step_number]["selected_by"] = "auto"
-                state["comparison_history"][step_number]["selected_at"] = datetime.now().isoformat()
+                state["comparison_history"][step_number]["selected_at"] = datetime.now(timezone.utc).isoformat()
                 return outputs[chosen]
             raise RuntimeError("对比模型未返回结果")
 
