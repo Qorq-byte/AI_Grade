@@ -16,8 +16,8 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `main` / 批次 48 提交，工作区干净 |
-| 已完成批次 | 第三轮 B1–B48（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
+| 分支 / HEAD | `main` / 批次 49 提交，工作区干净 |
+| 已完成批次 | 第三轮 B1–B49（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
 | 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），142 个端点 |
 | 前端 | 零构建，原生 HTML/CSS/JS + `frontend/shared/` |
 | 存储 | MySQL（库 `ai_grade_d`）+ `state_backups/*.json` 磁盘投影 |
@@ -26,9 +26,10 @@
 
 | 检查 | 命令 | 当前 |
 |---|---|---|
-| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **845 passed**（CI 也跑这一条） |
+| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **856 passed**（CI 也跑这一条） |
 | 前端共享层 / SSE | `node --test tests/test_*.cjs` | **48 pass**（5 个文件） |
 | 前端联通性 | `python frontend_e2e_check.py` | **120 通过 / 0 失败** |
+| 前端契约 | `pytest tests/test_frontend_contract.py -q` | **10 通过**：0 缺失 id、0 重复 id、0 未定义事件（**不是浏览器测试**，见 `docs/ui_contract.md`） |
 | 全接口 | `python test_all_apis.py` | **47/47** |
 | 真实工作流 | `python wf_e2e.py` | **47 项 / 0 失败**（约 4~5 分钟，要真实模型） |
 | 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` / `_mutate_step9_critique.py` / `_mutate_critique_step10.py` / `_mutate_llm_resilience.py` / `_mutate_b7_enablement.py` / `_mutate_workflow_deps.py` / `_mutate_report_routes.py` / `_mutate_refine.py` / `_mutate_refine_llm.py` / `_mutate_chat_context.py` / `_mutate_chapter_refs.py` / `_mutate_candidates.py` / `_mutate_candidate_diff.py` / `_mutate_diff_all.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 / 10 / 7 / 11 / 8 / 11 / 9 / 9 / 8 / 8 / 6 / 7 / 7 / 7 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
@@ -427,21 +428,21 @@
 - **遗留**：同义词表手写、可能引噪声（样本没有"相似但无关"的干扰项）；
   弱相关指标几乎不触发，抓不到错引；仍无跨文档验证。
 
-### 批次 49（建议）：前端浏览器级冒烟——把"前端无验证"这条遗留清掉
-- **为什么是它**：B38 起每个产品批次都写着「前端无浏览器级验证」，累积了六七个交互
-  （聊天引用展开、对比面板、差异高亮、全部差异、编辑提示），一直只做字符串检查。
-- **要做**（用浏览器控制，跑真实页面）：
-  1. 登录 → 打开一个已完成会话 → 切到聊天，发一条「扣分项在哪」；
-  2. 断言：回答出现、引用徽标出现、点开有片段原文；
-  3. 切到某步骤 → 多模型对比区（若有）→ 点「差异」/「全部差异」能看到着色段落；
-  4. 截图留档（只放 `docs/` 下，不进仓库的可执行路径）。
-- **判定**：4 条交互至少 3 条通过；失败项要能指到具体 DOM/接口；产出 `docs/ui_smoke.md`。
-- **风险**：没有真实多模型会话时对比面板无数据，需要先造一份带 `comparison_history` 的备份；
-  浏览器跑在本地 8000，记得起服务与清理。
+### 批次 49 = 前端 DOM 契约检查 ✅ 已完成（替代浏览器冒烟）
+- **为什么换方案**：环境里没有 Playwright（venv 未装、`npx` 拉不到），
+  硬写"浏览器测试"会是假的；退一步做静态契约检查，专抓"点了没反应"。
+- 交付：`tests/test_frontend_contract.py`（10 条）+ `docs/ui_contract.md`。
+  检查 0 缺失 id、0 重复 id、0 未定义事件、关键锚点与对比面板接线。
+- **查出并清掉**：`renderWfFiles`/`handleWfFiles`/`removeWfFile` 三个死函数
+  （取的 `#wfFileList` 早被按类型拆分）、`#wfLayoutLabel` 死引用。
+- 判定：10 条契约全绿；变异 3/3（改坏 id/函数名/重复 id 都必须红）；
+  `test_all_apis` 47/47、`frontend_e2e` 120/0、快照 155 零差异。
+- **遗留**：不执行 JS、动态 id 抓不到、模板字符串里的 id 只宽松匹配、不验证布局。
 
 ### 批次 50（备选）
 - **C1 第五步（可选）**：再拆 SSE/上传，把 `agent_routes` 压到 ~1300；收益边际递减。
 - **跨文档验证**：需要一份非样例资料的真实报告，目前无法自行造出可信样本。
+- **真浏览器冒烟**：等环境能装 Playwright 再补，覆盖点击与异步渲染。
 
 ---
 
@@ -457,7 +458,7 @@
 
 ```bash
 cd /d/python/AI_Grade
-NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 845
+NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 856
 node --test tests/test_*.cjs                                                          # 48
 NO_PROXY='*' .venv/Scripts/python.exe -c "import backend.main"                        # 导入自检
 ```
