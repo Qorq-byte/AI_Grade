@@ -16,8 +16,8 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `main` / 批次 52 提交，工作区干净 |
-| 已完成批次 | 第三轮 B1–B52（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
+| 分支 / HEAD | `main` / 批次 53 提交，工作区干净 |
+| 已完成批次 | 第三轮 B1–B53（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
 | 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），142 个端点 |
 | 前端 | 零构建，原生 HTML/CSS/JS + `frontend/shared/` |
 | 存储 | MySQL（库 `ai_grade_d`）+ `state_backups/*.json` 磁盘投影 |
@@ -26,7 +26,7 @@
 
 | 检查 | 命令 | 当前 |
 |---|---|---|
-| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **874 passed**（CI 也跑这一条） |
+| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **879 passed**（CI 也跑这一条） |
 | 前端共享层 / SSE | `node --test tests/test_*.cjs` | **48 pass**（5 个文件） |
 | 前端联通性 | `python frontend_e2e_check.py` | **120 通过 / 0 失败** |
 | 前端契约 | `pytest tests/test_frontend_contract.py -q` | **10 通过**：0 缺失 id、0 重复 id、0 未定义事件（**不是浏览器测试**，见 `docs/ui_contract.md`） |
@@ -34,7 +34,7 @@
 | 真实工作流 | `python wf_e2e.py` | **47 项 / 0 失败**（约 4~5 分钟，要真实模型） |
 | 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` / `_mutate_step9_critique.py` / `_mutate_critique_step10.py` / `_mutate_llm_resilience.py` / `_mutate_b7_enablement.py` / `_mutate_workflow_deps.py` / `_mutate_report_routes.py` / `_mutate_refine.py` / `_mutate_refine_llm.py` / `_mutate_chat_context.py` / `_mutate_chapter_refs.py` / `_mutate_candidates.py` / `_mutate_candidate_diff.py` / `_mutate_diff_all.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 / 10 / 7 / 11 / 8 / 11 / 9 / 9 / 8 / 8 / 6 / 7 / 7 / 7 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
 | 检索基线 | `python -m tests.rag_eval.run --check` | Recall@3 **0.552**、MRR 0.483、P 0.253（证据块带 ±2 行上下文） |
-| 证据引用抽读（手动，不进 CI） | `python -m tests.rag_eval.citation_audit --session <id> --violations` | 缺失类带编号：清理前 **10 条** → 清理后 **0**（回放验证）；端到端单次 0～8 条波动，记录在 `docs/evidence_citation_audit.md` |
+| 证据引用抽读（手动，不进 CI） | `python -m tests.rag_eval.citation_audit --session <id> --violations` | 缺失类带编号（句子级口径）：清理前 **15 / 44 / 9 条** → 清理后 **0**（回放验证）；端到端单次 0～8 条波动，记录在 `docs/evidence_citation_audit.md` |
 | 聊天评测 | `python -m tests.chat_eval.run --check` | **recall 1.0（40/40）**，平均上下文 716.5 字；对照组 **0.325** |
 | 聊天抽读（手动，不进 CI） | `python -m tests.chat_eval.live --session <id> --output <md>` | 2026-11-12 / deepseek-chat / 两会话：**编造 0/10 与 0/10、引用 9/9 与 8/9、弱相关 0/10**（`docs/chat_live_eval*.md`） |
 
@@ -472,18 +472,28 @@
   不能把「0」全算成清理的功劳；指标在两次生成间波动 0～8 条。
   另：第一次重跑忘了重启服务，跑的是旧代码（已修）。
 
-### 批次 53（建议）：把清理口径扩到步骤正文 + 长句
-- **为什么**：B52 只清 `final_report`，步骤正文里的「缺 X [P1-3-1]」还在；
-  导出单章时又会出现。60 字窗口对长句也可能漏。
-- **要做**：
-  1. 在步骤 7/9/10/11 落库前应用同一清理（或抽出共用函数）；
-  2. 窗口从"60 字"改成"同一分句"（按，。；！？切分，更稳）；
-  3. 用 `citation_audit --violations` 对**步骤正文**也统计一次，给出前后数字。
-- **判定**：步骤正文与报告的违规都降到 0；正向引用数不降；`pytest` 不降。
-- **风险**：在落库前改文本，会影响"步骤内容 = 模型原文"的假设（revisions/审计）；
-  要确认导出与引用校验都从同一份文本走。
+### 批次 53 = 句子级口径 + 落库前清理 ✅ 已完成
+- 交付见 `progress_round3.md` B53。
+- 口径从「60 字窗口」改成**句子级**（按 `。；！？换行` 切，不按逗号切——
+  「缺 X，……（[P1]）」的引用常在逗号后，按逗号会漏判）；
+- 清理**前移到落库**：步骤 8–13 在 `_record_step_result` 里先清再写；步骤 7 含 JSON，跳过。
+- 回放：15 / 44 / 9 → **0**（比 60 字口径多检出 5–17 条长句）；
+  端到端（`432eb37b`）报告与步骤正文均 **0**。
+- 判定：5 条新用例 + 变异 3/3；`wf_e2e` 47/0、`test_all_apis` 47/47、快照 155 零差异。
+- **遗留**：步骤内容不再等于"模型原文"（revisions 基线也是清理后的）；句子级会连带删
+  同句正向引用；词表有限（暂无/未能获取不覆盖）；步骤 7 未覆盖。
 
-### 批次 54（备选）
+### 批次 54（建议）：记录"清理前原文" + 扩词表
+- **为什么**：B53 把步骤文本改在落库前，代价是**可追溯性**——审计想看"模型原本写了什么"
+  已经没有地方可查。这是审计类系统的硬伤，应该先补。
+- **要做**：
+  1. 清理时把去掉的编号与命中句记进 `state["citation_cleanup"]`（步骤号、句、编号）；
+  2. 扩缺失词表：暂无 / 未能获取 / 未附 / 空白；
+  3. 在报告里保留一个「引用清理台账」（可选，导出时附）。
+- **判定**：清理台账能回读；扩词表后违规仍为 0；`pytest` 不降。
+- **风险**：台账会让备份再涨一点；"原文"与"清理后"两套文本容易混用。
+
+### 批次 55（备选）
 - **C1 第五步（可选）**：再拆 SSE/上传，把 `agent_routes` 压到 ~1300；收益边际递减。
 - **跨文档验证**：需要一份非样例资料的真实报告。
 - **真浏览器冒烟**：等环境能装 Playwright。
@@ -502,7 +512,7 @@
 
 ```bash
 cd /d/python/AI_Grade
-NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 874
+NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 879
 node --test tests/test_*.cjs                                                          # 48
 NO_PROXY='*' .venv/Scripts/python.exe -c "import backend.main"                        # 导入自检
 ```
