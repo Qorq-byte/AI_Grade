@@ -16,8 +16,8 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `main` / 批次 49 提交，工作区干净 |
-| 已完成批次 | 第三轮 B1–B49（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
+| 分支 / HEAD | `main` / 批次 50 提交，工作区干净 |
+| 已完成批次 | 第三轮 B1–B50（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
 | 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），142 个端点 |
 | 前端 | 零构建，原生 HTML/CSS/JS + `frontend/shared/` |
 | 存储 | MySQL（库 `ai_grade_d`）+ `state_backups/*.json` 磁盘投影 |
@@ -26,14 +26,14 @@
 
 | 检查 | 命令 | 当前 |
 |---|---|---|
-| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **856 passed**（CI 也跑这一条） |
+| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **864 passed**（CI 也跑这一条） |
 | 前端共享层 / SSE | `node --test tests/test_*.cjs` | **48 pass**（5 个文件） |
 | 前端联通性 | `python frontend_e2e_check.py` | **120 通过 / 0 失败** |
 | 前端契约 | `pytest tests/test_frontend_contract.py -q` | **10 通过**：0 缺失 id、0 重复 id、0 未定义事件（**不是浏览器测试**，见 `docs/ui_contract.md`） |
 | 全接口 | `python test_all_apis.py` | **47/47** |
 | 真实工作流 | `python wf_e2e.py` | **47 项 / 0 失败**（约 4~5 分钟，要真实模型） |
 | 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` / `_mutate_step9_critique.py` / `_mutate_critique_step10.py` / `_mutate_llm_resilience.py` / `_mutate_b7_enablement.py` / `_mutate_workflow_deps.py` / `_mutate_report_routes.py` / `_mutate_refine.py` / `_mutate_refine_llm.py` / `_mutate_chat_context.py` / `_mutate_chapter_refs.py` / `_mutate_candidates.py` / `_mutate_candidate_diff.py` / `_mutate_diff_all.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 / 10 / 7 / 11 / 8 / 11 / 9 / 9 / 8 / 8 / 6 / 7 / 7 / 7 全抓**（串行跑，别并发；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
-| 检索基线 | `python -m tests.rag_eval.run --check` | Recall@3 **0.448**、MRR 0.391、P 0.161 |
+| 检索基线 | `python -m tests.rag_eval.run --check` | Recall@3 **0.552**、MRR 0.483、P 0.253（证据块带 ±2 行上下文） |
 | 聊天评测 | `python -m tests.chat_eval.run --check` | **recall 1.0（40/40）**，平均上下文 716.5 字；对照组 **0.325** |
 | 聊天抽读（手动，不进 CI） | `python -m tests.chat_eval.live --session <id> --output <md>` | 2026-11-12 / deepseek-chat / 两会话：**编造 0/10 与 0/10、引用 9/9 与 8/9、弱相关 0/10**（`docs/chat_live_eval*.md`） |
 
@@ -439,10 +439,31 @@
   `test_all_apis` 47/47、`frontend_e2e` 120/0、快照 155 零差异。
 - **遗留**：不执行 JS、动态 id 抓不到、模板字符串里的 id 只宽松匹配、不验证布局。
 
-### 批次 50（备选）
+### 批次 50 = 证据块带上下文：Recall@3 0.448 → 0.552 ✅ 已完成
+- 交付见 `progress_round3.md` B50。`workflow_evidence._expand_context`：
+  按 locator 的行号，把项目证据向上下各扩 2 行（副本、编号与 locator 不变）。
+- **数字**：Recall@1 0.345→0.414、Recall@3 **0.448→0.552**、MRR 0.391→0.483、
+  精确率 0.161→0.253；代价是平均证据字数 93→300。
+- 判定：扩上下文/编号不变/不改缓存/边界裁剪 —— 7 条用例 + 4 条变异全抓；
+  `test_all_apis` 47/47、`wf_e2e` 47/0、快照 155 零差异。
+- **遗留**：半径 2 是拍的（±1 约 0.50）；行号依赖"提取文本行号=原文行号"；
+  只验检索指标、没验报告质量（证据变长是否引入错引未知）。
+
+### 批次 51（建议）：验证报告质量 + 半径网格
+- **为什么**：B50 只证明"检索更容易命中锚点"，没证明"模型引用得更准"。
+  证据块变长 4 倍，模型可能引用到相邻小节的数字（错引）。
+- **要做**：
+  1. `--radius 1/2/3` 网格，选 Recall@3 与平均字数的平衡点；
+  2. 用固定样例生成一份报告（或跑 `wf_e2e` 后读它），人工抽 10 条证据引用，
+     判"是否贴题"；
+  3. 若错引明显，考虑在证据块里标出**命中行**（如 `>>` 前缀），让模型知道哪一行是关键。
+- **判定**：半径有网格数据；10 条引用的贴题率有数字；若加命中行标记，检索指标不降。
+- **风险**：标记会改变证据文本格式，可能影响既有引用解析；抽读样本仍然只有一份资料。
+
+### 批次 52（备选）
 - **C1 第五步（可选）**：再拆 SSE/上传，把 `agent_routes` 压到 ~1300；收益边际递减。
-- **跨文档验证**：需要一份非样例资料的真实报告，目前无法自行造出可信样本。
-- **真浏览器冒烟**：等环境能装 Playwright 再补，覆盖点击与异步渲染。
+- **跨文档验证**：需要一份非样例资料的真实报告。
+- **真浏览器冒烟**：等环境能装 Playwright。
 
 ---
 
@@ -458,7 +479,7 @@
 
 ```bash
 cd /d/python/AI_Grade
-NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 856
+NO_PROXY='*' .venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/rag_eval   # 864
 node --test tests/test_*.cjs                                                          # 48
 NO_PROXY='*' .venv/Scripts/python.exe -c "import backend.main"                        # 导入自检
 ```
