@@ -2029,4 +2029,409 @@ def admin_file_stats(db: Session = Depends(get_db)):
     }
 
 
+
+# ═══════════════════════════════════════════════════════
+#  系统健康
+# ═══════════════════════════════════════════════════════
+# 只报**能真测到**的东西。LLM 那栏明确标成「配置状态」而不是「连通性」——
+# 真去 ping 一次要花钱、还可能拖慢首屏；想验活最靠谱的仍然是跑一次工作流。
+# 宁可写清楚「这是配置」，也不做一个看起来像探活的假绿灯。
+
+_PROCESS_STARTED_AT = time.time()
+_disk_cache = {"at": 0.0, "data": None}
+_DISK_CACHE_TTL = 30.0
+_TREE_FILE_CAP = 50000
+
+
+def _tree_usage(path: Path) -> dict:
+    """递归统计目录下文件数与字节数；超过上限就停下并标注不完整。"""
+    files, size, truncated = 0, 0, False
+    if not path.is_dir():
+        return {"files": 0, "mb": 0.0, "truncated": False}
+    for root, _dirs, names in os.walk(path):
+        for name in names:
+            try:
+                size += os.path.getsize(os.path.join(root, name))
+                files += 1
+            except OSError:
+                continue
+            if files >= _TREE_FILE_CAP:
+                truncated = True
+                break
+        if truncated:
+            break
+    return {"files": files, "mb": round(size / 1024 / 1024, 2), "truncated": truncated}
+
+
+def _disk_snapshot(project_root: Path) -> dict:
+    """磁盘快照带 30 秒缓存：全量遍历目录不该每刷新一次都做一遍。"""
+    now = time.time()
+    if _disk_cache["data"] is not None and now - _disk_cache["at"] < _DISK_CACHE_TTL:
+        return _disk_cache["data"]
+
+    data = {
+        "uploads": _tree_usage(project_root / "uploads"),
+        "exports": _tree_usage(project_root / "backend" / "exports"),
+    }
+    try:
+        usage = shutil.disk_usage(str(project_root))
+        data["volume"] = {
+            "total_gb": round(usage.total / 1024 ** 3, 1),
+            "free_gb": round(usage.free / 1024 ** 3, 1),
+            "used_pct": round(usage.used / usage.total * 100, 1) if usage.total else 0.0,
+        }
+    except OSError as exc:
+        data["volume"] = None
+        data["volume_error"] = str(exc)
+
+    _disk_cache["data"] = data
+    _disk_cache["at"] = now
+    return data
+
+
+@router.get("/system-health")
+def admin_system_health(db: Session = Depends(get_db)):
+    """系统健康概览：进程 / 数据库 / 磁盘 / 工作流 / LLM 配置 / 清理定时器"""
+    checks = []
+
+    # ── 1. 数据库 ──
+    db_ok, db_error, latency_ms = True, None, None
+    try:
+        started = time.perf_counter()
+        db.execute(text("SELECT 1"))
+        latency_ms = round((time.perf_counter() - started) * 1000, 1)
+    except Exception as exc:  # noqa: BLE001 这里就是要抓到并展示
+        db_ok = False
+        db_error = str(exc)
+
+    pool_status = None
+    try:
+        pool_status = db.get_bind().pool.status()
+    except Exception:  # noqa: BLE001 NullPool / 自定义池没有 status()
+        pass
+
+    if not db_ok:
+        db_level = "down"
+    elif latency_ms is not None and latency_ms >= 200:
+        db_level = "warn"
+    else:
+        db_level = "ok"
+    checks.append({
+        "key": "database", "label": "数据库", "level": db_level,
+        "summary": f"{latency_ms} ms" if db_ok else "连接失败",
+        "detail": {"latency_ms": latency_ms, "pool": pool_status, "error": db_error},
+    })
+
+    # ── 2. 磁盘 ──
+    project_root = Path(__file__).resolve().parent.parent.parent
+    disk = _disk_snapshot(project_root)
+    vol = disk.get("volume")
+    if vol is None:
+        disk_level = "warn"
+        disk_summary = "无法读取磁盘信息"
+    else:
+        disk_level = "down" if vol["used_pct"] >= 95 else ("warn" if vol["used_pct"] >= 85 else "ok")
+        disk_summary = f"剩余 {vol['free_gb']} GB / 共 {vol['total_gb']} GB（已用 {vol['used_pct']}%）"
+    checks.append({
+        "key": "disk", "label": "磁盘", "level": disk_level, "summary": disk_summary,
+        "detail": disk,
+    })
+
+    # ── 3. 工作流 ──
+    wf_rows = db.query(
+        WorkflowSession.status, func.count(WorkflowSession.id)
+    ).group_by(WorkflowSession.status).all()
+    wf_counts = {status: count for status, count in wf_rows}
+    running = wf_counts.get("running", 0)
+    awaiting = wf_counts.get("awaiting_approval", 0) + wf_counts.get("paused", 0)
+    stale = 0
+    try:
+        stale = db.query(func.count(WorkflowSession.id)).filter(
+            WorkflowSession.status.in_(["created", "running", "paused"]),
+            WorkflowSession.created_at < utcnow() - timedelta(hours=24),
+        ).scalar() or 0
+    except Exception:  # noqa: BLE001 老库异常不该拦住整页
+        pass
+
+    from backend.routes import _shared_state
+    in_memory = len(_shared_state.active_workflows)
+
+    checks.append({
+        "key": "workflows", "label": "工作流", "level": "warn" if stale else "ok",
+        "summary": f"运行中 {running} · 待确认 {awaiting} · 卡住超 24h {stale}",
+        "detail": {
+            "by_status": wf_counts,
+            "in_memory": in_memory,
+            "stale_over_24h": stale,
+            "note": "进程内实例数是单 worker 的视角，多 worker 部署下各算各的",
+        },
+    })
+
+    # ── 4. LLM 配置（不是连通性） ──
+    from backend.config import settings
+
+    providers = {
+        "DeepSeek": bool(settings.DEEPSEEK_API_KEY),
+        "阿里云百炼": bool(settings.DASHSCOPE_API_KEY),
+        "OpenAI": bool(settings.OPENAI_API_KEY),
+        "Anthropic": bool(settings.ANTHROPIC_API_KEY),
+    }
+    enabled_models = db.query(ModelConfig).filter(
+        ModelConfig.is_enabled.is_(True), ModelConfig.platform != "system_config"
+    ).all()
+    # 模型也可能直接写在 .env 里（QWEN_MODELS / DEEPSEEK_MODELS …），
+    # 只数数据库里的行会得出「启用 0 个模型」，看着像坏了其实一切正常。
+    env_models = [
+        m.strip()
+        for blob in (settings.QWEN_MODELS, settings.DEEPSEEK_MODELS,
+                     settings.OPENAI_MODELS, settings.ANTHROPIC_MODELS)
+        for m in (blob or "").split(",")
+        if m.strip()
+    ]
+
+    cfg = db.query(ModelConfig).filter(ModelConfig.platform == "system_config").first()
+    saved = {}
+    if cfg and cfg.api_base_url:
+        try:
+            saved = json.loads(cfg.api_base_url) or {}
+        except Exception:
+            saved = {}
+    fallback = saved.get("fallback_models") or []
+
+    has_any_key = any(providers.values())
+    db_model_names = [m.model_name for m in enabled_models]
+    usable_models = sorted(set(env_models) | set(db_model_names))
+    llm_level = "ok" if (has_any_key and usable_models) else ("warn" if has_any_key else "down")
+    checks.append({
+        "key": "llm", "label": "LLM 配置", "level": llm_level,
+        "summary": (
+            f"默认 {settings.DEFAULT_MODEL} · 可用 {len(usable_models)} 个模型 · "
+            f"降级链 {len(fallback)} 个"
+        ),
+        "detail": {
+            "providers": providers,
+            "default_model": settings.DEFAULT_MODEL,
+            "fallback_models": fallback,
+            "env_models": env_models,
+            "db_models": db_model_names,
+            "note": "只反映配置是否齐全，不代表 Key 有效；真要验活请跑一次工作流",
+        },
+    })
+
+    # ── 5. 清理定时器 ──
+    scheduler_alive = False
+    next_run = None
+    try:
+        import backend.main as main_module
+        task = getattr(main_module, "_CLEANUP_TASK", None)
+        scheduler_alive = task is not None and not task.done()
+        from backend.utils.time_utils import local_now
+        candidate = local_now().replace(hour=3, minute=0, second=0, microsecond=0)
+        if candidate <= local_now():
+            candidate = candidate + timedelta(days=1)
+        next_run = candidate.isoformat()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("读取清理定时器状态失败: {}", str(exc))
+
+    checks.append({
+        "key": "scheduler", "label": "清理定时器", "level": "ok" if scheduler_alive else "warn",
+        "summary": "运行中，每日 03:00 清理" if scheduler_alive else "未启动（重启后才会拉起）",
+        "detail": {"alive": scheduler_alive, "next_run": next_run},
+    })
+
+    # ── 6. 进程 ──
+    from backend.config import settings as _settings_for_process
+    uptime = int(time.time() - _PROCESS_STARTED_AT)
+    checks.append({
+        "key": "process", "label": "服务进程", "level": "ok",
+        "summary": f"已运行 {uptime // 3600} 小时 {(uptime % 3600) // 60} 分",
+        "detail": {
+            "version": _settings_for_process.APP_VERSION,
+            "python": sys.version.split()[0],
+            "platform": platform.platform(),
+            "pid": os.getpid(),
+            "debug": bool(_settings_for_process.DEBUG),
+            "uptime_seconds": uptime,
+        },
+    })
+
+    order = {"down": 0, "warn": 1, "ok": 2}
+    overall = min((c["level"] for c in checks), key=lambda lv: order[lv])
+
+    return {
+        "success": True,
+        "data": {"overall": overall, "checked_at": utc_iso(utcnow()), "checks": checks},
+    }
+
+
+
+# ── 分步正文 ──────────────────────────────────────────
+# 内容不在数据库里（`reports` 表从来没被写过），真正躺在 state_backups/{sid}.json。
+# 字段名与步骤的对应关系以 performance_state.PerformanceState 的注释为准。
+
+_STEP_CONTENT_FIELDS = {
+    1: [("cost_list", "资料清单")],
+    2: [("effective_data", "核心数据提取")],
+    3: [("indicator_system", "绩效评价指标体系")],
+    4: [("indicator_scores", "指标分值分配")],
+    5: [("scoring_standards", "指标评分标准")],
+    6: [("evaluation_table", "评价指标体系表")],
+    7: [("indicator_analysis", "指标得分分析"), ("score_table", "评分表")],
+    8: [("experience_summary", "主要经验做法")],
+    9: [("problems_analysis", "问题及原因分析")],
+    10: [("suggestions", "改进建议")],
+    11: [("comprehensive_evaluation", "综合评价分析及结论")],
+    12: [("basic_info", "基本情况")],
+    13: [("work_introduction", "评价工作开展情况")],
+    14: [("final_report", "最终评价报告")],
+}
+
+_STEP_TITLES = {step: fields[0][1] for step, fields in _STEP_CONTENT_FIELDS.items()}
+
+#: 单次返回上限：最终报告能到 5 万字以上，一口气塞进 JSON 只会把浏览器拖住
+_CONTENT_CHAR_CAP = 200_000
+
+#: 备份解析缓存：{path: (mtime, size, dict)}。360KB 的 JSON 每看一次解析一次不划算。
+_BACKUP_CACHE: dict = {}
+_BACKUP_CACHE_MAX = 4
+
+
+def _project_root() -> Path:
+    """项目根目录。抽成函数是为了测试能把它指到临时目录。"""
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def _load_state_snapshot(session_id: str) -> tuple[dict, str]:
+    """返回 (状态字典, 来源)。来源：state_backup / checkpoint_data / none。
+
+    `session_id` 会被拼进文件名，所以必须先过格式校验，否则就是路径穿越。
+    """
+    from backend.routes._shared_state import _validate_session_id
+
+    _validate_session_id(session_id)
+
+    root = _project_root()
+    path = root / "state_backups" / f"{session_id}.json"
+    try:
+        stat = path.stat()
+    except OSError:
+        stat = None
+
+    if stat is not None:
+        cached = _BACKUP_CACHE.get(str(path))
+        if cached and cached[0] == stat.st_mtime and cached[1] == stat.st_size:
+            return cached[2], "state_backup"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                if len(_BACKUP_CACHE) >= _BACKUP_CACHE_MAX:
+                    _BACKUP_CACHE.pop(next(iter(_BACKUP_CACHE)), None)
+                _BACKUP_CACHE[str(path)] = (stat.st_mtime, stat.st_size, data)
+                return data, "state_backup"
+        except Exception as exc:  # noqa: BLE001 备份坏了就退回 checkpoint
+            logger.warning("读取状态备份失败 {}: {}", path.name, str(exc))
+
+    # 退回数据库里的 checkpoint（可能是 langgraph 序列化后的结构，尽量解析）
+    w = None
+    from backend.database import SessionLocal
+    try:
+        db = SessionLocal()
+        try:
+            w = db.query(WorkflowSession).filter(
+                WorkflowSession.session_id == session_id).first()
+            raw = w.checkpoint_data if w else None
+        finally:
+            db.close()
+    except Exception:  # noqa: BLE001
+        raw = None
+
+    if raw:
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return data, "checkpoint_data"
+        except Exception:  # noqa: BLE001
+            pass
+    return {}, "none"
+
+
+def _section_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, indent=2)
+    except Exception:  # noqa: BLE001
+        return str(value)
+
+
+def _sections_of(snapshot: dict) -> list:
+    """目录：哪些步骤有内容、各多长。详情页用它点亮时间线。"""
+    out = []
+    for step in range(1, 15):
+        chars = 0
+        for field, _label in _STEP_CONTENT_FIELDS[step]:
+            chars += len(_section_text(snapshot.get(field)))
+        if chars:
+            out.append({"step": step, "title": _STEP_TITLES[step], "chars": chars})
+    return out
+
+
+@router.get("/workflows/{session_id}/content")
+def admin_workflow_content(
+    session_id: str,
+    step: int = Query(..., ge=1, le=14, description="步骤号 1-14"),
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_admin_user),
+):
+    """取某一步的产出正文。
+
+    报告是用户的业务数据，管理员能看是为了核实「报告里那句话是哪来的」，
+    所以每次查看都写一条审计 —— 谁、在什么时候、看了谁的哪一步。
+    """
+    w = db.query(WorkflowSession).filter(WorkflowSession.session_id == session_id).first()
+    if not w:
+        raise HTTPException(status_code=404, detail="工作流不存在")
+
+    snapshot, source = _load_state_snapshot(session_id)
+    sections = []
+    truncated = False
+    for field, label in _STEP_CONTENT_FIELDS[step]:
+        text = _section_text(snapshot.get(field))
+        if not text:
+            continue
+        if len(text) > _CONTENT_CHAR_CAP:
+            text = text[:_CONTENT_CHAR_CAP]
+            truncated = True
+        sections.append({"field": field, "label": label, "chars": len(text), "content": text})
+
+    if not sections and step == 14 and w.final_report:
+        text = w.final_report
+        if len(text) > _CONTENT_CHAR_CAP:
+            text = text[:_CONTENT_CHAR_CAP]
+            truncated = True
+        sections.append({"field": "final_report", "label": "最终评价报告",
+                         "chars": len(text), "content": text})
+        source = "final_report_column"
+
+    _log_operation(
+        db, admin.id, admin.username, "admin_view_workflow_content",
+        resource_type="workflow", resource_id=session_id,
+        detail=f"管理员查看 {w.project_name} 第 {step} 步产出（{len(sections)} 段）",
+    )
+
+    return {
+        "success": True,
+        "data": {
+            "session_id": session_id,
+            "step": step,
+            "title": _STEP_TITLES.get(step, f"步骤 {step}"),
+            "source": source,
+            "truncated": truncated,
+            "sections": sections,
+        },
+    }
+
+
 from backend.utils.log_utils import log_operation as _log_operation
