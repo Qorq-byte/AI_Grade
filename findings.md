@@ -1,5 +1,13 @@
 # 云海睿评工程扫描与问题清单
 
+## 2026-11-13 · 客户端实时步骤
+
+- 截图对应 frontend/client/index.html；独立 workflow 页面此前已有按步骤缓存实现。
+- client 的 delta 回调只写 DOM，不保存 wfStepContents，切换即丢失；回调按执行步骤过滤却向当前查看面板写入，导致串步。
+- step_start/step_complete 无条件覆盖内容；updateWfStepper 清除 active；每次 delta 强制滚动外层，实际滚动区为 .wf-content-body。
+- 服务端可能先发 token_delta 再发 step_start，开始事件不能清掉提前收到的增量；完成正文应覆盖增量，避免重复。
+- 保留原有未提交的 client 问卷返回逻辑及 tests/test_frontend_contract.py、问卷探针改动。
+
 基线为 `main` 的 `0d24ab7`。开始时工作区有两个用户未跟踪文件，均予以保留。行号指当前工作区，明确标注基线的条目使用原始行号。
 
 ## 扫描范围
