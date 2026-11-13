@@ -162,3 +162,17 @@ def test_opening_a_questionnaire_never_regenerates_it():
 
     assert "function fetchPublishedQuestionnaire(sid)" in html
     assert html.count("fetchPublishedQuestionnaire(sid)") >= 2, "定义了却没被打开流程用上"
+
+
+def test_questionnaire_section_markup_is_not_duplicated_in_js():
+    """回归（批次 57）：`backToQuestionnaireList()` 里硬编码重建了整段问卷区。
+
+    三张统计卡 + 搜索框 + 状态筛选 + 全选 + 批量删除 + 流程 stepper，全都各抄了一份，
+    和静态标记是两份 —— 已经漂移过（`#qTotalCount` 只在 JS 里，静态标记里没有）。
+    现在改成：进表单前把这一段 HTML 存快照，返回时原样放回 + 重新拉列表。
+    """
+    html = ANALYSIS["client"]["html"]
+
+    assert html.count('id="statQPending"') == 1, "问卷区标记被复制了一份到 JS 里"
+    assert html.count('id="qStatusFilter"') == 1
+    assert "function questionnaireSectionSnapshot()" in html

@@ -1985,6 +1985,7 @@ function renderQuestionnaireForm(qs,sid,pn){
         for(var li=0;li<5;li++)h+='<label class="likert-label" onmouseover="this.style.borderColor=\'#667eea\';this.style.background=\'#ebf5ff\'" onmouseout="var r=document.querySelector(\'input[name=q_'+i+']:checked\');if(!r||r.value!==\''+li+'\'){this.style.borderColor=\'#e2e8f0\';this.style.background=\'white\'}"><input type="radio" name="q_'+i+'" value="'+li+'" onchange="markAnswered(this)" style="accent-color:#667eea">'+levels[li]+'</label>';
         h+='</div></div></div>'}
     h+='<div style="padding:20px;display:flex;gap:12px;justify-content:center"><button class="btn-export" onclick="backToQuestionnaireList()">返回列表</button><button class="btn-primary" style="padding:10px 32px" onclick="submitQuestionnaire(\''+esc(sid)+'\','+qs.length+')">提交问卷</button></div></div>';
+    questionnaireSectionSnapshot();   // 覆盖之前先把列表那套标记存下来
     panel.innerHTML=h;
 }
 function markAnswered(rb){
@@ -2007,9 +2008,22 @@ function submitQuestionnaire(sid,total){
         if(r.success){showToast('问卷提交成功！共 '+r.data.saved+' 条','success');backToQuestionnaireList()}
     }).catch(function(e){showApiError(e,{action:'提交问卷'})})
 }
+/* 问卷区的原始标记只加载一次：进表单前存快照，返回时原样放回。
+   以前这里硬编码重建了整段（三张统计卡 + 搜索 + 筛选 + 全选 + 批量删除 + stepper），
+   与静态标记两份，已经漂移过（#qTotalCount 只在 JS 里）。*/
+var _qSectionSnapshot=null;
+function questionnaireSectionSnapshot(){
+    if(_qSectionSnapshot===null){
+        var sec=document.getElementById('questionnaire');
+        _qSectionSnapshot=sec?sec.innerHTML:'';
+    }
+    return _qSectionSnapshot;
+}
 function backToQuestionnaireList(){
     window._currentQuestionData=null;
-    document.getElementById('questionnaire').innerHTML='<div class="content-header"><h1>问卷填写</h1><p>基于绩效评价指标体系生成的调查问卷，采用里克特5级量表进行评价</p></div><div class="dashboard-grid" id="questionnaireStatsGrid"><div class="stat-card"><div class="stat-header"><div class="stat-icon green"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div></div><div class="stat-label">待填写</div><div class="stat-value" id="statQPending">--</div></div><div class="stat-card"><div class="stat-header"><div class="stat-icon blue"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></div></div><div class="stat-label">已提交</div><div class="stat-value" id="statQDone">--</div></div><div class="stat-card"><div class="stat-header"><div class="stat-icon purple"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div></div><div class="stat-label">问卷总数</div><div class="stat-value" id="statQTotal">--</div></div></div><div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap"><input type="text" class="input-field" id="qSearchInput" placeholder="搜索项目名称..." style="max-width:240px" oninput="filterQuestionnaireList()"><select class="wf-select" id="qStatusFilter" onchange="filterQuestionnaireList()" style="width:140px"><option value="all">全部状态</option><option value="pending">待填写</option><option value="submitted">已提交</option></select><label style="display:flex;align-items:center;gap:4px;font-size:12px;color:#4a5568;cursor:pointer;white-space:nowrap"><input type="checkbox" id="qSelectAll" onchange="selectAllQuestionnaires()" style="width:15px;height:15px;accent-color:#667eea;cursor:pointer"> 全选</label><span style="font-size:12px;color:#a0aec0">共 <strong id="qTotalCount">0</strong> 条记录</span><button class="btn-delete" id="qBatchDelBtn" onclick="batchDeleteQuestionnaires()" disabled style="font-size:12px;padding:6px 14px;height:30px;margin-left:auto">删除选中</button><button class="btn-export" onclick="backToQuestionnaireList()" style="font-size:12px;padding:6px 14px;height:30px">返回列表</button></div><div class="dashboard-grid" id="questionnaireGrid"><p class="loading-hint">加载中...</p></div><div style="margin-top:20px"><div class="content-panel"><div class="panel-title">问卷填写流程</div><div class="panel-content"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:center"><div class="step-badge">Step 1<span>启动工作流<br>上传项目文件</span></div><span style="color:#cbd5e0;font-size:18px;line-height:68px">→</span><div class="step-badge">Step 6<span>指标体系<br>生成问卷</span></div><span style="color:#cbd5e0;font-size:18px;line-height:68px">→</span><div class="step-badge">Step 3<span>在线填写<br>5级量表评价</span></div><span style="color:#cbd5e0;font-size:18px;line-height:68px">→</span><div class="step-badge" style="background:#f0fff4;border-color:#c6f6d5;color:#22543d">Step 4<span>提交数据<br>关联分析</span></div></div></div></div></div>';
+    var sec=document.getElementById('questionnaire');
+    var snapshot=questionnaireSectionSnapshot();
+    if(sec&&snapshot)sec.innerHTML=snapshot;
     loadQuestionnaireList();
 }
 
