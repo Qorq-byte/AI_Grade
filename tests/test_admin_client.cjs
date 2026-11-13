@@ -65,7 +65,7 @@ function loadAdmin(storage, fetchImpl) {
     const localStorage = storage || memoryStorage({ access_token: 'tok-1' });
     const ctx = {
         console, Promise, Date, JSON, Object, Array, String, Number, Math, RegExp, Error,
-        setTimeout, clearTimeout, URLSearchParams, AbortController,
+        setTimeout, clearTimeout, URLSearchParams, AbortController, TextDecoder, TextEncoder,
         localStorage, sessionStorage: memoryStorage(),
         fetch: fetchImpl || (async () => response(200, { success: true })),
         document: {
@@ -509,4 +509,85 @@ test('字符串参数走 dataset，不再经过内联属性里的 JS 字符串',
 
     ctx.ACTIONS['user-change-pwd']({ dataset: { uid: '3', name: "o'brien \\ 测试" } });
     assert.deepEqual(calls, [['pwd', 3, "o'brien \\ 测试"]]);
+});
+
+// ═══════════════════════════════════════════════════════
+//  知识库批量导入的前端解析（P4-7）
+// ═══════════════════════════════════════════════════════
+
+test('CSV 解析：引号、逗号、换行、CRLF 都要对', () => {
+    const { ctx } = loadAdmin();
+    const rows = ctx.parseCsv('a,"带,逗号","带""引号"""\r\nb,"多\n行",c\r\n');
+
+    assert.equal(rows.length, 2);
+    // 数组来自 vm 沙箱，跨 realm 不能用 deepEqual（原型不同）
+    assert.equal(JSON.stringify(rows[0]), JSON.stringify(['a', '带,逗号', '带"引号"']));
+    assert.equal(JSON.stringify(rows[1]), JSON.stringify(['b', '多\n行', 'c']));
+});
+
+test('CSV 解析：空行不算数据行', () => {
+    const { ctx } = loadAdmin();
+    assert.equal(ctx.parseCsv('a,b\n\n\nc,d\n').length, 2);
+});
+
+test('带中文表头的 CSV 按列名映射', () => {
+    const { ctx } = loadAdmin();
+    const items = ctx.parseKnowledgeImport(
+        '名称,内容,分类,步骤,层级\n条目A,内容A,绩效,3,2\n条目B,内容B,,,\n'
+    );
+
+    assert.equal(items.length, 2);
+    assert.equal(items[0].name, '条目A');
+    assert.equal(items[0].content, '内容A');
+    assert.equal(items[0].category, '绩效');
+    assert.equal(items[0].step_number, 3);
+    assert.equal(items[0].indicator_level, 2);
+    assert.equal(items[0].is_active, true);
+    assert.equal(items[1].step_number, null);
+    assert.equal(items[1].category, null);
+});
+
+test('没有表头时按「名称,内容,分类,步骤」的位置解析', () => {
+    const { ctx } = loadAdmin();
+    const items = ctx.parseKnowledgeImport('条目A,内容A,绩效,3\n条目B,内容B,,\n');
+
+    assert.equal(items.length, 2);
+    assert.equal(items[0].name, '条目A');
+    assert.equal(items[0].step_number, 3);
+});
+
+test('JSON 数组与 {items:[]} 两种形态都认', () => {
+    const { ctx } = loadAdmin();
+    const arr = ctx.parseKnowledgeImport('[{"name":"A","content":"a"}]');
+    const wrapped = ctx.parseKnowledgeImport('{"items":[{"name":"B","content":"b"}]}');
+
+    assert.equal(arr[0].name, 'A');
+    assert.equal(wrapped[0].name, 'B');
+});
+
+test('逐条清洗：去空白、空串转 null、启用的几种写法都认', () => {
+    const { ctx } = loadAdmin();
+    const item = ctx.normalizeKbItem({
+        name: '  条目  ', content: ' 内容 ', category: '  ',
+        step_number: '7', indicator_level: '', is_active: '0',
+    });
+
+    assert.equal(item.name, '条目');
+    assert.equal(item.content, '内容');
+    assert.equal(item.category, null);
+    assert.equal(item.step_number, 7);
+    assert.equal(item.indicator_level, null);
+    assert.equal(item.is_active, false);
+});
+
+test('空输入返回空数组，而不是抛异常', () => {
+    const { ctx } = loadAdmin();
+    assert.equal(ctx.parseKnowledgeImport('').length, 0);
+    assert.equal(ctx.parseKnowledgeImport('   \n  ').length, 0);
+});
+
+test('带 BOM 的文件能正确解析', () => {
+    const { ctx } = loadAdmin();
+    const items = ctx.parseKnowledgeImport('\uFEFF名称,内容\n条目A,内容A\n');
+    assert.equal(items[0].name, '条目A');
 });
