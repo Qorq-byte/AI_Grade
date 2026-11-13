@@ -1427,7 +1427,7 @@ function rollbackStep(sn,version,btn){
     }).catch(function(e){btn.disabled=false;btn.textContent='回滚';showToast('回滚失败：'+e.message,'error')});
 }
 
-        function wfStepStatus(sn){if(wfCompletedSteps.indexOf(sn)>=0)return 'done';if(wfRunning&&sn===wfCurrentStep)return 'doing';return 'pending'}
+        function wfStepStatus(sn){if(wfCompletedSteps.indexOf(sn)>=0)return 'done';if(sn===wfCurrentStep){if(wfStatus==='failed')return 'error';if(wfStatus==='awaiting_approval'||wfStatus==='paused')return 'awaiting';if(wfRunning)return 'doing'}return 'pending'}
         function renderMd(t){if(!t)return'';var h=t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');h=h.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');h=h.replace(/### (.+)/g,'<h3>$1</h3>');h=h.replace(/## (.+)/g,'<h2>$1</h2>');h=h.replace(/# (.+?)\n/g,'<h1>$1</h1>');h=h.replace(/- (.+)/g,'&bull; $1');h=h.replace(/\n/g,'<br>');return h}
 
         function updateWfStepper(){
@@ -1573,6 +1573,8 @@ var body={session_id:wfSessionId,use_rag:document.getElementById("wfUseRag").che
             wfStatusController = new AbortController();
             const request = (url, options) => fetch(url, {...options, headers:{Authorization:'Bearer '+getToken()}});
             watchWorkflowStatus(wfSessionId, request, data => {
+                var follow=!wfSelectedStep||wfSelectedStep===wfCurrentStep;
+                var selectedStatus=wfStepStatus(wfSelectedStep),selectedContent=wfStepContents[wfSelectedStep];
                 wfStatus = data.status;
                 wfRunning = ['running','retrying','awaiting_approval','paused'].includes(wfStatus);
                 document.getElementById('wfStartBtn').disabled = wfRunning;
@@ -1605,9 +1607,10 @@ var body={session_id:wfSessionId,use_rag:document.getElementById("wfUseRag").che
                     document.getElementById('wfApprovalModal').style.display = 'none';
                 }
                 updateWfStepper();
+                var target=follow?(wfCurrentStep||wfCompletedSteps.at(-1)):wfSelectedStep;
+                if(target&&(target!==wfSelectedStep||selectedStatus!==wfStepStatus(target)||selectedContent!==wfStepContents[target]))selectWfStep(target);
                 if (wfStatus === 'completed') {
                     document.getElementById('wfExports').style.display = 'flex';
-                    if (wfCompletedSteps.length) selectWfStep(wfCompletedSteps.at(-1));
                 }
                 if (data.review_steps.length) showToast('待复核步骤：' + data.review_steps.join('、'), 'warn');
             }, () => {

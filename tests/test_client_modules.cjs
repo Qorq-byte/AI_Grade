@@ -279,6 +279,37 @@ test('仅内容区贴底跟随，上翻停留，滚回底部恢复，切换保�
     assert.equal(e.body().scrollTop, e.body().scrollHeight);
 });
 
+test('状态恢复能刷新所选步骤，保留手动选择，且相同轮询不重建面板', () => {
+    const e = workflowContext();
+    for (const id of ['wfStartBtn', 'wfRetryBtn', 'wfProgress', 'wfLayout',
+        'wfProjectName', 'wfApprovalModal', 'wfExports']) e.elements.set(id, makeElement(id));
+    let onStatus;
+    e.ctx.watchWorkflowStatus = (_session, _request, callback) => { onStatus = callback; };
+    const status = (current, completed, summaries = []) => onStatus({status: 'running',
+        current_step: current, completed_steps: completed, step_summaries: summaries,
+        review_steps: [], requires_approval: false});
+    e.ctx.restoreWorkflow();
+    status(4, []);
+    assert.equal(e.ctx.wfSelectedStep, 4);
+    assert.match(e.panel.innerHTML, /正在生成内容/);
+    e.ctx.selectWfStep(5);
+    status(4, [3], [{step_number: 3, content: 'three', version: 1}]);
+    assert.equal(e.ctx.wfSelectedStep, 5);
+    assert.match(e.panel.innerHTML, /该步骤尚未开始/);
+    status(5, [3, 4], [{step_number: 4, content: 'four', version: 1}]);
+    assert.match(e.panel.innerHTML, /正在生成内容/);
+    const previousBody = e.body();
+    status(5, [3, 4]);
+    assert.equal(e.body(), previousBody, 'identical status must not reset input/scroll');
+    status(6, [3, 4, 5], [{step_number: 5, content: 'five', version: 1}]);
+    assert.equal(e.ctx.wfSelectedStep, 6);
+    e.ctx.selectWfStep(5);
+    assert.match(e.panel.innerHTML, /five/);
+    status(6, [3, 4, 5], [{step_number: 5, content: 'five-updated', version: 2}]);
+    assert.equal(e.ctx.wfSelectedStep, 5);
+    assert.match(e.panel.innerHTML, /five-updated/);
+});
+
 test('switchTab 只切 class，不写 style.display，并同步 hash', async () => {
     const calls = [];
     const { ctx, elements, navLinks, history } = buildContext(async (url) => {
