@@ -325,15 +325,8 @@ def delete_account(current_user: User = Depends(get_current_user), db: Session =
         db.query(Project.id).filter(Project.user_id == user_id).subquery()
     )).delete(synchronize_session=False)
 
-    # 4. 删除项目文件（file_processor上传路径）
-    upload_dir = Path(__file__).parent.parent.parent / "uploads"
-    for proj in projects:
-        # 删除与项目相关的所有上传文件
-        for f in upload_dir.glob(f"*_{user_id}_*"):
-            try:
-                f.unlink()
-            except Exception:
-                pass
+    # 4. 磁盘上的上传件与导出件在数据库提交之后再清（见函数末尾）——
+    #    提前删盘的话，一旦提交失败，文件就白丢了。
 
     # 5. 删除工作流会话（问卷答案、报告等关联数据）
     sessions = db.query(WorkflowSession).filter(WorkflowSession.user_id == user_id).all()
@@ -380,6 +373,15 @@ def delete_account(current_user: User = Depends(get_current_user), db: Session =
     # 14. 最后删除用户本身
     db.delete(current_user)
     db.commit()
+
+    # 15. 数据库已经提交，再清磁盘：uploads/u{id}_* 与 backend/exports/{id}/
+    #     原来的 glob 写的是 `*_{user_id}_*`，而实际文件名是 `u{id}_...`，
+    #     根本匹配不上 —— 等于从来没删过。
+    try:
+        from backend.services.cleanup_service import CleanupService
+        CleanupService.purge_user_disk_artifacts(user_id)
+    except Exception as e:  # noqa: BLE001 磁盘清理失败不该让注销接口报错
+        logger.error(f"清理用户磁盘残留失败: user_id={user_id} err={e}")
 
     logger.info(f"用户账号及全部数据已注销: username={username}, user_id={user_id}")
     return {"success": True, "message": "账号及所有关联数据已成功注销"}
