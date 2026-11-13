@@ -741,6 +741,206 @@ def admin_list_workflows(
     }
 
 
+
+# ═══════════════════════════════════════════════════════
+#  工作流详情 / 手动终止
+# ═══════════════════════════════════════════════════════
+# 健康页能报出「N 个卡住超 24h」，但没法点进去看是哪一个、卡在第几步、报了什么错。
+# 这两个接口补的就是那段闭环：定位 → 处置。
+
+_TERMINAL_WF_STATUS = {"completed", "failed", "cancelled"}
+
+
+def _parse_json_list(raw) -> list:
+    """errors / warnings / completed_steps 都是 JSON 字符串，坏了就当空。"""
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return raw
+    try:
+        value = json.loads(raw)
+    except Exception:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _parse_completed_steps(raw) -> list[int]:
+    steps = []
+    for item in _parse_json_list(raw):
+        try:
+            steps.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return sorted(set(steps))
+
+
+@router.get("/workflows/{session_id}")
+def admin_workflow_detail(session_id: str, db: Session = Depends(get_db)):
+    """单个工作流的完整画像：步骤时间线、错误、Token 分布、已产出的报告"""
+    from backend.routes import _shared_state
+
+    w = db.query(WorkflowSession).filter(WorkflowSession.session_id == session_id).first()
+    if not w:
+        raise HTTPException(status_code=404, detail="工作流不存在")
+
+    done_steps = _parse_completed_steps(w.completed_steps)
+    progress = dict(_shared_state._WORKFLOW_PROGRESS.get(session_id) or {})
+    live_step = int(progress.get("last_step") or progress.get("current_step") or 0)
+    current_step = live_step or (w.current_step or 0)
+
+    # 14 步逐格状态（在 tokens_by_step 之后计算，需要用到 token 作为「跑过」的证据）
+
+    # Token 按步骤分布（一条 group by，不要逐行懒加载）
+    token_rows = db.query(
+        TokenUsage.step_number, func.sum(TokenUsage.total_tokens)
+    ).filter(TokenUsage.session_id == session_id).group_by(TokenUsage.step_number).all()
+    tokens_by_step = [
+        {"step": row[0], "tokens": int(row[1] or 0)}
+        for row in sorted(token_rows, key=lambda r: (r[0] is None, r[0] or 0))
+    ]
+
+    # 有 token 消耗但没进 completed_steps 的步骤 = 跑过但没跑完。
+    # 真实库里这种会话很常见：第 1 步烧了 3500 token 然后卡死，completed_steps 是空的 ——
+    # 只按 completed_steps 画会显示成「一步都没做」，把问题掩盖掉。
+    touched_steps = {t["step"] for t in tokens_by_step if t["step"] and t["tokens"] > 0}
+    tokens_map = {t["step"]: t["tokens"] for t in tokens_by_step}
+
+    timeline = []
+    for step in range(1, 15):
+        if step in done_steps:
+            state = "done"
+        elif step == current_step and w.status not in _TERMINAL_WF_STATUS:
+            state = "current"
+        elif step in touched_steps:
+            state = "partial"
+        else:
+            state = "pending"
+        timeline.append({"step": step, "state": state, "tokens": tokens_map.get(step, 0)})
+
+    # 产出物。注意：`reports` 表实际上没人写入（全仓没有 db.add(Report)），
+    # 真正的内容在 `final_report`、`checkpoint_data` 和 state_backups 里的 JSON。
+    # 第一版照着 reports 表查，结果永远是空的 —— 这种「看起来有、其实没有」的字段
+    # 比缺字段更糟，所以这里如实报「有多大」，而不是列一堆空行。
+    root = _project_root()
+    backup_file = root / "state_backups" / f"{w.session_id}.json"
+    try:
+        backup_kb = round(backup_file.stat().st_size / 1024, 1) if backup_file.is_file() else None
+    except OSError:
+        backup_kb = None
+    artifacts = {
+        "final_report_chars": len(w.final_report or ""),
+        "checkpoint_kb": round(len(w.checkpoint_data or "") / 1024, 1),
+        "state_backup_kb": backup_kb,
+    }
+
+    # 卡住时长：未终态 + 有创建时间才算
+    stalled_hours = None
+    if w.status not in _TERMINAL_WF_STATUS and w.created_at:
+        stalled_hours = round((utcnow() - w.created_at).total_seconds() / 3600, 1)
+
+    username = None
+    if w.user_id:
+        row = db.query(User.username).filter(User.id == w.user_id).first()
+        username = row[0] if row else None
+
+    return {
+        "success": True,
+        "data": {
+            "session_id": w.session_id,
+            "project_name": w.project_name,
+            "project_type": w.project_type,
+            "user_id": w.user_id,
+            "username": username,
+            "status": w.status,
+            "current_step": current_step,
+            "total_steps": 14,
+            "model_name": w.model_name,
+            "use_rag": bool(w.use_rag),
+            "comparison_mode": w.comparison_mode,
+            "token_used": w.token_used,
+            "created_at": utc_iso(w.created_at),
+            "updated_at": utc_iso(w.updated_at),
+            "completed_at": utc_iso(w.completed_at),
+            "stalled_hours": stalled_hours,
+            "timeline": timeline,
+            "completed_steps": done_steps,
+            "errors": _parse_json_list(w.errors),
+            "warnings": _parse_json_list(w.warnings),
+            "tokens_by_step": tokens_by_step,
+            "artifacts": artifacts,
+            # 哪些步骤有正文可看（详情页用它点亮时间线），取自 state_backups
+            "sections": _sections_of(_load_state_snapshot(w.session_id)[0]),
+            "live": {
+                "in_memory": bool(progress),
+                "status": progress.get("status"),
+                "last_step": live_step or None,
+                "has_error": bool(progress.get("has_error")),
+                "started_steps": progress.get("started_steps") or [],
+            },
+        },
+    }
+
+
+@router.post("/workflows/{session_id}/fail")
+def admin_fail_workflow(
+    session_id: str,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_admin_user),
+):
+    """把卡住的工作流标记为失败（健康页发现异常后的处置动作）。
+
+    只对未终态生效：已经 completed 的会话被误标成 failed，会让用户丢掉报告入口。
+    """
+    from backend.routes import _shared_state
+
+    w = db.query(WorkflowSession).filter(WorkflowSession.session_id == session_id).first()
+    if not w:
+        raise HTTPException(status_code=404, detail="工作流不存在")
+    if w.status in _TERMINAL_WF_STATUS:
+        raise HTTPException(status_code=400, detail=f"工作流已是终态（{w.status}），无需处置")
+
+    old_status = w.status
+    w.status = "failed"
+    w.completed_at = utcnow()
+    errors = _parse_json_list(w.errors)
+    errors.append({
+        "step": w.current_step,
+        "message": f"管理员手动终止（原状态 {old_status}）",
+        "by": admin.username,
+    })
+    w.errors = json.dumps(errors, ensure_ascii=False)
+    db.commit()
+
+    # 进程内实例与进度一起收掉，否则列表还会显示它在「运行中」
+    released = False
+    try:
+        inst = _shared_state.active_workflows.pop(session_id, None)
+        if inst is not None:
+            released = True
+            try:
+                inst.close()
+            except Exception:  # noqa: BLE001 关闭失败不影响标记结果
+                pass
+        _shared_state.active_workflow_configs.pop(session_id, None)
+        _shared_state._WORKFLOW_PROGRESS.pop(session_id, None)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("清理工作流内存状态失败: {} {}", session_id, str(exc))
+
+    _log_operation(
+        db, admin.id, admin.username, "admin_fail_workflow",
+        resource_type="workflow", resource_id=session_id,
+        detail=f"管理员将工作流 {session_id}（{w.project_name}）从 {old_status} 标记为失败",
+    )
+
+    return {
+        "success": True,
+        "message": f"已标记为失败（原状态 {old_status}）",
+        "data": {"released_in_memory": released},
+    }
+
+
 # ═══════════════════════════════════════════════════════
 #  模型管理
 # ═══════════════════════════════════════════════════════
