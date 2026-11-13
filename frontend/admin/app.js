@@ -998,7 +998,7 @@ async function loadAuditLogs(){
     var main=document.getElementById('main-content');
     main.innerHTML='<div class="page-header"><h2>📋 审计日志</h2><p>追踪所有关键操作记录</p></div>'+
         '<div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap"><select id="audit-action-filter" style="padding:7px 11px;background:var(--card);border:1px solid var(--border);border-radius:7px;color:var(--text);font-size:0.85rem"><option value="">全部操作</option><option value="login">登录</option><option value="logout">登出</option><option value="admin_create_user">创建用户</option><option value="admin_update_user">更新用户</option><option value="admin_delete_user">删除用户</option><option value="workflow_start">启动工作流</option><option value="workflow_complete">完成工作流</option></select>'+
-        '<input id="audit-user-filter" placeholder="用户ID" style="padding:7px 11px;background:var(--card);border:1px solid var(--border);border-radius:7px;color:var(--text);width:100px;font-size:0.85rem"><button class="btn btn-sm" onclick="loadAuditSummary()">📊 统计</button></div>'+
+        '<input id="audit-user-filter" placeholder="用户ID" style="padding:7px 11px;background:var(--card);border:1px solid var(--border);border-radius:7px;color:var(--text);width:100px;font-size:0.85rem"><button class="btn btn-sm" onclick="loadAuditSummary()">📊 统计</button><button class="btn btn-sm" onclick="exportAuditCsv()">⬇ 导出 CSV</button></div>'+
         '<div id="audit-table-container" class="card"><div class="empty-state">加载中...</div></div><div id="audit-pagination" class="pagination"></div>';
     document.getElementById('audit-action-filter').addEventListener('change',function(){auditAction=this.value;auditPage=1;refreshAuditLogs()});
     document.getElementById('audit-user-filter').addEventListener('input',debounce(function(){auditUserId=this.value;auditPage=1;refreshAuditLogs()},300));
@@ -1590,3 +1590,47 @@ async function cleanupStuckWorkflows(){
         if(r&&r.success){showToast('已清理 '+r.data.cleaned_count+' 个卡住工作流','success');loadCleanupPage()}else{showToast('清理失败','error')}
     }catch(e){showToast('清理失败: '+e.message,'error')}
 }
+// ══════════════════════════════════════════════════════
+//  审计导出 / 通知批量撤回 / 知识库批量导入
+// ══════════════════════════════════════════════════════
+
+// 下载走裸 fetch：api() 只处理 JSON，拿不到二进制和响应头
+async function downloadCsv(url,fallbackName){
+    var resp;
+    try{
+        resp=await fetch(url,{headers:{'Authorization':'Bearer '+accessToken}});
+    }catch(e){
+        showToast('导出失败：网络错误','error');return;
+    }
+    if(!resp.ok){
+        var detail='HTTP '+resp.status;
+        try{var body=await resp.json();if(body&&body.detail)detail=body.detail}catch(e){}
+        showToast('导出失败：'+detail,'error');return;
+    }
+    var blob=await resp.blob();
+    var cd=resp.headers.get('Content-Disposition')||'';
+    var m=/filename="([^"]+)"/.exec(cd);
+    var name=m?m[1]:fallbackName;
+    var objUrl=URL.createObjectURL(blob);
+    var a=document.createElement('a');
+    a.href=objUrl;a.download=name;a.click();
+    URL.revokeObjectURL(objUrl);
+
+    var rows=resp.headers.get('X-Export-Rows'),total=resp.headers.get('X-Export-Total');
+    if(rows&&total&&Number(total)>Number(rows)){
+        showToast('已导出 '+rows+' 条（共 '+total+' 条命中，已达单次上限）');
+    }else if(rows){
+        showToast('已导出 '+rows+' 条');
+    }else{
+        showToast('已导出');
+    }
+}
+
+function exportAuditCsv(){
+    var p=new URLSearchParams();
+    if(auditAction)p.set('action',auditAction);
+    if(auditUserId)p.set('user_id',auditUserId);
+    var qs=p.toString();
+    downloadCsv(API_BASE+'/audit-logs/export'+(qs?'?'+qs:''),'audit_logs.csv');
+}
+

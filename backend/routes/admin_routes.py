@@ -3,7 +3,7 @@ Admin 管理路由
 仪表盘统计 / 用户管理 / 操作日志审计 / 系统配置
 所有端点需要管理员权限
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, text, case
@@ -2632,6 +2632,88 @@ def admin_workflow_content(
             "sections": sections,
         },
     }
+
+
+# ═══════════════════════════════════════════════════════
+#  审计导出 / 通知批量撤回 / 知识库批量导入
+# ═══════════════════════════════════════════════════════
+
+_EXPORT_ROW_CAP = 50000
+
+
+def _csv_cell(value) -> str:
+    """CSV 单元格：转义引号逗号换行，并掐掉公式注入。
+
+    Excel 会把以 = + - @ 开头的单元格当公式执行，前导单引号可以让它按文本处理。
+    """
+    text = "" if value is None else str(value)
+    if text[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        text = "'" + text
+    if any(ch in text for ch in (",", '"', "\n", "\r")):
+        text = '"' + text.replace('"', '""') + '"'
+    return text
+
+
+def _audit_filtered_query(db: Session, action, user_id, start_date, end_date):
+    """审计列表与导出共用同一套筛选，避免两边口径漂移。"""
+    q = db.query(OperationLog)
+    if action:
+        q = q.filter(OperationLog.action == action)
+    if user_id:
+        q = q.filter(OperationLog.user_id == user_id)
+    if start_date:
+        try:
+            q = q.filter(OperationLog.created_at >= datetime.fromisoformat(start_date))
+        except ValueError:
+            pass
+    if end_date:
+        try:
+            q = q.filter(OperationLog.created_at <= datetime.fromisoformat(end_date))
+        except ValueError:
+            pass
+    return q
+
+
+@router.get("/audit-logs/export")
+def admin_export_audit_logs(
+    action: Optional[str] = None,
+    user_id: Optional[int] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_admin_user),
+):
+    """把当前筛选条件下的审计日志导成 CSV（合规场景要用）。"""
+    q = _audit_filtered_query(db, action, user_id, start_date, end_date)
+    total = q.count()
+    rows = q.order_by(OperationLog.created_at.desc()).limit(_EXPORT_ROW_CAP).all()
+
+    header = ["时间", "操作", "用户", "用户ID", "资源类型", "资源ID", "详情", "IP"]
+    lines = [",".join(header)]
+    for r in rows:
+        lines.append(",".join(_csv_cell(v) for v in (
+            utc_iso(r.created_at), r.action, r.username, r.user_id,
+            r.resource_type, r.resource_id, r.detail, r.ip_address,
+        )))
+
+    _log_operation(
+        db, admin.id, admin.username, "admin_export_audit_logs",
+        resource_type="audit", resource_id="audit-logs",
+        detail=f"导出审计日志 {len(rows)} 条（共 {total} 条命中，上限 {_EXPORT_ROW_CAP}）",
+    )
+
+    body = "\ufeff" + "\r\n".join(lines)
+    filename = f"audit_logs_{utcnow().strftime('%Y%m%d_%H%M')}.csv"
+    return Response(
+        content=body.encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            # 前端要读这个头告诉用户「被截断了没」
+            "X-Export-Rows": str(len(rows)),
+            "X-Export-Total": str(total),
+        },
+    )
 
 
 from backend.utils.log_utils import log_operation as _log_operation
