@@ -27,7 +27,12 @@ security = HTTPBearer()
 # 未完成首登改密时，除下面这些路径外一律 403。
 # 必须放开改密接口本身，否则用户被锁死在一个「改不了密也干不了事」的死角里。
 PASSWORD_CHANGE_EXEMPT_PATHS = (
-    "/api/client/password",   # 唯一的改密入口
+    "/api/client/password",   # 客户端改密入口
+    # 管理端自助改密。没有这一条，被强制改密的 admin 会被锁死在管理端外面：
+    # 改密表单渲染在系统设置页，而设置页本身要先调 `/api/admin/settings`（403），
+    # 表单永远出不来 —— 既改不了密，也干不了任何事。
+    # 只放行 `/api/admin/me` 这一个前缀（自身信息 + 改密），不含任何业务数据接口。
+    "/api/admin/me",
     "/api/auth/me",           # 前端要知道自己是谁、还差哪一步
     "/api/auth/login",
     "/api/auth/logout",
@@ -136,6 +141,16 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="账号已被禁用",
+        )
+
+    # 改密后旧 token 立即失效：JWT 里的 ver 与账号上的 token_version 必须一致。
+    # 老 token 没有 ver claim，取默认 0 —— 正好等于老用户列的初始值，
+    # 所以这次升级不会把任何人踢下线；只有「改密之后」才会对不上。
+    if int(payload.get("ver") or 0) != int(getattr(user, "token_version", 0) or 0):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="登录状态已失效，请重新登录",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     # 初始口令未改：只放行改密与自身信息，其余一律挡住
