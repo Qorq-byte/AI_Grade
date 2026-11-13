@@ -28,6 +28,7 @@ from backend.config import settings
 from backend.database import get_db
 from backend.middleware.auth_middleware import get_current_user
 from backend.models.user_models import User, UserRole, WorkflowSession
+from backend.utils.time_utils import utc_iso
 from backend.routes import _shared_state
 from backend.routes._shared_state import _published_questionnaire
 from backend.routes._workflow_deps import (
@@ -142,7 +143,7 @@ async def get_questionnaire_answers(session_id: str):
                 "related_indicator_name": r.related_indicator_name,
                 "selected_level_index": r.selected_level_index,
                 "text_answer": r.text_answer,
-                "submitted_at": r.submitted_at.isoformat() if r.submitted_at else None,
+                "submitted_at": utc_iso(r.submitted_at),
             } for r in rows],
             "total": len(rows),
         }

@@ -42,6 +42,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from backend.config import settings
 from backend.routes import _shared_state
+from backend.utils.time_utils import utc_iso, utcnow
 from backend.routes._shared_state import _validate_session_id
 from backend.services import llm_resilience, refine
 from backend.routes._workflow_deps import (
@@ -760,7 +761,7 @@ def _make_sse_event(event_type: str, data: dict, seq: int = 0) -> str:
     带 seq 时输出 `id: {seq}`，浏览器断线后可携带 Last-Event-ID 续传；
     不带 seq 时保持原格式（兼容旧客户端与单元测试）。
     """
-    payload = {"event": event_type, **data, "timestamp": datetime.now().isoformat(), "seq": seq or 0}
+    payload = {"event": event_type, **data, "timestamp": utc_iso(utcnow()), "seq": seq or 0}
     body = f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
     return f"id: {seq}\n{body}" if seq else body
 

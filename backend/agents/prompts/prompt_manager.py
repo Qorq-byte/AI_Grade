@@ -273,7 +273,9 @@ class PromptManager:
             existing.version = (existing.version or 0) + 1
             existing.modified_by = modified_by
             existing.change_log = change_log or f"手动更新 v{existing.version}"
-            existing.updated_at = datetime.now()
+            # 必须写 UTC：这张表的其它行是 datetime.utcnow 的产物，
+            # 混进本地时间会让「最后修改」显示出 8 小时偏差
+            existing.updated_at = datetime.utcnow()
             record = existing
         else:
             record = PromptTemplate(
@@ -340,7 +342,7 @@ class PromptManager:
                 record.step_name = step_name
                 record.version = (record.version or 0) + 1
                 record.change_log = "重置为系统默认模板"
-                record.updated_at = datetime.now()
+                record.updated_at = datetime.utcnow()
             else:
                 record = PromptTemplate(
                     step_number=sn,

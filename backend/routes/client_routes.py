@@ -29,6 +29,7 @@ from backend.models.memory_models import (
 from backend.config import settings
 from backend.routes import _shared_state
 from backend.services import chat_context
+from backend.utils.time_utils import utc_iso, utcnow
 
 router = APIRouter(prefix="/api/client", tags=["客户端功能"])
 
@@ -217,7 +218,7 @@ def get_client_me(current_user: User = Depends(get_current_user), db: Session = 
             "avatar_url": current_user.avatar_url,
             "is_active": current_user.is_active,
             "tokens_used": current_user.tokens_used,
-            "created_at": current_user.created_at.isoformat(),
+            "created_at": utc_iso(current_user.created_at),
             "project_count": project_count,
             "completed_workflows": completed_workflows,
             "report_count": report_count,
@@ -395,8 +396,8 @@ def create_conversation(req: CreateConversationRequest, current_user: User = Dep
         "data": {
             "id": conv.id,
             "title": conv.title,
-            "created_at": conv.created_at.isoformat(),
-            "updated_at": conv.updated_at.isoformat(),
+            "created_at": utc_iso(conv.created_at),
+            "updated_at": utc_iso(conv.updated_at),
         }
     }
 
@@ -418,8 +419,8 @@ def list_conversations(current_user: User = Depends(get_current_user), db: Sessi
             {
                 "id": c.id,
                 "title": c.title,
-                "created_at": c.created_at.isoformat(),
-                "updated_at": c.updated_at.isoformat(),
+                "created_at": utc_iso(c.created_at),
+                "updated_at": utc_iso(c.updated_at),
                 "message_count": msg_counts.get(c.id, 0),
             }
             for c in conversations
@@ -437,10 +438,10 @@ def get_conversation(conversation_id: int, current_user: User = Depends(get_curr
         "data": {
             "id": conv.id,
             "title": conv.title,
-            "created_at": conv.created_at.isoformat(),
-            "updated_at": conv.updated_at.isoformat(),
+            "created_at": utc_iso(conv.created_at),
+            "updated_at": utc_iso(conv.updated_at),
             "messages": [
-                {"id": m.id, "role": m.role, "content": m.content, "created_at": m.created_at.isoformat()}
+                {"id": m.id, "role": m.role, "content": m.content, "created_at": utc_iso(m.created_at)}
                 for m in conv.messages
             ]
         }
@@ -796,8 +797,8 @@ def get_user_reports(current_user: User = Depends(get_current_user), db: Session
             "session_id": r.session_id,
             "project_name": r.project_name,
             "status": status_map.get(r.status, r.status or "已完成"),
-            "created_at": r.created_at.isoformat() if r.created_at else "",
-            "updated_at": r.updated_at.isoformat() if r.updated_at else "",
+            "created_at": utc_iso(r.created_at) if r.created_at else "",
+            "updated_at": utc_iso(r.updated_at) if r.updated_at else "",
             "review": review,
         })
 
@@ -933,7 +934,7 @@ def get_notifications(
                     "title": n.title,
                     "content": n.content,
                     "is_read": n.is_read,
-                    "created_at": n.created_at.isoformat(),
+                    "created_at": utc_iso(n.created_at),
                 }
                 for n in notifications
             ],
