@@ -7219,3 +7219,101 @@ return cleaned, sum(len(item["removed_ids"]) for item in removals)
    刷新页面后不会恢复（与 B53 之前的行为一致，未变得更差）。
 6. **步骤 3/6/11 的审批面板与实时面板会同时出现**：审批时实时面板还留着上一步的正文，
    视觉上有点挤，但没有功能冲突；没在真机上确认过用户是否觉得干扰。
+
+---
+
+# 批次 56：问卷「点不开、填不了」（用户报障）
+
+> 用户报：在「问卷填写」里点问卷，打不开也没法填。
+> 这一次没有靠读代码猜 —— 先加了一个真浏览器探针（Chrome + CDP），
+> 首轮就把"点了没反应"和"渲染失败"分开了。
+
+## B56.1 起点（取证）
+
+新增 `tests/_probe_questionnaire_fill.py`：登录 → `/client#questionnaire` → 点卡片 → 数
+`#questionnaire input[type=radio]`。首轮结果：
+
+| 动作 | 结果 |
+|---|---|
+| 点卡片空白处 | **radio = 0**（什么也没发生） |
+| 点项目名 | radio = 25（5 题 × 5 档，能填） |
+
+三条根因：
+
+1. **可点区域只有 30px。** `renderQuestionnaireGrid` 只给 `.stat-label`（项目名那一小块）
+   挂了 `onclick="openQuestionnaire(...)"`，卡片本身是 `cursor:default`。用户点图标、
+   点「5 题 待填写」、点空白处，全都没反应 —— 这就是"点不开"。
+2. **打开 = 重新生成。** `openQuestionnaire` 直接 `POST /api/agent/workflow/questionnaire`。
+   该接口的缓存签名含 `max_questions`：客户端这里传 20、工作流页传 30，
+   **参数一变就重新生成一版、题号全换**。存量数据里有直接证据：
+
+   | 会话 | GET 已发布 | POST 打开时 |
+   |---|---|---|
+   | `05c4b6b2` | `9df1963a…` | `f8a06fc4…`（换了） |
+   | `88bcc241`（就是用户那份，用 20 生成的） | `ed452ce3…` | `ed452ce3…`（未换） |
+
+   换一版意味着已提交的答卷挂不到新题上 —— 打开看一眼就可能毁掉数据。
+3. **失败后不回列表。** 代码先把 `#questionnaireGrid` 换成「生成问卷中...」，
+   失败时只弹 toast、不恢复 —— 页面永远停在 loading，看起来就是"打不开"。
+
+顺带发现两处：项目名里有单引号会把内联 `onclick` 整段打断（`openQuestionnaire('sid','张's 项目')`）；
+问卷表单有两个渲染函数（`openQuestionnaire` 与 `renderQuestionnaireDirect`），各写一份 5 档
+选项的标记，已经开始漂移（一处有返回按钮、一处没有）。
+
+## B56.2 做法
+
+1. **整卡可点，用事件委托**：卡片带 `data-sid`，`#questionnaireGrid` 上绑一个 click 监听，
+   `.batch-check / .card-toggle / .btn-delete` 上 `stopPropagation`。
+   委托顺带解决单引号问题 —— 会话号从 `dataset` 拿，不再拼进内联 JS。
+2. **打开只读**：新增 `fetchPublishedQuestionnaire(sid)`，
+   `GET /workflow/{sid}/questionnaire`；只有 404/空问卷才回退到 POST 生成。
+   失败（网络/权限）不拿"生成"去掩盖，直接把列表还回去并报错。
+3. **失败回列表**：`catch` 里先 `backToQuestionnaireList()` 再报错，不再停在 loading。
+4. **表单只留一个渲染入口** `renderQuestionnaireForm(qs, sid, pn)`，
+   `renderQuestionnaireDirect` 改成两行转调。
+
+## B56.3 验证
+
+| 检查 | 改前 | 改后 |
+|---|---|---|
+| 真浏览器探针 `_probe_questionnaire_fill.py` | **6 通过 / 2 失败**（点卡片 0 radio） | **8 / 0** |
+| `pytest --ignore=tests/rag_eval` | 901 | **904**（+2 契约钉 +1 变异脚本参数化） |
+| 前端契约 | 16 | **18** |
+| 变异 `_mutate_questionnaire_open.py` | — | **4/4** |
+| `node --test` | 61 | **61** |
+| `frontend_e2e_check` | 120/0 | **120/0** |
+| `test_all_apis` | 47/47 | **47/47** |
+
+探针的两条关键断言：`点卡片空白处能打开问卷`（25 个 radio）、
+`打开问卷没有重新生成（无 POST /questionnaire）`（在页面里包了 `window.fetch` 记录调用）。
+
+**反向验证**（不做这一步，探针就是橡皮图章）：
+
+| 临时改回旧行为 | 探针结果 |
+|---|---|
+| 不绑点击委托 | **4 条红**（点卡片 0 radio、点项目名也 0 —— 内联 onclick 已删） |
+| 打开改回先 POST 生成 | **1 条红**：`打开问卷没有重新生成` 抓到 `POST /api/agent/workflow/questionnaire` |
+
+**第一版变异漏了一条**：`卡片不带 data-sid` 没被抓住 —— 因为勾选框也带 `data-sid`，
+契约断言只查了 `data-sid="` 这个字符串。改成钉整段 `<div class="stat-card" id="qcard_'+sid+'"
+data-sid="'+sid+'"` 之后才抓住。
+
+## B56.4 回滚
+
+- 代码：`git revert`。纯前端，后端与数据一行未动。
+- 数据：本批不写库。**注意**：修复前"点开问卷"会重新生成一版（题号变化），
+  已经被点过的会话可能已经有了孤儿答卷；本批不清理，也不猜。
+- 判据：回滚后探针回到 6/2（点卡片 0 radio），`pytest` 回到 901。
+
+## B56.5 剩余风险与未验证项（诚实列出）
+
+1. **探针不进 CI**（要 Chrome + 起后端），浏览器行为仍靠人工跑。
+2. **只验了 admin 账号**（列表 66 张卡）。普通用户的数据隔离走 `_owned_workflows`，
+   本批没验；如果隔离有问题，用户会看到别人的问卷 —— 与本 bug 无关但同样重要。
+3. **`backToQuestionnaireList()` 仍是硬编码重建整段 HTML**（三张统计卡 + 搜索 + 筛选栏），
+   与静态标记是两份，已经漂移过一次（`#qTotalCount` 只在 JS 里）。本批没动，
+   下一个漂移点就是它。
+4. **修复前的重新生成已经发生过**：`05c4b6b2` 这类会话的题号已被换掉，
+   之前提交的答卷如果存在，会变成"题号对不上"的孤儿数据。本批不修数据。
+5. **并发**：同一问卷在两处同时打开/提交没有互斥，本来就没有，本批不引入也不解决。
+6. **favicon 404 全站都有**，探针里做了过滤；没修（与本 bug 无关，但控制台会一直红一条）。
