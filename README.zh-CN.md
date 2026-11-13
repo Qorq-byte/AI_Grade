@@ -7,11 +7,13 @@
 基于 LangGraph 的多步 Agent，把财政绩效评价从「读材料、搭指标、逐项打分、写报告」
 变成一条可审计、可回滚、可人工接管的流水线。
 
-[![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.0.20%2B-1C3C3C?logo=langchain&logoColor=white)](https://github.com/langchain-ai/langgraph)
 [![MySQL](https://img.shields.io/badge/MySQL-8.0-4479A1?logo=mysql&logoColor=white)](https://www.mysql.com/)
-[![Tests](https://img.shields.io/badge/tests-274%20passed-brightgreen)](#测试)
+[![Python tests](https://img.shields.io/badge/Python_tests-906_passed-brightgreen)](#测试)
+[![JavaScript tests](https://img.shields.io/badge/JavaScript_tests-71_passed-brightgreen)](#测试)
+[![CI](https://github.com/Qorq-byte/AI_Grade/actions/workflows/ci.yml/badge.svg)](https://github.com/Qorq-byte/AI_Grade/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
 [English](./README.md) · [简体中文](./README.zh-CN.md)
@@ -46,7 +48,7 @@
 ## 运行流程
 
 十五个节点：一个初始化节点，加十四个评价步骤。每一步写入同一份类型化状态，
-每一步都可以单独重跑或人工改写。
+已完成步骤支持查看、人工修改和版本回滚；失败步骤可在检查点仍有效时重试。
 
 | # | 步骤 | 产出 |
 |:--:|------|------|
@@ -66,7 +68,7 @@
 | 13 | 生成评价工作简介 | 评价是怎么做的 |
 | 14 | 组装最终报告 | 成稿，并过步骤间一致性检查 |
 
-◆ 是三处 `interrupt()` 断点。`/workflow/approve` 接口已就绪、图结构支持暂停，
+◆ 是三处 `interrupt()` 断点。`/api/agent/workflow/approve` 接口已就绪、图结构支持暂停，
 但当前版本默认全自动跑完——需要人工确认时把闸门打开即可，不必改流程结构。
 
 每一步的产出都写入 `step_results`，包含正文、`structured_status`、
@@ -78,12 +80,14 @@
 
 | 能力 | 说明 |
 |------|------|
-| **15 节点状态图** | LangGraph `StateGraph` 编排，步骤间共享类型化状态，每步可单独重跑与人工改写 |
+| **15 节点状态图** | LangGraph `StateGraph` 编排，步骤间共享类型化状态，支持失败步骤重试、人工改写与版本回滚 |
 | **六种指标类型** | 项目支出 / 部门整体 / 下级政府运行 / 专项债 / 社保基金 / 自定义，类型真实影响生成结果 |
 | **可解释的评分落地** | 六类引用锚点 + 七类处置状态；「引用能定位但证据不在本步」单列为弱定位，**不计入总分** |
 | **结构化输出兜底** | 形状校验 → 一次修复 → `manual_review`；修复不得缩水，首次正文留档可复盘 |
 | **长文档覆盖度** | 带定位符切块、头尾双端预算、覆盖度声明、未引用部分压缩；`used + omitted == total` 可对账 |
-| **SSE 实时流** | token 级增量、`seq` 去重、`Last-Event-ID` 断线续传、心跳注释帧 |
+| **SSE 实时流** | 按步骤缓存增量，切换后恢复实时内容；贴底跟随、上翻暂停；共享层支持事件 ID 补发 |
+| **问卷填写** | 整卡打开已发布问卷，不重复生成；返回列表恢复统计、筛选与搜索并刷新缓存 |
+| **模型复评与候选选择** | 步骤 9/10 支持 critique-revise，保留复评记录；多模型结果支持对比与采用 |
 | **步骤间一致性** | 纯程序校验（零 token）：分值合计、等级与分数矛盾、正文自述分与程序值不一致等 |
 | **真实导出** | Word 由 `python-docx` 生成，PDF 由 `reportlab` 原生排版（含中文），支持字体 / 字号 / 行距 / 页边距定制 |
 | **重启可恢复** | 会话落 MySQL + `state_backups/*.json` 磁盘投影，重启后历史报告仍可查看、导出、编辑 |
@@ -101,7 +105,7 @@
 - 启动幂等：同一 `session_id` 只能登记一次，重复启动 409；
 - 评分口径：模型输出须通过 ID / 范围 / 证据校验才进入结构化结果，缺项标「待核实」；
 - 引用与证据：证据条目必须逐字出现在原文中，引用必须能落到本步证据池或原文定位；
-- 传输协议：SSE 每帧带 `seq`，支持 `Last-Event-ID` 补发，心跳为注释帧；
+- 传输协议：SSE 数据帧带自增 `id`，支持 `Last-Event-ID` 补发，心跳为注释帧；
 - 可追溯：每个响应带 `X-Request-ID`，错误体回显 `request_id`，日志第三段即该请求号；
 - 导出幂等：同内容同排版 10 分钟内只渲染一次，响应 `reused=true`；
 - 结构化输出：不合规修一次，仍不合规则 `manual_review` 且完整保留原文；
@@ -111,7 +115,7 @@
 
 - 文本事实准确性：金额、时间、产出是否与原始材料一致，只能靠证据引用 + 人工复核；
 - 指标设计的专业性：层级与权重是否合理属于领域判断；
-- 建议的可行性：程序能检查 `issue_id → suggestion_ids` 的覆盖关系，判断不了建议好不好；
+- 建议的可行性：程序会提示低分指标在问题、建议中的覆盖缺口，判断不了建议好不好；
 - 打分理由的充分性：程序校验「有没有证据」，不校验「论证是否成立」；
 - 长文档覆盖：超长材料仍会截断，尚未实现分块 map-reduce。
 
@@ -175,13 +179,16 @@
 
 ---
 
-## 实时推送与断线续传
+## 实时推送与步骤查看
 
-- 每帧带自增 `id`，前端按 id 去重，乱序帧直接丢弃；
-- `progress_bus` 缓存最近 400 帧用于补发，心跳用注释帧避免代理超时；
-- 断线后 `GET /workflow/{id}/stream` 带 `Last-Event-ID: n`，从 `n+1` 起补发；
-- 进度与增量走**进程内总线**，因此当前仅支持单 worker
-  （多 worker 需替换为 Redis 发布订阅，接口不变）。
+- 当前查看步骤与后台执行步骤分别管理。切换页面不停止流式接收，返回运行步骤时立即恢复已收到的全部内容。
+- 每个步骤独立保存内容；尚未开始与正在生成分别提示。查看当前执行步骤时跟随后续步骤，主动查看其他步骤时保持所选页面。
+- 内容区位于底部或距底部不超过 24px 时自动跟随；上翻后暂停，滚回底部恢复。切换步骤保留各自的阅读位置。
+- 最终正文替换流式草稿；新任务清空旧缓存，旧会话的迟到事件不会写入新任务。
+- SSE 数据帧使用自增 `id` 去重；进程内 `progress_bus` 缓存最近 400 帧，心跳使用注释帧。
+- 共享控制器支持 `GET /api/agent/workflow/{session_id}/stream` 和 `Last-Event-ID` 补发。客户端启动连接中断后通过状态接口恢复进度；轮询间隔默认 5 秒。
+- 续传连接不持续推送新的 `token_delta`，完成正文由 `step_complete` 或状态接口恢复。页面内缓存不等于刷新浏览器后能重建全部未完成 token 历史。
+- 进度和增量保存在进程内，当前部署使用单 worker。
 
 ---
 
@@ -204,28 +211,48 @@ docker run -d --name ai-grade -p 8000:8000 --env-file .env ai-grade
 
 ### 方式二：本地运行
 
+推荐使用 **Python 3.13**（与 CI 一致）和 MySQL 8.0。Dockerfile 当前声明 Python 3.11；依赖以仓库文件为准。Node.js 22 仅用于前端单测，运行网页无需 npm 或构建。
+
+先克隆仓库并进入目录，再按操作系统创建环境：
+
 ```bash
-# 1. 环境：Python 3.9+（Docker 镜像为 3.11）、MySQL 5.7+/8.0
-python -m venv .venv
-.venv\Scripts\activate          # Windows
-# source .venv/bin/activate     # Linux / macOS
-
-pip install -r requirements.txt
-
-# 2. 配置
-cp .env.example .env            # 至少填一个 *_API_KEY 与 MySQL 连接
-
-# 3. 建库（表在首次启动时自动创建）
-mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS ai_grade_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-
-# 4. 启动
-python -m backend.main          # 或 .\start_backend.ps1
+git clone https://github.com/Qorq-byte/AI_Grade.git
+cd AI_Grade
 ```
 
-健康检查：
+Windows PowerShell：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
+```
+
+Linux / macOS：
 
 ```bash
-curl http://localhost:8000/health
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+cp .env.example .env
+```
+
+编辑 `.env`，填写 MySQL 连接、`JWT_SECRET_KEY` 及至少一个有效的模型 API Key。可用 `python -c "import secrets; print(secrets.token_hex(32))"` 生成 JWT 密钥。然后建库并启动（表在首次启动时创建）：
+
+```bash
+mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS ai_grade_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+python -m backend.main
+```
+
+Windows 也可在环境配置完成后运行 `.\start_backend.ps1` 或 `start_backend.bat`。若虚拟环境被移动且提示找不到原解释器，应使用可用 Python 重新创建环境并安装依赖，不要提交本机绝对路径。
+
+访问 [客户端](http://127.0.0.1:8000/client)、[管理端](http://127.0.0.1:8000/admin) 或 [交互 API 文档](http://127.0.0.1:8000/docs)。首次使用默认管理员时，系统要求先修改初始密码。
+
+健康检查（进程存活检查，不验证模型可调用性）：
+
+```bash
+curl http://127.0.0.1:8000/health
 # {"status":"healthy","service":"云海睿评 - AI绩效评价报告生成系统","version":"1.0.0"}
 ```
 
@@ -249,9 +276,10 @@ curl http://localhost:8000/health
 
 | 变量 | 说明 | 默认 |
 |------|------|------|
-| `MYSQL_HOST` / `PORT` / `USER` / `PASSWORD` / `DATABASE` | 数据库连接 | `localhost` / `3306` / `root` / — / `ai_grade_db` |
+| `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_DATABASE` | 数据库连接 | `localhost` / `3306` / `root` / — / `ai_grade_db` |
 | `JWT_SECRET_KEY` | Token 签名密钥，**生产必须改** | 占位值 |
-| `JWT_ALGORITHM` / `ACCESS_TOKEN_EXPIRE_MINUTES` / `REFRESH_TOKEN_EXPIRE_DAYS` | 令牌策略 | `HS256` / `1440` / `30` |
+| `SECRET_ENCRYPTION_KEY` | 管理端保存的第三方密钥加密口令；留空时明文存储 | 空 |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` / `REFRESH_TOKEN_EXPIRE_DAYS` | 令牌策略 | `1440` / `30` |
 | `DASHSCOPE_API_KEY` / `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | LLM 密钥（至少一个） | — |
 | `DEFAULT_MODEL` | 未显式选择模型时的默认值 | `deepseek-chat` |
 | `TEMPERATURE` / `TOP_P` / `MAX_TOKENS` | 生成参数 | `0.7` / `0.9` / `4000` |
@@ -279,7 +307,7 @@ AI_Grade/
 │   │   │   ├── score_validator.py     # 四维校验
 │   │   │   └── export_service.py      # Word / PDF 导出
 │   │   └── prompts/                   # 提示词（DB 优先，内置兜底）
-│   ├── routes/                        # agent / auth / client / admin（135 个端点）
+│   ├── routes/                        # agent / auth / client / admin + questionnaire / scoring / report / export
 │   ├── services/
 │   │   ├── evidence_anchor.py         # 六类引用锚点
 │   │   ├── retrieval.py               # BM25 + 中文二元组
@@ -290,9 +318,9 @@ AI_Grade/
 │   ├── middleware/                    # 认证 / request_id / 限流
 │   ├── models/  utils/  config.py  database.py  main.py
 ├── frontend/                          # 零构建：原生 HTML/CSS/JS
-│   ├── shared/                        # config / api / store / ui / workflow-controller
+│   ├── shared/                        # config / api / store / ui / workflow-controller / workflow-steps
 │   ├── client/  admin/  workflow/  report/  questionnaire/  login/
-├── tests/                             # pytest + node:test，274 项
+├── tests/                             # pytest + node:test（数量见测试章节）
 │   └── rag_eval/                      # 检索评估基线（语料 + 样本 + 阈值）
 ├── docs/
 │   ├── API.md                         # 完整接口参考
@@ -300,7 +328,7 @@ AI_Grade/
 │       ├── workflow.zh-CN.svg         # 中文流程图（上面那张）
 │       └── workflow.svg               # 英文流程图（README.md 使用）
 ├── Dockerfile  docker-entrypoint.sh
-├── requirements.txt  start_backend.bat  start_backend.ps1
+├── requirements.txt  requirements-dev.txt  start_backend.bat  start_backend.ps1
 └── wf_e2e.py  frontend_e2e_check.py   # 端到端验证脚本
 ```
 
@@ -310,31 +338,42 @@ AI_Grade/
 
 ## 测试
 
-```bash
-# Python 单测 + 回归（无需服务器、无需 LLM）
-.venv/Scripts/python -m pytest tests/ -q --ignore=tests/rag_eval    # 274 passed
+截至 **2026-11-13**，本地完整回归为 **906 项 Python 测试 + 71 项 JavaScript 测试通过**。客户端流式交互另用 gstack browse 回放 SSE，在 1440×1000 与 1024×768 下各通过 16 项检查；这些浏览器检查未调用真实模型，不等同于真实模型端到端验收。详见 [验证记录](./progress.md)。
 
-# 前端共享层 / SSE 协议（node:test，无需服务器）
-node --test tests/test_shared_frontend.cjs tests/test_workflow_sse.cjs \
-            tests/test_client_modules.cjs tests/test_error_routing.cjs \
-            tests/test_score_disposition_badge.cjs
+### CI 与本地回归
 
-# 检索效果基线（无需服务器、无需 LLM）
-.venv/Scripts/python -m tests.rag_eval.run --check    # 低于 baseline.json 则退出码 1
-```
-
-需要真实模型的验证：
+[GitHub Actions](./.github/workflows/ci.yml) 使用 Python 3.13、Node.js 22 和锁定的 `requirements-dev.txt`。单测使用隔离 SQLite 夹具，无需启动 MySQL、服务器或模型：
 
 ```bash
-.venv/Scripts/python frontend_e2e_check.py   # 前端联通性（72 项）
-.venv/Scripts/python wf_e2e.py               # 真实 15 节点端到端（47 项，约 4~5 分钟）
-.venv/Scripts/python verify_coverage_live.py # 4.2 万字长文档覆盖度验证
+python -m pip install -r requirements-dev.txt
+python -m compileall -q backend
+python -m pytest tests -q --ignore=tests/rag_eval
+node --test tests/test_*.cjs
 ```
 
-检索基线现状：Recall@3 = **0.448**、MRR = **0.391**、精确率 = **0.161**
-（语料 7 份 / 271 块 / 9,925 字，样本 29 条）。改检索前后各跑一次，用数字说话。
+测试环境按 CI 将 `MYSQL_HOST=127.0.0.1`、`MYSQL_PORT=1`，避免误连真实数据库。`requirements-dev.txt` 排除了 torch、transformers 等重型推理依赖；生产运行与可选检索功能使用 `requirements.txt`。
 
-> 本机若配置了 HTTP 代理，调用本地服务的脚本需加 `NO_PROXY=127.0.0.1,localhost`。
+前端检查分为：`tests/test_frontend_contract.py` 的静态 DOM 接线检查、`tests/test_client_modules.cjs` 的脚本/状态回归，以及真实浏览器交互验证。静态契约不验证布局和滚动。
+
+### 手动集成与效果验证
+
+以下服务脚本需先启动 8000 端口，部分需要真实 MySQL、有效模型密钥并会消耗 token：
+
+```bash
+python test_all_apis.py
+python frontend_e2e_check.py
+python wf_e2e.py
+python verify_coverage_live.py
+
+# 检索基线，不需要运行服务器或调用模型
+python -m tests.rag_eval.run --check
+```
+
+问卷与工作流的手动浏览器探针保存在 `tests/_probe_*.py`；浏览器和登录条件见脚本。变异脚本 `tests/_mutate_*.py` 会原地修改源码，需在干净工作区逐个运行，结束后检查 `git status --short`，不要与运行中的开发修改并发执行。
+
+仓库 [检索基线](./tests/rag_eval/baseline.json)（2026-11-12）：Recall@3 = **0.5517**、MRR = **0.4828**、precision = **0.2529**；语料 7 份、271 块、9,925 字，29 个样本。它是该固定样本集的结果，不代表所有实际材料的准确率。
+
+> 若本机配置了 HTTP 代理，调用本地服务时设置 `NO_PROXY=127.0.0.1,localhost`。
 
 ---
 
@@ -345,7 +384,7 @@ node --test tests/test_shared_frontend.cjs tests/test_workflow_sse.cjs \
 - **反向代理**：SSE 需要 `proxy_buffering off;` 与较长的 `proxy_read_timeout`，
   服务端已设置 `X-Accel-Buffering: no`；
 - **数据保留**：上传文件默认保留 90 天，每日 03:00 自动清理，可在管理端预览与手动执行；
-- **备份**：除 MySQL 外，`state_backups/*.json` 是重启恢复报告的唯一来源，务必一并备份。
+- **备份**：同时备份 MySQL、`state_backups/*.json` 与需要保留的上传文件；磁盘投影包含历史报告恢复所需的工作流状态。
 
 ---
 
@@ -353,10 +392,11 @@ node --test tests/test_shared_frontend.cjs tests/test_workflow_sse.cjs \
 
 - [ ] 分块 map-reduce，支持超长材料的真正全覆盖
 - [ ] Redis 发布订阅 + 可插拔 checkpointer，支持多 worker 与真续跑
-- [ ] `critique-revise` 双模型互评，多模型对比从「并列展示」升级为「择优」
+- [x] 步骤 9/10 的 `critique-revise` 与多模型候选对比、采用
 - [ ] `issue_id → suggestion_ids` 的强制覆盖闸门
 - [ ] `/metrics` 与结构化日志，补齐可观测性
-- [ ] CI（lint + pytest + node:test）与依赖锁定
+- [x] CI：Python 语法检查、pytest、node:test 与测试依赖锁定
+- [ ] 在现有 CI 中增加 lint
 
 ---
 
