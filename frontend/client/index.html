@@ -1450,7 +1450,7 @@ function rollbackStep(sn,version,btn){
             wfStatusController?.abort();
             wfSessionId=newWorkflowSession();sessionStorage.setItem(workflowSessionKey,wfSessionId);
             wfCompletedSteps=[];wfStepContents={};wfVersions={};wfEvidence={};wfComparisons={};wfReviewSteps=[];wfApprovalStep=null;wfCurrentStep=0;wfStatus='running';wfCoverage=null;wfConsistency=null;wfDispo=null;wfCritique=null;wfCritiqueSwitches={};
-            wfSelectedStep=0;wfDeltaRenderer.reset();
+            wfSelectedStep=0;wfStepScroll={};wfDeltaRenderer.reset();
             document.getElementById('wfRetryBtn').hidden=true;
             window._currentQuestionData=null;  // 清空问卷缓存，确保下次切换Tab重新加载
             initWfStepper();document.getElementById('wfLayout').style.display='flex';
@@ -1546,7 +1546,10 @@ var body={session_id:wfSessionId,use_rag:document.getElementById("wfUseRag").che
 
         function handleWfComplete(){
             if(!wfSessionId)return;
-            var c=document.getElementById('wfContent');c&&(c.innerHTML='<div class="wf-empty"><svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#48bb78" stroke-width="1.5"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg><h3 style="color:#48bb78">工作流执行完成</h3><p>点击左侧步骤查看各步骤生成的内容，或点击下方按钮导出报告</p></div>');
+            if(wfSelectedStep)selectWfStep(wfSelectedStep);
+            else{
+                var c=document.getElementById('wfContent');c&&(c.innerHTML='<div class="wf-empty"><svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#48bb78" stroke-width="1.5"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg><h3 style="color:#48bb78">工作流执行完成</h3><p>点击左侧步骤查看各步骤生成的内容，或点击下方按钮导出报告</p></div>');
+            }
             wfUploadedFiles=[];['img','pdf','doc'].forEach(function(t){renderWfFilesByType(t)});
             // 恢复文件上传区，允许开始新的评价（但保留 sessionId 用于导出和查看）
             document.getElementById('wfFileZone').style.display='';

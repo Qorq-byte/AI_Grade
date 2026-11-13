@@ -322,6 +322,32 @@ test('状态恢复能刷新所选步骤，保留手动选择，且相同轮询�
     assert.match(e.panel.innerHTML, /five-updated/);
 });
 
+test('新评价清空旧内容、选中态、阅读位置以及尚未刷新的旧增量', async () => {
+    const e = workflowContext();
+    for (const id of ['wfStartBtn', 'wfRetryBtn', 'wfLayout', 'wfFileZone', 'wfProgress',
+        'wfStopBtn', 'wfExports', 'wfProjectName', 'wfModel', 'wfMode', 'wfTemperature',
+        'wfTopP', 'wfUseRag', 'wfRequireApproval']) {
+        e.elements.set(id, makeElement(id));
+        e.elements.get(id).value = '';
+    }
+    e.ctx.getToken = () => 'local-test';
+    e.ctx.readWorkflowEvents = async () => {};
+    let requests = 0;
+    e.ctx.fetch = async () => { requests++; return {}; };
+    e.emit('step_start', 4);
+    e.emit('token_delta', 4, {delta: 'old-draft'});
+    e.ctx.wfStepScroll[4] = {top: 35, follow: false};
+    e.ctx.wfRunning = false;
+    e.ctx.startWorkflow();
+    e.flush();
+    await wait();
+    assert.equal(requests, 1);
+    assert.equal(e.ctx.wfSelectedStep, 0);
+    assert.equal(Object.keys(e.ctx.wfStepContents).length, 0);
+    assert.equal(Object.keys(e.ctx.wfStepScroll).length, 0);
+    assert.match(e.panel.innerHTML, /正在启动/);
+});
+
 test('switchTab 只切 class，不写 style.display，并同步 hash', async () => {
     const calls = [];
     const { ctx, elements, navLinks, history } = buildContext(async (url) => {
