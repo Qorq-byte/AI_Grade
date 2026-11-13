@@ -89,8 +89,11 @@ MUTATIONS = [
     ("管理员重置密码后不置位",
      ADMIN_R,
      """        user.must_change_password = True
+        # 管理员重置口令 → 该用户已登录的会话必须立刻失效（批次 25）
+        user.token_version = int(getattr(user, "token_version", 0) or 0) + 1
         changed.append("password")""",
-     """        changed.append("password")"""),
+     """        user.token_version = int(getattr(user, "token_version", 0) or 0) + 1
+        changed.append("password")"""),
     ("管理员建号后不置位",
      AUTH_R,
      """        user = create_user(db, req.username, req.password, req.phone, must_change_password=True)""",
