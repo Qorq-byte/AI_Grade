@@ -72,17 +72,86 @@ class AdminUpdateUserRequest(BaseModel):
 
 
 class AdminChangePasswordRequest(BaseModel):
+    old_password: str
     new_password: str
 
 
-class DashboardOverview(BaseModel):
-    total_users: int
-    active_users_today: int
-    total_projects: int
-    active_workflows: int
-    total_reports: int
-    total_tokens_used: int
-    recent_operations: List[dict]
+# ═══════════════════════════════════════════════════════
+#  当前管理员（强制改密逃生通道）
+# ═══════════════════════════════════════════════════════
+# 这两个端点在 `PASSWORD_CHANGE_EXEMPT_PATHS` 里，是「首登未改密」状态下
+# 唯一还能访问的管理端接口。它们不返回任何业务数据，只回自己的身份和改密能力，
+# 所以放行不会削弱那道护栏；反之缺少它们，admin 会被永久锁在管理端外。
+
+@router.get("/me")
+def admin_me(admin: User = Depends(get_admin_user)):
+    """当前登录管理员的自述信息 — 供管理端判断是否处于「待改初始口令」状态"""
+    return {
+        "success": True,
+        "data": {
+            "id": admin.id,
+            "username": admin.username,
+            "role": admin.role.value if isinstance(admin.role, UserRole) else admin.role,
+            "must_change_password": bool(getattr(admin, "must_change_password", False)),
+        },
+    }
+
+
+@router.put("/me/password")
+def admin_change_own_password(
+    req: AdminChangePasswordRequest,
+    admin: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    """管理员自助改密 — 用自己的旧口令换新口令，不依赖任何业务接口"""
+    from backend.services.auth_service import verify_password
+
+    old_password = (req.old_password or "").strip()
+    new_password = req.new_password or ""
+    if not old_password or not new_password:
+        raise HTTPException(status_code=400, detail="请填写旧密码和新密码")
+    if len(new_password) < 6:
+        raise HTTPException(status_code=400, detail="新密码长度不能少于 6 位")
+    if new_password == old_password:
+        raise HTTPException(status_code=400, detail="新密码不能与旧密码相同")
+
+    stored = admin.password_hash or ""
+    if ":" not in stored:
+        raise HTTPException(status_code=500, detail="账号口令数据异常，请联系系统维护人员")
+    salt, stored_hash = stored.split(":", 1)
+    if not verify_password(old_password, stored_hash, salt):
+        raise HTTPException(status_code=400, detail="旧密码不正确")
+
+    new_hash, new_salt = hash_password(new_password)
+    admin.password_hash = f"{new_salt}:{new_hash}"
+    admin.must_change_password = False
+    # 旧令牌立即作废，但补发一枚给当前这台设备，避免刚改完就被踢出去
+    admin.token_version = int(getattr(admin, "token_version", 0) or 0) + 1
+    db.commit()
+
+    _log_operation(
+        db,
+        user_id=admin.id,
+        username=admin.username,
+        action="admin_change_password",
+        resource_type="user",
+        resource_id=str(admin.id),
+        detail="管理员自助修改密码",
+    )
+
+    from backend.middleware.auth_middleware import create_access_token
+
+    new_access = create_access_token(data={
+        "user_id": admin.id,
+        "username": admin.username,
+        "role": admin.role.value if isinstance(admin.role, UserRole) else admin.role,
+        "ver": int(admin.token_version or 0),
+    })
+    return {
+        "success": True,
+        "message": "密码修改成功",
+        "data": {"access_token": new_access},
+    }
 
 
 # ═══════════════════════════════════════════════════════
