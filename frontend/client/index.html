@@ -1100,20 +1100,7 @@ function generateQuestionnaireFromStep(){
 
 // 直接在问卷填写Tab渲染问卷（不重新调API生成）
 function renderQuestionnaireDirect(qs, sid, pn){
-    window._currentQuestionData = qs;
-    var panel = document.getElementById('questionnaire');
-    if(!panel) return;
-    var h='<div class="content-header"><h1>问卷填写</h1><p>项目：'+esc(pn||'未命名')+' | 共 '+qs.length+' 题 <button class="btn-sm" onclick="backToQuestionnaireList()" style="margin-left:12px">返回列表</button></p></div><div style="max-height:calc(100vh - 200px);overflow-y:auto">';
-    var levels=['非常不满意','不满意','一般','满意','非常满意'];
-    for(var i=0;i<qs.length;i++){
-        var q=qs[i], qid=esc(q.question_id||q.id||''+i), qt=q.question_text||q.question||q.text||'题目'+(i+1);
-        h+='<div class="content-panel" style="background:#fafbff"><div class="panel-title" style="font-size:14px">第'+(i+1)+'题：'+esc(qt)+'</div><div class="panel-content">';
-        h+='<div style="display:flex;gap:8px;flex-wrap:wrap">';
-        for(var li=0;li<5;li++)h+='<label style="cursor:pointer;padding:6px 14px;border:1px solid #e2e8f0;border-radius:20px;font-size:13px;display:flex;align-items:center;gap:6px;transition:all .2s" onmouseover="this.style.borderColor=\'#667eea\';this.style.background=\'#ebf5ff\'" onmouseout="var r=document.querySelector(\'input[name=q_'+i+']:checked\');if(!r||r.value!==\''+li+'\'){this.style.borderColor=\'#e2e8f0\';this.style.background=\'white\'}"><input type="radio" name="q_'+i+'" value="'+li+'" onchange="markAnswered(this)" style="accent-color:#667eea">'+levels[li]+'</label>';
-        h+='</div></div></div>';
-    }
-    h+='<div style="padding:20px;display:flex;gap:12px;justify-content:center"><button class="btn-primary" style="padding:10px 32px" onclick="submitQuestionnaire(\''+esc(sid)+'\','+qs.length+')">提交问卷</button></div></div>';
-    panel.innerHTML = h;
+    renderQuestionnaireForm(qs, sid, pn);
 }
 
 function setEditMode(mode,el){
@@ -1861,12 +1848,12 @@ function renderQuestionnaireGrid(data){
         var label=d.question_count>0?(d.question_count+' 题 待填写'):(d.needs_generation?'待生成问卷':'已提交');
         var cls=d.question_count>0?'green':(d.needs_generation?'orange':'blue');
         var timeStr=(d.created_at||d.updated_at)?esc((d.created_at||d.updated_at).slice(0,19).replace('T',' ')):'--';
-        h+='<div class="stat-card" id="qcard_'+sid+'" style="cursor:default;position:relative">';
+        h+='<div class="stat-card" id="qcard_'+sid+'" data-sid="'+sid+'" style="cursor:pointer;position:relative">';
         // 标题行：勾选框 + 项目名 + 折叠按钮
         h+='<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">';
-        h+='<input type="checkbox" class="batch-check" onchange="updateBatchDeleteState(\'questionnaire\')" data-sid="'+sid+'" style="width:16px;height:16px;accent-color:#667eea;cursor:pointer;flex-shrink:0">';
-        h+='<div class="stat-label" onclick="openQuestionnaire(\''+sid+'\',\''+pn+'\')" style="font-size:14px;font-weight:600;flex:1;min-width:0;cursor:pointer">'+pn+'</div>';
-        h+='<button class="card-toggle" onclick="toggleCard(\'qcard_'+sid+'\')" title="折叠/展开" style="width:26px;height:26px;border-radius:50%;border:1px solid #e2e8f0;background:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:14px;color:#718096;transition:all .2s">−</button>';
+        h+='<input type="checkbox" class="batch-check" onclick="event.stopPropagation()" onchange="updateBatchDeleteState(\'questionnaire\')" data-sid="'+sid+'" style="width:16px;height:16px;accent-color:#667eea;cursor:pointer;flex-shrink:0">';
+        h+='<div class="stat-label" style="font-size:14px;font-weight:600;flex:1;min-width:0">'+pn+'</div>';
+        h+='<button class="card-toggle" onclick="event.stopPropagation();toggleCard(\'qcard_'+sid+'\')" title="折叠/展开" style="width:26px;height:26px;border-radius:50%;border:1px solid #e2e8f0;background:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:14px;color:#718096;transition:all .2s">−</button>';
         h+='</div>';
         // 可折叠区
         h+='<div class="card-detail" id="qdetail_'+sid+'">';
@@ -1878,7 +1865,28 @@ function renderQuestionnaireGrid(data){
         h+='</div>';
     }
     grid.innerHTML=h;
+    bindQuestionnaireGrid();
     updateBatchDeleteState('questionnaire');
+}
+
+/* 整卡可点（批次 56）：以前只有项目名那一小块挂了 onclick，用户点卡片图标/「N 题 待填写」
+   都没反应。事件委托比给每个元素塞内联 onclick 稳：项目名里带单引号也不会打断处理器。 */
+function bindQuestionnaireGrid(){
+    var grid=document.getElementById('questionnaireGrid');
+    if(!grid||grid._qBound)return;
+    grid._qBound=true;
+    grid.addEventListener('click',function(e){
+        var card=e.target.closest?e.target.closest('[data-sid]'):null;
+        if(!card||!grid.contains(card))return;
+        if(e.target.closest('.batch-check,.card-toggle,.btn-delete'))return;
+        var sid=card.getAttribute('data-sid');
+        if(sid)openQuestionnaire(sid,questionnaireNameOf(sid));
+    });
+}
+function questionnaireNameOf(sid){
+    var rows=window._questionnaireData||[];
+    for(var i=0;i<rows.length;i++)if(rows[i].session_id===sid)return rows[i].project_name||'';
+    return '';
 }
 async function batchDeleteQuestionnaires(){
     var cbs=document.getElementById('questionnaireGrid').querySelectorAll('.batch-check:checked');
@@ -1930,24 +1938,54 @@ function selectAllQuestionnaires(){
     updateBatchDeleteState('questionnaire');
 }
 
+/* 打开已发布的问卷：先读，读不到才生成。
+   为什么不直接 POST：`/api/agent/workflow/questionnaire` 的缓存签名含 max_questions，
+   客户端这里用 20、工作流页用 30 —— 参数一变就重新生成一版，题号全换，
+   已经提交的答案再也挂不到新题上（批次 56）。GET 是纯读，重复打开不会产生新版本。 */
+function fetchPublishedQuestionnaire(sid){
+    return api('GET','/api/agent/workflow/'+encodeURIComponent(sid)+'/questionnaire').then(function(r){
+        if(r&&r.success&&r.data&&r.data.questionnaire&&r.data.questionnaire.length)return r;
+        var err=new Error('问卷尚未生成');err.code='empty';throw err;
+    });
+}
 function openQuestionnaire(sid,pn){
-    document.getElementById('questionnaireStatsGrid')&&(document.getElementById('questionnaireStatsGrid').style.display='none');
-    document.getElementById('questionnaireGrid').innerHTML='<p class="loading-hint">生成问卷中...</p>';
-    api('POST','/api/agent/workflow/questionnaire',{session_id:sid,max_questions:20}).then(function(r){
-        if(!r.success||!r.data||!r.data.questionnaire||!r.data.questionnaire.length){
-            showToast('问卷生成失败：该工作流尚无指标体系，请先完成Step3','error');return}
-        var qs=r.data.questionnaire;
-        window._currentQuestionData=qs;
-        var h='<div class="content-header"><h1>问卷填写</h1><p>项目：'+esc(pn||'未命名')+' | 共 '+qs.length+' 题</p></div><div style="max-height:calc(100vh - 200px);overflow-y:auto;padding-right:4px">';
-        for(var i=0;i<qs.length;i++){
-            var q=qs[i],qt=q.question_text||'';
-            h+='<div class="content-panel" style="background:#fafbff"><div class="panel-title" style="font-size:14px">第'+(i+1)+'题：'+esc(qt)+'</div><div class="panel-content"><div style="display:flex;gap:8px;flex-wrap:wrap">';
-            var levels=['非常不满意','不满意','一般','满意','非常满意'];
-            for(var li=0;li<5;li++)h+='<label class="likert-label" onmouseover="this.style.borderColor=\'#667eea\';this.style.background=\'#ebf5ff\'" onmouseout="var r=document.querySelector(\'input[name=q_'+i+']:checked\');if(!r||r.value!==\''+li+'\'){this.style.borderColor=\'#e2e8f0\';this.style.background=\'white\'}"><input type="radio" name="q_'+i+'" value="'+li+'" onchange="markAnswered(this)" style="accent-color:#667eea">'+levels[li]+'</label>';
-            h+='</div></div></div>'}
-        h+='<div style="padding:20px;display:flex;gap:12px;justify-content:center"><button class="btn-export" onclick="backToQuestionnaireList()">返回列表</button><button class="btn-primary" style="padding:10px 32px" onclick="submitQuestionnaire(\''+esc(sid)+'\','+qs.length+')">提交问卷</button></div></div>';
-        document.getElementById('questionnaire').innerHTML=h
-    }).catch(function(e){showApiError(e,{action:'问卷生成'})})
+    var stats=document.getElementById('questionnaireStatsGrid');
+    if(stats)stats.style.display='none';
+    var grid=document.getElementById('questionnaireGrid');
+    if(grid)grid.innerHTML='<p class="loading-hint">加载问卷中...</p>';
+    fetchPublishedQuestionnaire(sid).catch(function(err){
+        /* 404（还没发布）或空问卷才值得生成一次；网络/权限问题原样抛出，不要拿生成去掩盖 */
+        if(err&&(err.code==='empty'||err.status===404))
+            return api('POST','/api/agent/workflow/questionnaire',{session_id:sid,max_questions:20});
+        throw err;
+    }).then(function(r){
+        if(!r||!r.success||!r.data||!r.data.questionnaire||!r.data.questionnaire.length){
+            showToast('问卷生成失败：该工作流尚无指标体系，请先完成Step3','error');
+            backToQuestionnaireList();
+            return;
+        }
+        renderQuestionnaireForm(r.data.questionnaire, sid, pn);
+    }).catch(function(e){
+        /* 失败必须把列表还回去：以前停在"生成问卷中..."，看起来就是"点了打不开" */
+        backToQuestionnaireList();
+        showApiError(e,{action:'打开问卷'});
+    });
+}
+/* 问卷表单的唯一渲染入口（打开列表、工作流页生成后跳转都走这里） */
+function renderQuestionnaireForm(qs,sid,pn){
+    var panel=document.getElementById('questionnaire');
+    if(!panel||!qs||!qs.length)return;
+    window._currentQuestionData=qs;
+    var levels=['非常不满意','不满意','一般','满意','非常满意'];
+    var h='<div class="content-header"><h1>问卷填写</h1><p>项目：'+esc(pn||'未命名')+' | 共 '+qs.length+' 题</p></div>';
+    h+='<div style="max-height:calc(100vh - 220px);overflow-y:auto;padding-right:4px">';
+    for(var i=0;i<qs.length;i++){
+        var q=qs[i],qt=q.question_text||q.question||q.text||('题目'+(i+1));
+        h+='<div class="content-panel" style="background:#fafbff"><div class="panel-title" style="font-size:14px">第'+(i+1)+'题：'+esc(qt)+'</div><div class="panel-content"><div style="display:flex;gap:8px;flex-wrap:wrap">';
+        for(var li=0;li<5;li++)h+='<label class="likert-label" onmouseover="this.style.borderColor=\'#667eea\';this.style.background=\'#ebf5ff\'" onmouseout="var r=document.querySelector(\'input[name=q_'+i+']:checked\');if(!r||r.value!==\''+li+'\'){this.style.borderColor=\'#e2e8f0\';this.style.background=\'white\'}"><input type="radio" name="q_'+i+'" value="'+li+'" onchange="markAnswered(this)" style="accent-color:#667eea">'+levels[li]+'</label>';
+        h+='</div></div></div>'}
+    h+='<div style="padding:20px;display:flex;gap:12px;justify-content:center"><button class="btn-export" onclick="backToQuestionnaireList()">返回列表</button><button class="btn-primary" style="padding:10px 32px" onclick="submitQuestionnaire(\''+esc(sid)+'\','+qs.length+')">提交问卷</button></div></div>';
+    panel.innerHTML=h;
 }
 function markAnswered(rb){
     var label=rb.parentElement;
