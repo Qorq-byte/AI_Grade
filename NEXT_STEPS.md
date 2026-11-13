@@ -16,8 +16,8 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `main` / 批次 54 提交，工作区干净 |
-| 已完成批次 | 第三轮 B1–B54（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
+| 分支 / HEAD | `main` / 批次 55 提交，工作区干净 |
+| 已完成批次 | 第三轮 B1–B55（每批都有独立交付章节）|+ 文档工程（双语 README、动态流程图、社区文件、51 个提交的仓库整理） |
 | 后端 | FastAPI + LangGraph，`StateGraph` 15 节点（0 初始化 + 14 评价步骤），142 个端点 |
 | 前端 | 零构建，原生 HTML/CSS/JS + `frontend/shared/` |
 | 存储 | MySQL（库 `ai_grade_d`）+ `state_backups/*.json` 磁盘投影 |
@@ -26,10 +26,10 @@
 
 | 检查 | 命令 | 当前 |
 |---|---|---|
-| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **894 passed**（CI 也跑这一条） |
-| 前端共享层 / SSE | `node --test tests/test_*.cjs` | **48 pass**（5 个文件） |
+| Python 单测 | `pytest tests/ -q --ignore=tests/rag_eval` | **901 passed**（CI 也跑这一条） |
+| 前端共享层 / SSE / 步骤状态 | `node --test tests/test_*.cjs` | **61 pass**（6 个文件） |
 | 前端联通性 | `python frontend_e2e_check.py` | **120 通过 / 0 失败** |
-| 前端契约 | `pytest tests/test_frontend_contract.py -q` | **10 通过**：0 缺失 id、0 重复 id、0 未定义事件（**不是浏览器测试**，见 `docs/ui_contract.md`） |
+| 前端契约 | `pytest tests/test_frontend_contract.py -q` | **16 通过**：client + workflow 两页，0 缺失 id、0 重复 id、0 未定义事件（**不是浏览器测试**，见 `docs/ui_contract.md`） |
 | 全接口 | `python test_all_apis.py` | **47/47** |
 | 真实工作流 | `python wf_e2e.py` | **47 项 / 0 失败**（约 3.5~5 分钟，要真实模型） |
 | 变异测试 | `_mutate_step7.py` / `_mutate_consistency.py` / `_mutate_backup_race.py` / `_mutate_step7_prompt.py` / `_mutate_shrink_34.py` / `_mutate_standard_purity.py` / `_mutate_anchor_coverage.py` / `_mutate_step7_length.py` / `_mutate_step56_length.py` / `_mutate_report_json.py` / `_mutate_lifespan.py` / `_mutate_secret_storage.py` / `_mutate_password_change.py` / `_mutate_backup_compaction.py` / `_mutate_consistency_gate.py` / `_mutate_quality_gate.py` / `_mutate_ci_workflow.py` / `_mutate_step9_critique.py` / `_mutate_critique_step10.py` / `_mutate_llm_resilience.py` / `_mutate_b7_enablement.py` / `_mutate_workflow_deps.py` / `_mutate_report_routes.py` / `_mutate_refine.py` / `_mutate_refine_llm.py` / `_mutate_chat_context.py` / `_mutate_chapter_refs.py` / `_mutate_candidates.py` / `_mutate_candidate_diff.py` / `_mutate_diff_all.py` / `_mutate_citation_policy.py` / `_mutate_citation_cleanup.py` | **28 / 7 / 4 / 6 / 8 / 11 / 13 / 13 / 12 / 11 / 12 / 18 / 20 / 11 / 15 / 19 / 4 / 10 / 7 / 11 / 8 / 11 / 9 / 9 / 8 / 8 / 6 / 7 / 7 / 7 / 3 / 5 全抓**（串行跑，**留足超时**；跑完必须 `git status --short` 复核，并对关键行 `grep` 验伤） |
@@ -38,6 +38,7 @@
 | 引用清理台账 | `GET /workflow/{sid}/status` 的 `citation_cleanup_summary` | 真实一轮 `7c4c5f5b`：**14 条 / 30 个编号**（步骤 8:1、11:6、14:7）；台账 4.4 KB，占备份 **1.3%** |
 | 聊天评测 | `python -m tests.chat_eval.run --check` | **recall 1.0（40/40）**，平均上下文 716.5 字；对照组 **0.325** |
 | 聊天抽读（手动，不进 CI） | `python -m tests.chat_eval.live --session <id> --output <md>` | 2026-11-12 / deepseek-chat / 两会话：**编造 0/10 与 0/10、引用 9/9 与 8/9、弱相关 0/10**（`docs/chat_live_eval*.md`） |
+| 工作流页真浏览器探针（手动，不进 CI） | `python -m tests._probe_workflow_live_panel` | **15 项 / 0 失败**（Chrome headless + CDP：轮询重画后 running 不丢、点走再点回内容还在、长文本自动跟随、上翻不抢滚动、换步骤清屏） |
 
 ---
 
@@ -497,15 +498,26 @@
 - **遗留**：台账只有"被删的那一句"，不是整段原文；步骤 7 仍未覆盖；
   `/status` 摘要**没有前端消费方**（下一批要么接、要么删）；重启续跑时台账连续性未验。
 
-### 批次 55（建议）：台账接前端 + 步骤 7 的同类问题
-- **先问消费方**（B27 的教训）：`/status` 的 `citation_cleanup_summary` 现在只有接口，
-  没人读。要么在报告页加一个「引用清理」小面板（条数 + 最近 3 句），
-  要么按「没消费方就删」处理 —— 不要让它变成第二个 `standard_purity`。
-- **步骤 7 的 `reason` 字段**：仍可能写「缺 X[P1-y]」且不进台账。
-  动手前先量：65 份备份里步骤 7 正文（JSON 内的 reason）有多少条缺失类带编号。
-  若量级是 0～1，就别为它破坏 JSON 结构；有量级再考虑"只清 reason 字段"。
-- **备选**：跨文档验证（需要一份非样例资料的真实报告）；真浏览器冒烟（等 Playwright 可装）；
-  C1 第五步（再拆 SSE/上传，`agent_routes` 压到 ~1300，收益边际递减）。
+### 批次 55 = 工作流页「正在运行」与实时输出（用户报障）✅ 已完成
+- 交付见 `progress_round3.md` 的 B55。
+- **根因**：`renderStepList()` 只认 completed/pending，而 `pollStatus()` 每 5 秒调它一次 ——
+  SSE 打的 running 一次轮询就没；`showWorkflowStep()` 对没有结果的步骤直接 `return`；
+  实时面板 `step_start` 不清 DOM、每 50ms `scrollIntoView` 抢页面滚动。
+- **做法**：步骤状态收进 `frontend/shared/workflow-steps.js`（纯函数），页面只做接线；
+  实时面板改成"面板内部跟到底、用户上翻就不抢"，`liveText` 存在 JS 里。
+- 顺手修掉两个同类问题：`#token-used` 死钩子（token 从来没显示过）、问卷提示行被重画抹掉。
+- 判定：`pytest 894 → 901`、node `48 → 61`、契约 `10 → 16`、变异 **5/5**、
+  真浏览器探针 **15/15**（且两次反向验证都会红）、`frontend_e2e 120/0`、`test_all_apis 47/47`。
+- **遗留**：探针不进 CI（要 Chrome）；只验了 SSE 路径，断线续传 + 实时面板叠加未验；
+  长文本每 50ms 全量重写没量过帧率。
+
+### 批次 56（建议）：先问台账有没有消费方，再看步骤 7
+- **先问消费方**（B27 的教训）：`/status` 的 `citation_cleanup_summary`（B54）现在只有接口，
+  没人读。要么在报告页加一个「引用清理」小面板（条数 + 最近 3 句），要么按「没消费方就删」处理。
+- **步骤 7 的 `reason` 字段**：仍可能写「缺 X[P1-y]」且不进台账。动手前先量：
+  65 份备份里步骤 7 正文（JSON 内的 reason）有多少条缺失类带编号。量级 0～1 就别动。
+- **备选**：把 `_probe_workflow_live_panel.py` 的思路扩成"页面冒烟"（Chrome + CDP 已有雏形，
+  可以顺手覆盖 client 页的几个面板）；跨文档验证（需要非样例资料）；C1 第五步（收益边际递减）。
 
 ---
 
@@ -574,6 +586,8 @@ NO_PROXY='*' .venv/Scripts/python.exe frontend_e2e_check.py   # 98/0
 | **变异脚本会「静默失效」** | 跑之前文件**已经被上一次中断的变异污染**时，锚点找不到 → 替换不生效 → 用例当然全绿，脚本报成「变异存活 / 变异点未找到」，看起来像覆盖不足，其实是根本没跑到。批次 21 复核踩到：盘上留着 `"no_evidence": False`，害得两个脚本各报一条假问题。→ **跑之前先 `git diff` 对着安全副本验一遍关键行；跑完除了 `git status --short` 还要 `grep` 关键行**；`.mutation_backup/` 残留别急着删，先 `diff` 看看它是干净版还是污染版 |
 | **变异跑着的时候，源码就是变异体** | 批次 34 想在变异脚本运行期间顺手做「搬运前后逐字比对」，读到的是被改坏的 `_workflow_deps.py`，得出「`_owned_workflows` 不一致」的假结论。→ **变异脚本运行期间不要读、不要比、不要提交源码**；要取证就等它跑完（脚本 `finally` 会还原） |
 | **变异脚本被中途杀掉 = 源码留在变异态，下一轮会把它当基线** | 批次 54 第一次跑 `_mutate_citation_cleanup.py`，在「台账不进备份」那一条被外部 SIGTERM（工具默认 120s 超时）打断：`finally` 不执行，盘上留下 `"citation_cleanup_typo"`。第二轮脚本读到的 `originals` 就是**污染版**，于是那条变异打印「跳过（变异点未找到）」，而它的「还原」把变异体又写回去了 —— 脚本输出「漏掉：无」，实际源码是坏的。→ ① 变异脚本一律**留足超时**（5 条变异 ≈ 75~120s，给 300s+）或后台跑；② 跑完除了 `git status --short`，还要 **`grep` 被锚定的那一行**；③ 看到「跳过」先怀疑盘上的文件，而不是锚点 |
+| **探针/验收脚本必须反向验证一次** | 批次 55 写了 Chrome+CDP 探针验「运行中的步骤不该被轮询抹掉」，第一版 14 项全绿。把 `resetLivePanel` 删掉再跑 —— **还是全绿**：因为 `ensureLivePanel` 在首个增量时顺带清了屏，探针检查的时机不对。改成"`step_start` 之后、第一个 delta 之前"才真正测到它，删掉后立刻红。→ **任何"跑通了"的探针，都要先把被测行为改坏一次确认它会红**；绿得越快越要怀疑 |
+| **静态契约测试要覆盖所有页面** | 批次 49 的契约测试只扫 `client/index.html`，于是 `workflow/index.html` 里 `token_update` 更新一个**从不存在的** `#token-used` 活了十几个批次没人发现。批次 55 把三组检查参数化到两页，扩完立刻抓到。→ 新增页面/新面板时，先问"它在不在契约测试的扫描范围里" |
 | **快照把依赖的「模块名」当契约** | `_dep_name()` 原来返回 `module.name`，批次 34 把 `_require_*` 搬进 `_workflow_deps` 后，148 条里一批路由报「deps 变了」——接口一个字没改。→ 依赖比对只比**函数名**（丢依赖、换函数仍抓得住），并写用例钉住；否则每次拆分都假红，快照就会被人为无视 |
 | **给模型的"格式示例"会被当成真实数据** | B47 为了要求「照抄编号」，在提示词里写了 `（S7P1）、（P1-3-1）、REPORT_CHAPTER_MISSING#1` 当例子，模型直接把 `REPORT_CHAPTER_MISSING#1` 当成本报告的编号引用（该报告并没有这个问题）。→ 提示词里不写具体编号；必须举例时用占位符（`<片段编号>`） |
 | **判定模型输出的正则，先拿真实样本校准** | 批次 44 的抽取指标只认 `[P1]`，而模型实际写 `（S11P0）`、`[P1-3-1]` —— 先误报「10 条全未引用」，再误报「1 条编造」，两轮才修对。→ 写检测器前先跑一条真样本打印出来看；长格式要排在短格式前面 |

@@ -7123,3 +7123,99 @@ return cleaned, sum(len(item["removed_ids"]) for item in removals)
 7. **未验证**：多 worker/重启续跑时台账是否连续（`self` 在进程内，重启靠 state 种子；
    真实重启续跑没跑过）；并发两会话共用同一 `PerformanceAgent` 实例的情况不存在
    （`active_workflows` 按 sid 缓存），但未写用例钉住。
+
+---
+
+# 批次 55：工作流页的「正在运行」与实时输出（用户报障）
+
+> 用户报：**运行中点别的步骤、再点回来，运行中的步骤和后面一串都显示"未开始"，
+> 也看不到正在生成的内容**；同时要求生成时能跟着最新内容走。
+> 这不是新需求 —— 是 B42 那套 SSE 实时输出在"重画"上踩空了。
+
+## B55.1 起点（取证）
+
+`frontend/workflow/index.html` 里三条链断在同一件事上：**状态只活在两处 DOM 补丁里**。
+
+| 现象 | 代码事实 |
+|---|---|
+| 运行中的行变回 ⏳ | `renderStepList()` 只有 `completedSteps.has(n) ? 'completed' : 'pending'`，没有 running；而 `pollStatus()` **每 5 秒调一次** `renderStepList()`。SSE 打的 🔄 一次轮询就没了 |
+| 点回来没有内容 | `showWorkflowStep(step)` 在 `workflowStepResults[step]` 为空时**直接 `return`**（运行中的步骤还没 `step_complete`，永远为空）→ 点了没反应 |
+| 实时面板不跟随 | `deltaRenderer` 只在面板 `hidden` 时建 `<pre>`；`step_start` 只 `reset()` 缓冲区**不清 DOM**，新步骤的字会接在上一步尾巴后面；每 50ms 调一次 `panel.scrollIntoView()` 抢整个页面滚动，而 `<pre>` 没有 max-height，新内容堆在下面看不见 |
+| 顺带发现 | `token_update` 分支更新 `#token-used`，但这个元素在页面里**从来不存在** —— token 消耗一直没显示过（B49 那类死钩子，契约测试当时只覆盖 client 页） |
+
+## B55.2 做法
+
+**1. 状态从"一个 Set"改成"一张表"。** 新增 `frontend/shared/workflow-steps.js`（纯函数、不碰 DOM）：
+
+- `statesFromStatus(total, completed, current, {status})` —— 服务端只给 `completed_steps` /
+  `current_step` / 会话 `status`，running / awaiting / error 都由这三者推；
+- `mergeStatus(cur, next)` —— `completed` 是终态，其余可被新的 running 覆盖（重试是正常的，不是回退）；
+- `stepIcon` / `stepLabel` —— 图标与文案只有一张表（原来是 `renderStepList` 和 `updateStepStatus` 各写一份）；
+- `shouldAutoFollow(el, threshold)` —— 24px 容差判断"是否贴底"。
+
+**2. 页面只改接线。** `stepStates` 成为唯一事实来源；`renderStepList()` 从它渲染，
+`paintStepRow()` 只改一行（不重画整表）；`showWorkflowStep()` 对运行中的步骤打开实时面板，
+其余情况给明确文案（`该步骤尚未开始` / `该步骤执行失败`），不再静默 return。
+
+**3. 实时面板改成"跟内容走、不跟页面走"。**
+
+- `.live-output { max-height: 46vh; overflow-y: auto }` —— 面板内部滚动；
+- 每次 flush 只在**贴底**时 `scrollTop = scrollHeight`，用户往上翻就不抢（`shouldAutoFollow`）；
+- 面板整页 `scrollIntoView` 只在**首次出现**时调一次；
+- `liveText` 存在 JS 里：点走再点回来、或关掉面板，已生成的内容还在；
+- `step_start` 立刻清屏换标题，`step_complete` 用事件里的完整正文替换流式累积。
+
+**4. 顺手两件**：`#token-used` 补上真实落点（header 里 Token 计数）；
+问卷提示行改成由 `renderStepList()` 统一重放（原来 `appendChild` 一次，下一次轮询就被抹掉）。
+
+**5. 契约测试扩到 workflow 页**（`tests/test_frontend_contract.py`）：
+三组接线检查参数化到 client + workflow 两页，并补 `row.id = 'x'` 这种属性赋值的 id 识别
+（`questionnaire-prompt-row` 就是这种写法，旧检查会误报）。**扩完立刻又抓到 `#token-used` 这个死钩子。**
+
+## B55.3 验证
+
+| 检查 | 改前 | 改后 |
+|---|---|---|
+| `node --test tests/test_*.cjs` | 48 | **61**（+13：`test_workflow_steps.cjs`） |
+| 前端契约 | 10 | **16**（三组参数化到两页 + 加载顺序 + 渲染来源回归钉 + 锚点） |
+| `pytest --ignore=tests/rag_eval` | 894 | **901** |
+| `frontend_e2e_check` | 120/0 | **120/0** |
+| `test_all_apis` | 47/47 | **47/47** |
+| 路由快照 | 155 零差异 | **155 零差异**（纯前端） |
+| 变异 `_mutate_workflow_steps.py` | — | **5/5**（列表退回只认完成 / completed 非终态 / 失败画成运行 / 恒自动跟随 / 页面不加载模块） |
+| **真浏览器探针** | — | **15/15**（Chrome headless + CDP，`tests/_probe_workflow_live_panel.py`） |
+
+探针走的正是用户那条路：`step_start(4)` → 三段 `token_delta` → **`renderStepList()`（模拟 5s 轮询）**
+→ `showWorkflowStep(5)` → `showWorkflowStep(4)`，再验长文本自动跟随、上翻不抢、换步骤清屏、完成后替换。
+
+**探针做了反向验证**（否则就是橡皮图章）：
+
+| 临时改回旧行为 | 探针结果 |
+|---|---|
+| `renderStepList` 只认 completed/pending | **FAIL 轮询重画后第 4 行仍是 running** |
+| 去掉 `step_start` 的 `resetLivePanel` | **FAIL step_start 后立刻清屏并换标题**（标题还停在 `Step 4 · 已完成`） |
+
+第二版探针一开始也是绿的 —— 因为 `ensureLivePanel` 在首个增量到达时已经清过屏，
+所以改成"`step_start` 之后、第一个 delta 之前"检查，才真正测到 `resetLivePanel`。
+
+## B55.4 回滚
+
+- 代码：`git revert`。前端零构建，删掉 `frontend/shared/workflow-steps.js` 再把
+  `index.html` 里三处接线退回去即可；后端与数据一行未动。
+- 数据：无。没有新增接口、没有改备份字段。
+- 判据：回滚后 `node --test` 回到 48、契约回到 10、`pytest` 回到 894。
+
+## B55.5 剩余风险与未验证项（诚实列出）
+
+1. **探针不进 CI**（要 Chrome + 起后端），所以浏览器行为仍是"人工跑一次"的保障；
+   真正的浏览器回归要等 Playwright 能装。
+2. **只验了 SSE 路径**：断线重连后 `liveText` 是空的，面板会停在"等待模型输出…"直到
+   下一个 delta；`workflow-controller.js` 的续传路径本身没变，但两者叠加没验。
+3. **长文本每次全量 `textContent =`**：50ms 一次、几万字时可能有卡顿。没在真实长步骤
+   （步骤 7/14 三万字级）上量过帧率。
+4. **`failed` 的语义依赖 `/status` 的 `status` 字段**：如果某处只轮询 `step_summaries`
+   不看 status，失败步骤会显示成 running。当前只有 `pollStatus` 一个调用方，已改。
+5. **问卷提示行现在是"跟着重画走"的**：它的点击/生成状态存在两个模块级变量里，
+   刷新页面后不会恢复（与 B53 之前的行为一致，未变得更差）。
+6. **步骤 3/6/11 的审批面板与实时面板会同时出现**：审批时实时面板还留着上一步的正文，
+   视觉上有点挤，但没有功能冲突；没在真机上确认过用户是否觉得干扰。
