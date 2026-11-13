@@ -5,19 +5,24 @@ Admin 管理路由
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
-from sqlalchemy import func, text
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func, text, case
 from typing import Optional, List
 from datetime import datetime, timedelta, timezone
 from loguru import logger
 import os
 import json
+import sys
+import time
+import shutil
+import platform
+from pathlib import Path
 
 from backend.database import get_db
 from backend.services.secret_box import SECRET_MASK, encrypt_secret, mask_secret
 from backend.models.user_models import (
     User, UserRole, WorkflowSession, OperationLog,
-    ModelConfig, PromptTemplate, KnowledgeBase,
+    ModelConfig, PromptTemplate, KnowledgeBase, PromptVersion,
     AiConversation, AiMessage, TokenUsage, Notification, Report,
     ReportModuleSequence, Project, ProjectFile,
 )
@@ -41,6 +46,7 @@ except ImportError:
         HAS_MEMORY_TABLES = False
 from backend.middleware.auth_middleware import get_current_user, get_admin_user
 from backend.services.auth_service import create_user, get_user_by_id, get_all_users, update_user_status, hash_password
+from backend.utils.time_utils import utc_iso, utcnow, local_day_start_utc
 
 router = APIRouter(
     prefix="/api/admin",
@@ -133,7 +139,7 @@ def admin_dashboard(db: Session = Depends(get_db)):
                     "action": l.action,
                     "resource_type": l.resource_type,
                     "detail": l.detail,
-                    "created_at": l.created_at.isoformat(),
+                    "created_at": utc_iso(l.created_at),
                 }
                 for l in recent_logs
             ],
@@ -177,8 +183,8 @@ def admin_list_users(
                     "role": u.role.value if isinstance(u.role, UserRole) else u.role,
                     "is_active": u.is_active,
                     "tokens_used": u.tokens_used,
-                    "last_login": u.last_login_at.isoformat() if u.last_login_at else None,
-                    "created_at": u.created_at.isoformat(),
+                    "last_login": utc_iso(u.last_login_at),
+                    "created_at": utc_iso(u.created_at),
                 }
                 for u in users
             ],
@@ -234,11 +240,11 @@ def admin_get_user(user_id: int, db: Session = Depends(get_db)):
             "is_active": user.is_active,
             "must_change_password": bool(getattr(user, "must_change_password", False)),
             "tokens_used": user.tokens_used,
-            "last_login": user.last_login_at.isoformat() if user.last_login_at else None,
-            "created_at": user.created_at.isoformat(),
+            "last_login": utc_iso(user.last_login_at),
+            "created_at": utc_iso(user.created_at),
             "project_count": project_count,
             "recent_operations": [
-                {"action": op.action, "detail": op.detail, "time": op.created_at.isoformat()}
+                {"action": op.action, "detail": op.detail, "time": utc_iso(op.created_at)}
                 for op in recent_ops
             ],
         }
@@ -482,7 +488,7 @@ def admin_audit_logs(
                     "resource_id": l.resource_id,
                     "detail": l.detail,
                     "ip_address": l.ip_address,
-                    "created_at": l.created_at.isoformat(),
+                    "created_at": utc_iso(l.created_at),
                 }
                 for l in logs
             ],
@@ -505,7 +511,7 @@ def admin_audit_summary(db: Session = Depends(get_db)):
             {
                 "action": r.action,
                 "count": r.count,
-                "last_time": r.last_time.isoformat() if r.last_time else None,
+                "last_time": utc_iso(r.last_time),
             }
             for r in results
         ]
@@ -551,8 +557,8 @@ def admin_list_workflows(
                     "current_step": _shared_state._WORKFLOW_PROGRESS.get(w.session_id, {}).get("last_step", w.current_step),
                     "model_name": w.model_name,
                     "token_used": w.token_used,
-                    "created_at": w.created_at.isoformat(),
-                    "completed_at": w.completed_at.isoformat() if w.completed_at else None,
+                    "created_at": utc_iso(w.created_at),
+                    "completed_at": utc_iso(w.completed_at),
                 }
                 for w in workflows
             ],
@@ -597,7 +603,7 @@ def admin_list_models(db: Session = Depends(get_db)):
                 "has_api_key": bool(m.api_key),
                 "api_base_url": m.api_base_url, "is_enabled": m.is_enabled,
                 "supports_vision": m.supports_vision, "supports_file": m.supports_file,
-                "sort_order": m.sort_order, "created_at": m.created_at.isoformat(),
+                "sort_order": m.sort_order, "created_at": utc_iso(m.created_at),
             }
             for m in models
         ]
@@ -724,7 +730,7 @@ def admin_list_prompts(
                 "parent_indicator": p.parent_indicator,
                 "dimension": p.dimension,
                 "modified_by": p.modified_by, "change_log": p.change_log,
-                "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+                "updated_at": utc_iso(p.updated_at),
                 "is_system": p.is_system,
             }
             for p in prompts
@@ -780,7 +786,7 @@ def admin_update_granular_prompt(
     prompt.version = (prompt.version or 0) + 1
     prompt.modified_by = admin.id
     prompt.change_log = req.change_log or "管理员更新"
-    prompt.updated_at = datetime.now(timezone.utc)
+    prompt.updated_at = utcnow()
     db.commit()
     _log_operation(db, admin.id, admin.username, "update_granular_prompt",
                    resource_type="prompt", resource_id=str(prompt_id),
@@ -936,7 +942,7 @@ def admin_list_knowledge(
                     "step_number": k.step_number, "indicator_level": k.indicator_level,
                     "content": k.content[:200] + "..." if len(k.content) > 200 else k.content,
                     "is_active": k.is_active,
-                    "updated_at": k.updated_at.isoformat() if k.updated_at else None,
+                    "updated_at": utc_iso(k.updated_at),
                 }
                 for k in items
             ],
@@ -956,7 +962,7 @@ def admin_get_knowledge(kb_id: int, db: Session = Depends(get_db)):
             "id": kb.id, "name": kb.name, "content": kb.content,
             "category": kb.category, "step_number": kb.step_number,
             "indicator_level": kb.indicator_level, "is_active": kb.is_active,
-            "updated_at": kb.updated_at.isoformat() if kb.updated_at else None,
+            "updated_at": utc_iso(kb.updated_at),
         }
     }
 
@@ -1135,7 +1141,7 @@ def admin_set_rating_thresholds(req: RatingThresholdRequest, db: Session = Depen
 @router.get("/token-stats")
 def admin_token_stats(db: Session = Depends(get_db)):
     """Token消耗统计 — 趋势、分布、Top用户"""
-    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today = local_day_start_utc()
     week_ago = today - timedelta(days=7)
     month_ago = today - timedelta(days=30)
 
@@ -1158,8 +1164,16 @@ def admin_token_stats(db: Session = Depends(get_db)):
         User.username, User.tokens_used, User.id
     ).filter(User.tokens_used > 0).order_by(User.tokens_used.desc()).limit(10).all()
 
+    # 图表按「北京日」分桶：库里存的是 UTC，MySQL 上先加 8 小时再取日期。
+    # 非 MySQL（单测用的 SQLite）退回 UTC 日 —— 只影响柱子的边界，不影响上面的总数。
+    bind = db.get_bind()
+    if bind is not None and bind.dialect.name == "mysql":
+        day_expr = func.date(func.date_add(TokenUsage.created_at, text("INTERVAL 8 HOUR")))
+    else:
+        day_expr = func.date(TokenUsage.created_at)
+
     daily_trend = db.query(
-        func.date(TokenUsage.created_at).label("date"),
+        day_expr.label("date"),
         func.sum(TokenUsage.total_tokens).label("tokens")
     ).filter(TokenUsage.created_at >= month_ago).group_by("date").order_by("date").all()
 
@@ -1192,7 +1206,7 @@ def admin_ai_chat_stats(db: Session = Depends(get_db)):
     total_conversations = db.query(func.count(AiConversation.id)).scalar() or 0
     total_messages = db.query(func.count(AiMessage.id)).scalar() or 0
     active_conversations_today = db.query(func.count(AiConversation.id)).filter(
-        AiConversation.updated_at >= datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        AiConversation.updated_at >= local_day_start_utc()
     ).scalar() or 0
 
     top_users = db.query(
@@ -1299,7 +1313,7 @@ def admin_get_notifications(
                     "content": n.content,
                     "is_read": n.is_read,
                     "sender_id": n.sender_id,
-                    "created_at": n.created_at.isoformat(),
+                    "created_at": utc_iso(n.created_at),
                 }
                 for n in items
             ],
@@ -1383,7 +1397,7 @@ def admin_list_module_sequences(
                 "module_key": m.module_key, "module_name": m.module_name,
                 "sort_order": m.sort_order, "is_visible": m.is_visible,
                 "client_editable": m.client_editable,
-                "updated_at": m.updated_at.isoformat() if m.updated_at else None,
+                "updated_at": utc_iso(m.updated_at),
             }
             for m in modules
         ]
@@ -1406,7 +1420,7 @@ def admin_create_module_sequence(
         existing.sort_order = req.sort_order
         existing.is_visible = req.is_visible
         existing.client_editable = req.client_editable
-        existing.updated_at = datetime.now(timezone.utc)
+        existing.updated_at = utcnow()
         db.commit()
         return {"success": True, "message": "模块顺序已更新", "data": {"id": existing.id}}
 
@@ -1442,7 +1456,7 @@ def admin_batch_update_module_sequences(
             existing.module_name = m.module_name
             existing.is_visible = m.is_visible
             existing.client_editable = m.client_editable
-            existing.updated_at = datetime.now(timezone.utc)
+            existing.updated_at = utcnow()
         else:
             new_m = ReportModuleSequence(
                 step_number=m.step_number, module_key=m.module_key,
@@ -1495,7 +1509,7 @@ def admin_update_granular_knowledge(
     kb.step_number = req.step_number
     kb.indicator_level = req.indicator_level
     kb.is_active = req.is_active
-    kb.updated_at = datetime.now(timezone.utc)
+    kb.updated_at = utcnow()
     db.commit()
     _log_operation(db, admin.id, admin.username, "update_granular_knowledge",
                    resource_type="knowledge", resource_id=str(kb_id),
@@ -1607,11 +1621,11 @@ def admin_file_stats(db: Session = Depends(get_db)):
     ).group_by("upload_type").all()
 
     # 90天内即将到期文件数
-    cutoff = datetime.now(timezone.utc) + timedelta(days=90)
+    cutoff = utcnow() + timedelta(days=90)
     expiring = db.query(func.count(ProjectFile.id)).filter(
         ProjectFile.expires_at.isnot(None),
         ProjectFile.expires_at <= cutoff,
-        ProjectFile.expires_at > datetime.now(timezone.utc),
+        ProjectFile.expires_at > utcnow(),
     ).scalar() or 0
 
     return {
