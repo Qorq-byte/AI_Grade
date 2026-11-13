@@ -54,7 +54,7 @@
         .wf-step-name{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wf-step-badge{font-size:10px;padding:1px 6px;border-radius:8px;font-weight:500;flex-shrink:0}.wf-step.doing .wf-step-badge{background:#667eea;color:white}.wf-step.approval .wf-step-badge{background:#ed8936;color:white}
         @keyframes wfPulse{0%,100%{box-shadow:0 0 0 0 rgba(102,126,234,.4)}50%{box-shadow:0 0 0 6px rgba(102,126,234,0)}}
         .wf-content{flex:1;background:white;border-radius:12px;border:1px solid #e2e8f0;overflow-y:auto;padding:24px;min-width:0;display:flex;flex-direction:column}
-        .wf-content-body{flex:1;overflow-y:auto;min-height:0}
+        .wf-content-body{flex:1;overflow-y:auto;min-height:0;overscroll-behavior:contain;overflow-anchor:none}
         .wf-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:#a0aec0;text-align:center}.wf-empty svg{margin-bottom:16px;color:#cbd5e0}.wf-empty h3{font-size:18px;color:#4a5568;margin-bottom:8px}.wf-empty p{font-size:14px;max-width:400px}
         .wf-content-inner{line-height:1.8;color:#2d3748;font-size:14px;white-space:pre-wrap;word-break:break-word}
         .wf-content-inner h1,.wf-content-inner h2,.wf-content-inner h3{margin:16px 0 8px;color:#1a202c}.wf-content-inner h2{font-size:18px;border-bottom:2px solid #667eea;padding-bottom:6px}.wf-content-inner table{width:100%;border-collapse:collapse;margin:12px 0}.wf-content-inner td,.wf-content-inner th{border:1px solid #e2e8f0;padding:8px 12px;text-align:left}.wf-content-inner th{background:#f8f9fa;font-weight:600}
@@ -480,12 +480,19 @@
         // ====== WF State ======
         var wfSessionId=null,wfRunning=false,wfCurrentStep=0,wfStatus="",wfStatusController=null,wfCoverage=null,wfConsistency=null,wfDispo=null,wfCritique=null,wfCritiqueSwitches={},wfVersions={},wfEvidence={},wfComparisons={},wfReviewSteps=[],wfCompletedSteps=[],wfStepContents={},wfApprovalStep=null,wfUploadedFiles=[],wfAbortController=null
         // 查看步骤独立于执行步骤；内容（含流式草稿）和阅读位置均按步骤保存。
-        var wfSelectedStep=0;
+        var wfSelectedStep=0,wfStepScroll={};
+
+        function wfIsAtBottom(body){return !body||body.scrollHeight-body.scrollTop-body.clientHeight<=24}
+        function rememberWfScroll(){
+            var c=document.getElementById('wfContent'),body=c&&c.querySelector('.wf-content-body');
+            if(body&&wfSelectedStep)wfStepScroll[wfSelectedStep]={top:body.scrollTop,follow:wfIsAtBottom(body)};
+        }
 
         function initWfStepper(){var l=document.getElementById('wfStepperList');if(!l)return;l.innerHTML='';for(var i=1;i<=14;i++){(function(sn){var div=document.createElement('div');div.className='wf-step';div.id='wfStep'+sn;div.innerHTML='<div class="wf-step-dot">'+sn+'</div><span class="wf-step-name">'+C.STEP_NAMES[sn]+'</span>';div.onclick=function(){selectWfStep(sn)};l.appendChild(div)})(i)}}
 
         function selectWfStep(sn){
     sn=Number(sn);
+    rememberWfScroll();
     wfSelectedStep=sn;
     document.querySelectorAll('.wf-step').forEach(function(s){s.classList.remove('active')});
     document.getElementById('wfStep'+sn)&&document.getElementById('wfStep'+sn).classList.add('active');
@@ -526,6 +533,8 @@
     inner+=buildStepChat(sn);
     inner+=buildStepFooter(sn,st,txt);
     c.innerHTML=inner;
+    var body=c.querySelector('.wf-content-body'),scroll=wfStepScroll[sn];
+    if(body)body.scrollTop=scroll?(scroll.follow?body.scrollHeight:scroll.top):(st==='doing'?body.scrollHeight:0);
 }
 
 /* 资料覆盖度徽标：告诉用户这一步的提示词到底看完了多少资料 */
@@ -1469,8 +1478,10 @@ var body={session_id:wfSessionId,use_rag:document.getElementById("wfUseRag").che
             var c=document.getElementById('wfContent');if(!c)return;
             var body=c.querySelector('.wf-content-body'),stream=body&&body.querySelector('.wf-stream-body');
             if(!stream)return;
+            var follow=wfIsAtBottom(body),top=body.scrollTop;
             var hint=body.querySelector('#wfStreamHint');if(hint)hint.remove();
             stream.textContent=wfStepContents[step]||'';
+            body.scrollTop=follow?body.scrollHeight:top;
         });
 
         function handleSSEEvent(d){

@@ -257,6 +257,28 @@ test('完成正文替换流式缓存，迟到的 delta 不重复追加到完成�
     assert.match(e.panel.innerHTML, /authoritative/);
 });
 
+test('仅内容区贴底跟随，上翻停留，滚回底部恢复，切换保留阅读位置', () => {
+    const e = workflowContext();
+    e.emit('step_start', 4);
+    e.emit('token_delta', 4, {delta: 'long'.repeat(50)});
+    e.flush();
+    assert.equal(e.body().scrollTop, e.body().scrollHeight);
+    assert.equal(e.panel.scrollTop, 0);
+    e.body().scrollTop = 35;
+    e.emit('token_delta', 4, {delta: '-more'});
+    e.flush();
+    assert.equal(e.body().scrollTop, 35);
+    e.ctx.selectWfStep(5);
+    e.emit('token_delta', 4, {delta: '-away'});
+    e.flush();
+    e.ctx.selectWfStep(4);
+    assert.equal(e.body().scrollTop, 35);
+    e.body().scrollTop = e.body().scrollHeight;
+    e.emit('token_delta', 4, {delta: '-tail'});
+    e.flush();
+    assert.equal(e.body().scrollTop, e.body().scrollHeight);
+});
+
 test('switchTab 只切 class，不写 style.display，并同步 hash', async () => {
     const calls = [];
     const { ctx, elements, navLinks, history } = buildContext(async (url) => {
