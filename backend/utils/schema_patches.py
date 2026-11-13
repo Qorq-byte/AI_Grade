@@ -37,6 +37,8 @@ def ensure_column(conn, table: str, column: str, ddl: str) -> bool:
 #: 每项 (表, 列, 列定义)。列定义里的 DEFAULT 不能省 —— 老行要有确定值。
 COLUMN_PATCHES = [
     ("users", "must_change_password", "`must_change_password` TINYINT(1) NOT NULL DEFAULT 0"),
+    # 改密后让旧 JWT 立即失效（批次 25）。老行默认 0，正好等于老 token 里缺省的 ver
+    ("users", "token_version", "`token_version` INT NOT NULL DEFAULT 0"),
 ]
 
 

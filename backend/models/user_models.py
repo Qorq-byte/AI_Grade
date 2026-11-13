@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, Float, Boolean, Enum as SAEnum, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, DateTime, Float, Boolean, Enum as SAEnum, ForeignKey, Index
 from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -25,6 +25,9 @@ class User(Base):
     # 初始/重置密码后置位：除改密与只读自身信息外，其余接口一律拒绝（批次 24）
     # server_default 让已存在的 users 表通过 ALTER TABLE 加列时老行默认为 0
     must_change_password = Column(Boolean, default=False, nullable=False, server_default="0")
+    # 口令变更版本号：每次改密自增，JWT 里带一份，对不上即视为「改密前签发的会话」。
+    # server_default 让已存在的表通过 ALTER TABLE 加列时老行默认为 0（批次 25）
+    token_version = Column(Integer, default=0, nullable=False, server_default="0")
     last_login_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -166,6 +169,30 @@ class PromptTemplate(Base):
         if self.dimension:
             extra += f", dim={self.dimension}"
         return f"<PromptTemplate(id={self.id}, step={self.step_name}, version={self.version}{extra})>"
+
+
+class PromptVersion(Base):
+    """提示词的历史快照 —— 每次保存 / 重置 / 回滚都追加一行。
+
+    `prompt_templates` 只保留「当前内容」：改坏一条自定义提示词，过去只能
+    「重置为系统默认」，原来的自定义内容永久丢失。有了这张表，才能做版本对比
+    和回滚（批次 5）。
+    """
+    __tablename__ = "prompt_versions"
+    __table_args__ = (
+        Index("ix_prompt_versions_prompt_version", "prompt_id", "version"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    prompt_id = Column(Integer, ForeignKey("prompt_templates.id"), nullable=False)
+    version = Column(Integer, nullable=False)
+    prompt_content = Column(MEDIUMTEXT, nullable=True)
+    change_log = Column(Text, nullable=True)
+    modified_by = Column(Integer, nullable=True)  # 操作者 user_id
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<PromptVersion(prompt={self.prompt_id}, v={self.version})>"
 
 
 class KnowledgeBase(Base):
