@@ -928,6 +928,10 @@ def admin_create_granular_prompt(
     db.add(prompt)
     db.commit()
     db.refresh(prompt)
+    # 新建的提示词也留一份 v1 快照，历史从第一天就是完整的
+    _snapshot_prompt(db, prompt, version=prompt.version, change_log=prompt.change_log,
+                     modified_by=admin.id)
+    db.commit()
     _log_operation(db, admin.id, admin.username, "create_granular_prompt",
                    resource_type="prompt", resource_id=str(prompt.id),
                    detail=f"创建提示词 step={req.step_number} name={req.step_name}")
@@ -991,9 +995,55 @@ def admin_get_prompt(prompt_id: int, db: Session = Depends(get_db)):
             "step_name": prompt.step_name, "prompt_content": prompt.prompt_content,
             "version": prompt.version, "modified_by": prompt.modified_by,
             "change_log": prompt.change_log,
-            "updated_at": prompt.updated_at.isoformat() if prompt.updated_at else None,
+            "updated_at": utc_iso(prompt.updated_at),
         }
     }
+
+
+# ── 提示词版本历史 ─────────────────────────────────────
+# `prompt_templates` 只存「当前内容」，改坏了就只剩「重置为系统默认」一条路。
+# 下面两个小函数负责在每次写入前后打点，让回滚和对比成为可能。
+
+def _snapshot_prompt(db: Session, prompt: PromptTemplate, *, version: int,
+                     change_log: str, modified_by: Optional[int]) -> None:
+    """把 prompt 的**当前**内容追加进历史。调用方负责 commit。"""
+    db.add(PromptVersion(
+        prompt_id=prompt.id,
+        version=version,
+        prompt_content=prompt.prompt_content,
+        change_log=change_log,
+        modified_by=modified_by,
+    ))
+
+
+def _ensure_prompt_baseline(db: Session, prompt: PromptTemplate) -> None:
+    """首次改动前，先把「改动前的那一版」存进去。
+
+    不然历史里永远缺最早的内容：用户改坏之后想回到第一次保存前的样子，无从下手。
+    """
+    exists = db.query(PromptVersion.id).filter(PromptVersion.prompt_id == prompt.id).first()
+    if exists or prompt.prompt_content is None:
+        return
+    db.add(PromptVersion(
+        prompt_id=prompt.id,
+        version=prompt.version or 1,
+        prompt_content=prompt.prompt_content,
+        change_log="（历史起点）首次改动前的原始内容",
+        modified_by=prompt.modified_by,
+    ))
+
+
+def _invalidate_prompt_cache() -> None:
+    """让进程内的提示词缓存立刻作废。
+
+    PromptManager 是单例 + 60 秒 TTL 缓存：改完 / 回滚完如果不清，工作流还会拿
+    旧内容跑一分钟。「回滚」这种救火操作，等一分钟等于没用。
+    """
+    try:
+        from backend.agents.prompts.prompt_manager import get_prompt_manager
+        get_prompt_manager().clear_cache()
+    except Exception as e:  # noqa: BLE001 缓存清不掉不该让保存失败
+        logger.warning("清理提示词缓存失败: {}", str(e))
 
 
 @router.put("/prompts/{prompt_id}")
@@ -1002,17 +1052,156 @@ def admin_update_prompt(
     db: Session = Depends(get_db),
     admin: User = Depends(get_admin_user),
 ):
-    """更新提示词（自动版本递增 + 变更日志）"""
+    """更新提示词（自动版本递增 + 变更日志 + 历史快照）"""
     prompt = db.query(PromptTemplate).filter(PromptTemplate.id == prompt_id).first()
     if not prompt:
         raise HTTPException(status_code=404, detail="提示词不存在")
+    if not (req.prompt_content or "").strip():
+        raise HTTPException(status_code=400, detail="提示词内容不能为空")
+
+    _ensure_prompt_baseline(db, prompt)
+
     prompt.prompt_content = req.prompt_content
     prompt.version = (prompt.version or 0) + 1
     prompt.modified_by = admin.id
     prompt.change_log = req.change_log or "管理员手动更新"
-    prompt.updated_at = datetime.now(timezone.utc)
+    prompt.updated_at = utcnow()
+    _snapshot_prompt(db, prompt, version=prompt.version,
+                     change_log=prompt.change_log, modified_by=admin.id)
     db.commit()
+    _invalidate_prompt_cache()
     return {"success": True, "message": f"提示词 v{prompt.version} 已更新"}
+
+
+@router.get("/prompts/{prompt_id}/versions")
+def admin_list_prompt_versions(
+    prompt_id: int,
+    db: Session = Depends(get_db),
+):
+    """列出某个提示词的历史版本（默认不返回正文，避免列表拖成几百 KB）"""
+    prompt = db.query(PromptTemplate).filter(PromptTemplate.id == prompt_id).first()
+    if not prompt:
+        raise HTTPException(status_code=404, detail="提示词不存在")
+
+    rows = (
+        db.query(PromptVersion)
+        .filter(PromptVersion.prompt_id == prompt_id)
+        .order_by(PromptVersion.version.desc())
+        .all()
+    )
+    # 操作者名字：一次查完，别在列表里逐行懒加载
+    operator_ids = {r.modified_by for r in rows if r.modified_by}
+    names = {}
+    if operator_ids:
+        names = {
+            uid: uname for uid, uname in
+            db.query(User.id, User.username).filter(User.id.in_(operator_ids)).all()
+        }
+
+    return {
+        "success": True,
+        "data": {
+            "prompt": {
+                "id": prompt.id,
+                "step_number": prompt.step_number,
+                "step_name": prompt.step_name,
+                "current_version": prompt.version,
+                "is_system": bool(prompt.is_system),
+            },
+            "versions": [
+                {
+                    "id": r.id,
+                    "version": r.version,
+                    "change_log": r.change_log,
+                    "modified_by": r.modified_by,
+                    "modified_by_name": names.get(r.modified_by) or ("系统" if not r.modified_by else f"#{r.modified_by}"),
+                    "length": len(r.prompt_content or ""),
+                    "is_current": r.version == prompt.version,
+                    "created_at": utc_iso(r.created_at),
+                }
+                for r in rows
+            ],
+        },
+    }
+
+
+@router.get("/prompts/{prompt_id}/versions/{version}")
+def admin_get_prompt_version(
+    prompt_id: int,
+    version: int,
+    db: Session = Depends(get_db),
+):
+    """取某一版正文（对比/预览用）"""
+    prompt = db.query(PromptTemplate).filter(PromptTemplate.id == prompt_id).first()
+    if not prompt:
+        raise HTTPException(status_code=404, detail="提示词不存在")
+
+    row = (
+        db.query(PromptVersion)
+        .filter(PromptVersion.prompt_id == prompt_id, PromptVersion.version == version)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail=f"v{version} 不存在")
+
+    return {
+        "success": True,
+        "data": {
+            "version": row.version,
+            "prompt_content": row.prompt_content or "",
+            "change_log": row.change_log,
+            "created_at": utc_iso(row.created_at),
+            # 顺手把当前内容带上，前端拿来算 diff 就不用再发一次请求
+            "current_version": prompt.version,
+            "current_content": prompt.prompt_content or "",
+        },
+    }
+
+
+@router.post("/prompts/{prompt_id}/rollback/{version}")
+def admin_rollback_prompt(
+    prompt_id: int,
+    version: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_admin_user),
+):
+    """回滚到某一版：把内容写回当前行，并作为新版本追加（历史不丢）"""
+    prompt = db.query(PromptTemplate).filter(PromptTemplate.id == prompt_id).first()
+    if not prompt:
+        raise HTTPException(status_code=404, detail="提示词不存在")
+
+    row = (
+        db.query(PromptVersion)
+        .filter(PromptVersion.prompt_id == prompt_id, PromptVersion.version == version)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail=f"v{version} 不存在")
+    if row.version == prompt.version:
+        raise HTTPException(status_code=400, detail=f"当前就是 v{version}，无需回滚")
+
+    _ensure_prompt_baseline(db, prompt)
+
+    prompt.prompt_content = row.prompt_content
+    prompt.version = (prompt.version or 0) + 1
+    prompt.modified_by = admin.id
+    prompt.change_log = f"回滚到 v{version}（{row.change_log or '无说明'}）"
+    prompt.updated_at = utcnow()
+    _snapshot_prompt(db, prompt, version=prompt.version,
+                     change_log=prompt.change_log, modified_by=admin.id)
+    db.commit()
+    _invalidate_prompt_cache()
+
+    _log_operation(
+        db, admin.id, admin.username, "rollback_prompt",
+        resource_type="prompt", resource_id=str(prompt_id),
+        detail=f"提示词 {prompt.step_name} 回滚到 v{version}，新版本 v{prompt.version}",
+    )
+    return {
+        "success": True,
+        "message": f"已回滚到 v{version}（当前为 v{prompt.version}）",
+        "data": {"version": prompt.version},
+    }
 
 
 @router.post("/prompts/{prompt_id}/reset")
@@ -1033,6 +1222,8 @@ def admin_reset_prompt(prompt_id: int, db: Session = Depends(get_db), admin: Use
     if not default_data.get("system_prompt") and not default_data.get("human_prompt"):
         raise HTTPException(status_code=400, detail=f"步骤 {prompt.step_number} 没有系统默认提示词")
 
+    _ensure_prompt_baseline(db, prompt)
+
     prompt.prompt_content = (
         f"{default_data.get('system_prompt', '')}\n\n---\n\n{default_data.get('human_prompt', '')}"
     )
@@ -1040,8 +1231,11 @@ def admin_reset_prompt(prompt_id: int, db: Session = Depends(get_db), admin: Use
     prompt.version = (prompt.version or 0) + 1
     prompt.modified_by = admin.id
     prompt.change_log = "重置为系统默认"
-    prompt.updated_at = datetime.now(timezone.utc)
+    prompt.updated_at = utcnow()
+    _snapshot_prompt(db, prompt, version=prompt.version,
+                     change_log=prompt.change_log, modified_by=admin.id)
     db.commit()
+    _invalidate_prompt_cache()
     return {"success": True, "message": "已重置为系统默认", "data": {"version": prompt.version}}
 
 
@@ -1063,6 +1257,9 @@ def admin_delete_prompt(
         resource_type="prompt", resource_id=str(prompt_id),
         detail=f"删除提示词 step={prompt.step_number} name={step_name}",
     )
+    # 历史快照没有 ORM 关系（PromptVersion 不挂在 PromptTemplate 上），
+    # 不显式删就会撞 prompt_versions.prompt_id 外键，删除直接 500。
+    db.query(PromptVersion).filter(PromptVersion.prompt_id == prompt_id).delete(synchronize_session=False)
     db.delete(prompt)
     db.commit()
     return {"success": True, "message": f"提示词「{step_name}」已删除"}
