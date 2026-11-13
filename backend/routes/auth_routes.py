@@ -11,6 +11,7 @@ from backend.middleware.auth_middleware import (
     get_current_user, get_admin_user
 )
 from backend.models.user_models import User
+from backend.utils.time_utils import utc_iso
 
 router = APIRouter(prefix="/api/auth", tags=["认证管理"])
 
@@ -38,15 +39,18 @@ class UserResponse(BaseModel):
 def login(req: LoginRequest, db: Session = Depends(get_db)):
     try:
         user = authenticate_user(db, req.username, req.password)
-        # 生成 JWT tokens
+        ver = int(getattr(user, "token_version", 0) or 0)
+        # 生成 JWT tokens（ver 与账号上的 token_version 绑定，改密后旧令牌即失效）
         access_token = create_access_token(data={
             "user_id": user.id,
             "username": user.username,
             "role": user.role.value,
+            "ver": ver,
         })
         refresh_token = create_refresh_token(data={
             "user_id": user.id,
             "username": user.username,
+            "ver": ver,
         })
         # 记录操作日志
         _log_operation(
@@ -112,8 +116,8 @@ def list_users(db: Session = Depends(get_db)):
                 "role": u.role.value,
                 "is_active": u.is_active,
                 "tokens_used": u.tokens_used,
-                "last_login": u.last_login_at.isoformat() if u.last_login_at else None,
-                "created_at": u.created_at.isoformat()
+                "last_login": utc_iso(u.last_login_at),
+                "created_at": utc_iso(u.created_at)
             }
             for u in users
         ]
@@ -155,10 +159,14 @@ def refresh_token(refresh_token_str: str, db: Session = Depends(get_db)):
     user = get_user_by_id(db, user_id)
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="用户不存在或已被禁用")
+    # 改过密码的账号，之前签发的 refresh token 一并作废（否则偷到 refresh 就能续命）
+    if int(payload.get("ver") or 0) != int(getattr(user, "token_version", 0) or 0):
+        raise HTTPException(status_code=401, detail="登录状态已失效，请重新登录")
     new_access = create_access_token(data={
         "user_id": user.id,
         "username": user.username,
         "role": user.role.value,
+        "ver": int(getattr(user, "token_version", 0) or 0),
     })
     return {
         "success": True,
@@ -179,7 +187,7 @@ def get_me(current_user: User = Depends(get_current_user)):
             "is_active": current_user.is_active,
             "must_change_password": bool(getattr(current_user, "must_change_password", False)),
             "tokens_used": current_user.tokens_used,
-            "created_at": current_user.created_at.isoformat(),
+            "created_at": utc_iso(current_user.created_at),
         }
     }
 
