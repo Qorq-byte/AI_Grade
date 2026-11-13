@@ -230,9 +230,12 @@ async def global_exception_handler(request: Request, exc: Exception):
     # 而异常文本里一旦出现花括号（JSON / dict repr），format 会抛 IndexError，
     # 兜底处理器自己崩掉、客户端只拿到空响应体（批次 35 踩过）。
     logger.opt(exception=True).error(f"未处理的异常 [{request.method} {request.url.path}]: {exc}")
+    # 异常原文可能带 SQL、路径、内部字段名，只在调试模式下回给前端；
+    # 生产环境让用户报 request_id 即可，日志里能查到完整堆栈。
+    detail = f"服务器内部错误: {exc}" if settings.DEBUG else "服务器内部错误，请稍后重试"
     return JSONResponse(
         status_code=500,
-        content={"success": False, "detail": f"服务器内部错误: {str(exc)}",
+        content={"success": False, "detail": detail,
                  "request_id": request_id},
     )
 
