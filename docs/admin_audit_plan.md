@@ -617,6 +617,42 @@ onclick="changeUserPassword(3,'o\'brien')"   // 要手工 replace 反斜杠和�
 ---
 
 
+### 第十二批 · 真实库端到端冒烟（2026-11-14）
+
+前十批所有验证都跑在 SQLite 上。有几类东西它摸不到：MySQL 专用 SQL（`token-stats`
+的 `DATE_ADD ... INTERVAL 8 HOUR` 分桶）、真实 `state_backups/*.json`、`information_schema`
+补丁之后的真实表结构、以及真实数据规模下的响应形状。
+
+所以补了一份能反复跑的冒烟脚本：**`tests/_smoke_admin_endpoints.py`**
+
+做法：临时建 `_smoke_admin`（管理员）与 `_smoke_target`（普通用户）两个账号，用**真实
+登录**拿令牌，把管理端 44 个检查点按读/写/边界走一遍，最后删掉临时账号与它造的全部
+数据。开始前先清理一次，所以上次跑挂了也不会留垃圾。
+
+覆盖：
+- 18 个只读接口 + 登录 + /me
+- 工作流详情（timeline 14 段 / sections 14 段）、第 14 步正文（35312 字，来源 state_backup）、路径穿越被挡
+- 审计导出（1097 行 / 108KB，带 BOM）+ 带筛选导出（action=login 命中 613 行）
+- 知识库单条新增、批量导入（含重复 1 条、脏行 1 条，分别跳过/报错）
+- 通知发送 → 列表可见 → 批量撤回
+- 提示词：新建 → 改一版 → 历史 2 版 → 回滚到 v1 → 历史变 3 版 → 删除
+- 边界：`page_size=101` 422、Token 降序真的降序、未知排序键不炸、`step=15` 422、
+  坏日期参数被忽略而不是 500、`/admin` 可下发且引用 app.js、静态脚本带 ETag
+- 无令牌 401
+
+**结果：44 项全过**，7 张表行数与跑之前逐一对齐（User 122 / KnowledgeBase 0 /
+Notification 112 / PromptTemplate 14 / PromptVersion 0 / OperationLog 1095 / Workflow 64）。
+
+**冒烟抓到的第一个问题不是代码，是脚本**：通知接口只发给 `role=user`，而冒烟账号是
+管理员，于是 404「未找到目标用户」。这其实说明接口行为是对的（前端下拉也只列普通用户），
+但脚本得造一个普通收件人。
+
+**仍然没做的**：真实浏览器渲染。这轮只到 HTTP 层 —— 布局、暗色主题的实际观感、
+`data-act` 按钮点下去有没有反应，仍需人工扫一眼。工作区已确认没有可用的浏览器自动化。
+
+---
+
+
 ## 附：扫描阶段未验证、现已确认的点
 
 1. ~~`/api/admin/users?page_size=9999` 是否真返回 422~~ → **已确认**，`tests/test_admin_recovery.py::test_user_options_rejects_page_size_over_limit_contract` 固化。
