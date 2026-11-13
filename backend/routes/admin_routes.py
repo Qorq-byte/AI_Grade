@@ -2753,4 +2753,85 @@ def admin_batch_withdraw_notifications(
     return {"success": True, "message": f"已撤回 {count} 条通知", "data": {"deleted": count}}
 
 
+class KnowledgeBulkItem(BaseModel):
+    name: str
+    content: str
+    category: Optional[str] = None
+    step_number: Optional[int] = None
+    indicator_level: Optional[int] = None
+    is_active: bool = True
+
+
+class KnowledgeBulkRequest(BaseModel):
+    items: list[KnowledgeBulkItem] = []
+    skip_existing: bool = True
+
+
+@router.post("/knowledge/bulk")
+def admin_bulk_import_knowledge(
+    req: KnowledgeBulkRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_admin_user),
+):
+    """批量导入知识库条目。
+
+    逐条校验而不是「一条不合格整批失败」—— 从 Excel 导出来的数据总有几行是脏的，
+    整批回滚等于让人回去手改 200 行。返回哪几行失败、为什么。
+    """
+    if not req.items:
+        raise HTTPException(status_code=400, detail="没有可导入的条目")
+    if len(req.items) > 500:
+        raise HTTPException(status_code=400, detail="一次最多导入 500 条")
+
+    existing = {
+        (name or "").strip()
+        for (name,) in db.query(KnowledgeBase.name).all()
+    } if req.skip_existing else set()
+
+    created, skipped, failed = 0, 0, []
+    for index, item in enumerate(req.items, start=1):
+        name = (item.name or "").strip()
+        content = (item.content or "").strip()
+        if not name:
+            failed.append({"row": index, "name": "", "error": "名称为空"})
+            continue
+        if not content:
+            failed.append({"row": index, "name": name, "error": "内容为空"})
+            continue
+        if item.step_number is not None and not (1 <= item.step_number <= 14):
+            failed.append({"row": index, "name": name, "error": "步骤需在 1-14 之间"})
+            continue
+        if item.indicator_level is not None and not (1 <= item.indicator_level <= 3):
+            failed.append({"row": index, "name": name, "error": "指标层级需在 1-3 之间"})
+            continue
+        if name in existing:
+            skipped += 1
+            continue
+
+        db.add(KnowledgeBase(
+            name=name,
+            content=content,
+            category=(item.category or "").strip() or None,
+            step_number=item.step_number,
+            indicator_level=item.indicator_level,
+            is_active=bool(item.is_active),
+        ))
+        existing.add(name)
+        created += 1
+
+    if created:
+        db.commit()
+
+    _log_operation(
+        db, admin.id, admin.username, "admin_bulk_import_knowledge",
+        resource_type="knowledge", resource_id="bulk",
+        detail=f"批量导入知识库：新增 {created}、跳过重复 {skipped}、失败 {len(failed)}",
+    )
+    return {
+        "success": True,
+        "message": f"新增 {created} 条，跳过重复 {skipped} 条，失败 {len(failed)} 条",
+        "data": {"created": created, "skipped": skipped, "failed": failed},
+    }
+
+
 from backend.utils.log_utils import log_operation as _log_operation

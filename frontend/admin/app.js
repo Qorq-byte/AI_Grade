@@ -710,7 +710,8 @@ async function loadKnowledge(){
     main.innerHTML='<div class="page-header"><h2>📚 知识库</h2><p>管理RAG检索增强的专业知识条目</p></div>'+
         '<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap"><select id="kb-step-filter" style="padding:7px 11px;background:var(--card);border:1px solid var(--border);border-radius:7px;color:var(--text);font-size:0.85rem"><option value="">全部步骤</option>'+[1,2,3,4,5,6,7,8,9,10,11,12,13,14].map(function(i){return '<option value="'+i+'">Step '+i+'</option>'}).join('')+'</select>'+
         '<input id="kb-cat-filter" placeholder="分类筛选..." style="padding:7px 11px;background:var(--card);border:1px solid var(--border);border-radius:7px;color:var(--text);width:130px;font-size:0.85rem">'+
-        '<button class="btn btn-primary" onclick="showKnowledgeModal()">+ 添加条目</button></div>'+
+        '<button class="btn btn-primary" onclick="showKnowledgeModal()">+ 添加条目</button>'+
+        '<button class="btn" onclick="showKnowledgeBulkModal()">📥 批量导入</button></div>'+
         '<div id="kb-container" class="card"><div class="empty-state">加载中...</div></div><div id="kb-pagination" class="pagination"></div>';
     document.getElementById('kb-step-filter').addEventListener('change',function(){kbStep=this.value;kbPage=1;refreshKnowledge()});
     document.getElementById('kb-cat-filter').addEventListener('input',debounce(function(){kbCat=this.value;kbPage=1;refreshKnowledge()},300));
@@ -1658,3 +1659,188 @@ async function withdrawSelectedNotifications(){
     else{showToast((r&&r.detail)||'撤回失败','error')}
 }
 
+// ── 知识库批量导入 ──
+// 前端解析文件：CSV 的引号规则和编码（Excel 导出的常是 GBK）在后端处理起来更麻烦，
+// 而且解析完就是一份 JSON，接口保持简单。
+function parseCsv(text){
+    var rows=[],row=[],cell='',inQuote=false;
+    for(var i=0;i<text.length;i++){
+        var ch=text[i];
+        if(inQuote){
+            if(ch==='"'){
+                if(text[i+1]==='"'){cell+='"';i++;}
+                else{inQuote=false;}
+            }else{cell+=ch}
+        }else{
+            if(ch==='"')inQuote=true;
+            else if(ch===','){row.push(cell);cell='';}
+            else if(ch==='\n'){row.push(cell);rows.push(row);row=[];cell='';}
+            else if(ch!=='\r'){cell+=ch}
+        }
+    }
+    if(cell!==''||row.length){row.push(cell);rows.push(row)}
+    return rows.filter(function(r){
+        return r.some(function(c){return String(c).trim()!==''});
+    });
+}
+
+function normalizeKbItem(raw){
+    raw=raw||{};
+    function num(v){
+        if(v===null||v===undefined||v==='')return null;
+        var n=parseInt(v,10);
+        return isNaN(n)?null:n;
+    }
+    function bool(v){
+        if(v===undefined||v===null||v==='')return true;
+        return v===true||v===1||v==='1'||v==='true'||v==='是';
+    }
+    // 先 trim 再判空：只写了空格格的分类要变成「没填」，而不是留一个空串
+    var category=String(raw.category==null?'':raw.category).trim();
+    return {
+        name:String(raw.name==null?'':raw.name).trim(),
+        content:String(raw.content==null?'':raw.content).trim(),
+        category:category===''?null:category,
+        step_number:num(raw.step_number),
+        indicator_level:num(raw.indicator_level),
+        is_active:bool(raw.is_active)
+    };
+}
+
+var KB_CSV_ALIAS={
+    name:['名称','name','title','标题'],
+    content:['内容','content','正文'],
+    category:['分类','category','类别'],
+    step_number:['步骤','step','step_number','step_no'],
+    indicator_level:['层级','级别','level','indicator_level'],
+    is_active:['启用','active','is_active','状态']
+};
+
+function parseKnowledgeImport(text){
+    var raw=String(text||'').replace(/^\uFEFF/,'').trim();
+    if(!raw)return [];
+
+    if(raw[0]==='['||raw[0]==='{'){
+        var data=JSON.parse(raw);
+        if(!Array.isArray(data))data=data.items||data.list||[];
+        return data.map(normalizeKbItem);
+    }
+
+    var rows=parseCsv(raw);
+    if(!rows.length)return [];
+
+    var header=rows[0].map(function(h){return String(h).trim().toLowerCase()});
+    var map={};
+    Object.keys(KB_CSV_ALIAS).forEach(function(key){
+        var idx=-1;
+        for(var i=0;i<header.length;i++){
+            if(KB_CSV_ALIAS[key].indexOf(header[i])>=0){idx=i;break}
+        }
+        if(idx>=0)map[key]=idx;
+    });
+
+    var hasHeader=Object.keys(map).length>0;
+    var body=hasHeader?rows.slice(1):rows;
+    if(!hasHeader)map={name:0,content:1,category:2,step_number:3};
+
+    function pick(r,key){
+        var i=map[key];
+        return i===undefined?null:r[i];
+    }
+    return body.map(function(r){
+        return normalizeKbItem({
+            name:pick(r,'name'),content:pick(r,'content'),category:pick(r,'category'),
+            step_number:pick(r,'step_number'),indicator_level:pick(r,'indicator_level'),
+            is_active:pick(r,'is_active')
+        });
+    });
+}
+
+function decodeImportBuffer(buffer){
+    var utf8=new TextDecoder('utf-8',{fatal:false}).decode(buffer);
+    if(utf8.indexOf('\uFFFD')<0)return utf8;
+    // Excel 另存的 CSV 在中文 Windows 上默认是 GBK，直接用 UTF-8 读会满屏乱码
+    try{return new TextDecoder('gbk').decode(buffer)}catch(e){return utf8}
+}
+
+function loadKnowledgeBulkFile(input){
+    var file=input.files&&input.files[0];
+    if(!file)return;
+    var reader=new FileReader();
+    reader.onload=function(){
+        var text=decodeImportBuffer(reader.result);
+        document.getElementById('kb-bulk-text').value=text;
+        previewKnowledgeBulk();
+    };
+    reader.readAsArrayBuffer(file);
+}
+
+function previewKnowledgeBulk(){
+    var info=document.getElementById('kb-bulk-info');
+    if(!info)return;
+    var raw=document.getElementById('kb-bulk-text').value;
+    try{
+        var items=parseKnowledgeImport(raw);
+        var empty=items.filter(function(it){return !it.name||!it.content}).length;
+        info.style.color='var(--muted)';
+        info.textContent='解析到 '+items.length+' 条'+(empty?('，其中 '+empty+' 条缺少名称或内容（会被跳过）'):'');
+    }catch(e){
+        info.style.color='var(--danger)';
+        info.textContent='解析失败：'+(e.message||e);
+    }
+}
+
+function showKnowledgeBulkModal(){
+    showModal(
+        '<h3 style="margin-bottom:6px">📥 批量导入知识库</h3>'+
+        '<p style="font-size:.82rem;color:var(--muted);margin-bottom:10px">'+
+        '支持 JSON 数组，或 CSV（首行表头：名称,内容,分类,步骤,层级）。UTF-8 与 GBK 都能读。</p>'+
+        '<input type="file" id="kb-bulk-file" accept=".json,.csv,.txt" onchange="loadKnowledgeBulkFile(this)" style="margin-bottom:8px">'+
+        '<textarea id="kb-bulk-text" placeholder="也可以直接粘贴 JSON 或 CSV..." style="min-height:160px;font-family:ui-monospace,Consolas,monospace;font-size:.78rem" oninput="previewKnowledgeBulk()"></textarea>'+
+        '<label style="display:flex;align-items:center;gap:6px;font-size:.84rem;margin-bottom:6px">'+
+        '<input type="checkbox" id="kb-bulk-skip" checked style="width:auto">跳过同名条目</label>'+
+        '<p id="kb-bulk-info" style="font-size:.8rem;color:var(--muted);min-height:18px"></p>'+
+        '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">'+
+        '<button class="btn" onclick="closeModal()">取消</button>'+
+        '<button class="btn btn-primary" id="kb-bulk-submit" onclick="doKnowledgeBulkImport()">导入</button></div>'
+    );
+}
+
+async function doKnowledgeBulkImport(){
+    var text=document.getElementById('kb-bulk-text').value;
+    var info=document.getElementById('kb-bulk-info');
+    var skip=document.getElementById('kb-bulk-skip').checked;
+    var items;
+    try{
+        items=parseKnowledgeImport(text);
+    }catch(e){
+        info.style.color='var(--danger)';
+        info.textContent='解析失败：'+(e.message||e);
+        return;
+    }
+    items=items.filter(function(it){return it.name&&it.content});
+    if(!items.length){showToast('没有可导入的条目','error');return}
+    if(items.length>500){showToast('一次最多导入 500 条，请拆分文件','error');return}
+
+    var btn=document.getElementById('kb-bulk-submit');
+    btn.disabled=true;btn.textContent='导入中...';
+    var r=await api(API_BASE+'/knowledge/bulk','POST',{items:items,skip_existing:skip});
+    btn.disabled=false;btn.textContent='导入';
+
+    if(!r||!r.success){
+        info.style.color='var(--danger)';
+        info.textContent=(r&&r.detail)||'导入失败';
+        return;
+    }
+    var d=r.data||{};
+    var extra='';
+    if(d.failed&&d.failed.length){
+        extra='<br>失败行：'+d.failed.slice(0,5).map(function(f){
+            return '第'+f.row+'行('+(f.name||'无名')+') '+f.error;
+        }).join('；')+(d.failed.length>5?('…共 '+d.failed.length+' 条'):'');
+    }
+    info.style.color='var(--success-strong)';
+    info.innerHTML=r.message+extra;
+    showToast(r.message);
+    refreshKnowledge();
+}
