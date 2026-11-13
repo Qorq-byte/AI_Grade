@@ -126,6 +126,14 @@
         .step-dot.completed { background: #22c55e; }
         .step-dot.awaiting { background: #f59e0b; }
         .step-dot.error { background: #ef4444; }
+        /* 实时输出：面板自身滚动，新内容从底部进。
+           以前是让 <pre> 无限长 + 每 50ms scrollIntoView 整个页面，
+           结果生成时用户根本滚不走，也看不到最新一行。 */
+        .live-output {
+            max-height: 46vh;
+            overflow-y: auto;
+            padding-right: 4px;
+        }
         @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0.3;} }
         .progress-bar-wrap {
             height: 6px;
@@ -300,7 +308,10 @@
             <div style="margin-bottom:20px;">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                     <h2 id="status-title" style="font-size:1.1rem;">📋 进度</h2>
-                    <span id="progress-text" style="font-size:0.85rem; color:var(--muted);">0 / 14</span>
+                    <span style="display:flex; gap:12px; align-items:baseline;">
+                        <span id="token-used" style="font-size:0.75rem; color:var(--muted);" title="本次会话累计 token">Token: 0</span>
+                        <span id="progress-text" style="font-size:0.85rem; color:var(--muted);">0 / 14</span>
+                    </span>
                 </div>
                 <div class="progress-bar-wrap">
                     <div class="progress-bar-fill" id="progress-bar" style="width:0%;"></div>
@@ -458,6 +469,7 @@
     <div id="toast-container"></div>
 
     <script src="/static/shared/workflow-controller.js"></script>
+    <script src="/static/shared/workflow-steps.js"></script>
     <script>
     // ══════════════════════════════════════
     //  State
@@ -480,8 +492,16 @@
     let eventSource = null;
     let isRunning = false;
     let completedSteps = new Set();
+    // 每个步骤的状态（pending/running/awaiting/completed/error）。
+    // 以前只有 completedSteps 一个 Set，于是「正在运行」只存在于两处 DOM 补丁里，
+    // pollStatus 每 5 秒全量重画一次就把它抹成未运行（用户报的就是这个）。
+    let stepStates = {};
     let currentApprovalStep = null;
     let workflowStepResults = {};
+    // 问卷提示不是 14 个步骤之一，但它也要活过 renderStepList()；
+    // 存成 HTML 片段，由 renderStepList 补在末尾（原来直接 appendChild，一次轮询就没了）
+    let questionnairePromptHtml = null;
+    let questionnairePromptDone = false;
     let uploadedFiles = [];
 
     // ── 登录校验 + 自动携带认证Token ──
@@ -603,7 +623,11 @@
 
         // Reset state
         completedSteps = new Set();
+        stepStates = {};
         workflowStepResults = {};
+        questionnairePromptHtml = null;
+        questionnairePromptDone = false;
+        resetLivePanel(null);
         document.getElementById("workflow-step-detail").hidden = true;
         currentApprovalStep = null;
         isRunning = true;
@@ -651,21 +675,96 @@
         });
     }
 
-    // token 增量：50ms 合并后追加到步骤详情，避免逐字重排
-    const deltaRenderer = WorkflowController.createDeltaRenderer((step, text) => {
-        const panel = document.getElementById('step-detail-panel');
-        const content = document.getElementById('step-detail-content');
-        if (!content || !panel) return;
-        if (panel.classList.contains('hidden')) {
-            document.getElementById('step-detail-title').textContent = (STEPS[step] || '步骤' + step) + ' · 生成中';
-            content.innerHTML = '<pre class="live-output" style="white-space:pre-wrap;margin:0;font-family:inherit"></pre>';
-            panel.classList.remove('hidden');
+    // ══════════════════════════════════════
+    //  Live output panel
+    // ══════════════════════════════════════
+    // 三份状态：liveStep（正在追的步骤）、liveText（它的全文）、livePre（DOM 缓存）。
+    // 为什么要存 liveText：只看 DOM 的话，用户点开别的步骤或把面板关掉，
+    // 已经生成的内容就再也拿不回来了 —— 而"点回正在运行的步骤"正是最常见的操作。
+    let liveStep = null;
+    let liveText = '';
+    let livePre = null;
+
+    function livePanelEls() {
+        return {
+            panel: document.getElementById('step-detail-panel'),
+            content: document.getElementById('step-detail-content'),
+            title: document.getElementById('step-detail-title'),
+        };
+    }
+
+    /* 重建面板骨架（标题 + 提示 + <pre>），返回可追加的 <pre> */
+    function buildLivePanel(step) {
+        const { content, title } = livePanelEls();
+        if (!content || !title) return null;
+        const status = stepStates[step] || 'running';
+        title.textContent = `Step ${step} · ${STEPS[step] || ''} · ${WorkflowSteps.stepLabel(status)}`;
+        content.innerHTML =
+            '<p class="live-hint" style="color:var(--muted);font-size:0.85rem;margin:0 0 8px;">等待模型输出…</p>'
+            + '<pre class="live-output" style="white-space:pre-wrap;margin:0;font-family:inherit"></pre>';
+        livePre = content.querySelector('.live-output');
+        return livePre;
+    }
+
+    /* 切到某步骤的实时面板。换步骤必须清空，否则新步骤的字会接在上一步的尾巴后面。 */
+    function ensureLivePanel(step) {
+        const { panel } = livePanelEls();
+        if (!panel) return null;
+        const wasHidden = panel.classList.contains('hidden');
+        if (liveStep !== step || !livePre) {
+            liveStep = step;
+            liveText = '';
+            buildLivePanel(step);
         }
-        const pre = content.querySelector('.live-output');
-        if (pre) {
-            pre.textContent += text;
+        if (wasHidden) {
+            panel.classList.remove('hidden');
+            // 只在首次出现时把页面带过来；之后的跟随交给面板内部滚动
             panel.scrollIntoView({ block: 'nearest' });
         }
+        return livePre;
+    }
+
+    function resetLivePanel(step) {
+        liveStep = step;
+        liveText = '';
+        livePre = null;
+        const { panel, content } = livePanelEls();
+        if (!step) {
+            if (content) content.innerHTML = '';
+            if (panel) panel.classList.add('hidden');
+            return;
+        }
+        if (panel && !panel.classList.contains('hidden')) buildLivePanel(step);
+    }
+
+    /* 点正在运行的步骤：把实时面板显示出来并滚过去（内容还没到就显示提示） */
+    function focusLivePanel(step) {
+        ensureLivePanel(step);
+        const { panel } = livePanelEls();
+        if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    /* 步骤完成：用事件里的完整正文替掉流式累积（两者可能有细微差异） */
+    function finishLivePanel(event) {
+        if (liveStep !== event.step_number) return;
+        const pre = buildLivePanel(event.step_number);
+        if (!pre) return;
+        liveText = event.content || liveText;
+        pre.textContent = liveText;
+        pre.scrollTop = pre.scrollHeight;
+    }
+
+    // token 增量：50ms 合并后追加到实时面板，面板内部跟随到底部
+    const deltaRenderer = WorkflowController.createDeltaRenderer((step, text) => {
+        const pre = ensureLivePanel(step);
+        if (!pre) return;
+        // 用户往上翻在读旧内容时不要把他拽回底部
+        const follow = WorkflowSteps.shouldAutoFollow(pre);
+        liveText += text;
+        pre.textContent = liveText;
+        const hint = pre.parentElement && pre.parentElement.querySelector('.live-hint');
+        if (hint) hint.remove();
+        if (follow) pre.scrollTop = pre.scrollHeight;
     });
 
     function handleSSEEvent(event) {
@@ -677,6 +776,7 @@
         }
         if (type === 'step_start') {
             deltaRenderer.reset();
+            resetLivePanel(event.step_number);   // 上一步的残留必须清掉
             updateStepStatus(event.step_number, 'running', event.step_name);
             document.getElementById('status-title').textContent = '执行中 · ' + event.step_name;
             updateProgressBar();
@@ -685,6 +785,7 @@
             updateStepStatus(event.step_number, 'completed', event.step_name);
             completedSteps.add(event.step_number);
             workflowStepResults[event.step_number] = event;
+            finishLivePanel(event);
             updateProgressBar();
             if (event.warnings?.length) showAlert('warning', event.warnings);
         } else if (type === 'approval_required') {
@@ -719,20 +820,13 @@
 
     function showQuestionnairePrompt(event) {
         // 在步骤列表中插入问卷提示
-        const list = document.getElementById('step-list');
-        const existing = document.getElementById('questionnaire-prompt-row');
-        if (existing) return; // 只显示一次
-        const row = document.createElement('div');
-        row.id = 'questionnaire-prompt-row';
-        row.className = 'step-row awaiting';
-        row.style.cssText = 'cursor:pointer;';
-        row.innerHTML = `
+        if (questionnairePromptHtml) return; // 只显示一次
+        questionnairePromptHtml = `
             <span class="step-dot awaiting"></span>
             <span style="flex:1;">📋 <strong>生成调查问卷</strong></span>
             <button class="btn btn-accent btn-sm" onclick="event.stopPropagation();generateQuestionnaire()">立即生成</button>
         `;
-        row.addEventListener('click', () => generateQuestionnaire());
-        list.appendChild(row);
+        renderStepList();   // 由 renderStepList 负责把它补在 14 行之后，重画不会丢
     }
 
     async function generateQuestionnaire() {
@@ -746,15 +840,13 @@
             const data = await resp.json();
             if (data.success) {
                 showToast(`已生成 ${data.total_questions} 道问卷题目`, 'success');
-                const row = document.getElementById('questionnaire-prompt-row');
-                if (row) {
-                    row.className = 'step-row completed';
-                    row.innerHTML = `
-                        <span class="step-dot completed"></span>
-                        <span>📋 调查问卷已生成 (${data.total_questions} 题)</span>
-                        <button class="btn btn-sm" onclick="event.stopPropagation();window.open('/questionnaire?session=${sessionId}','_blank')">打开问卷</button>
-                    `;
-                }
+                questionnairePromptDone = true;
+                questionnairePromptHtml = `
+                    <span class="step-dot completed"></span>
+                    <span>📋 调查问卷已生成 (${data.total_questions} 题)</span>
+                    <button class="btn btn-sm" onclick="event.stopPropagation();window.open('/questionnaire?session=${sessionId}','_blank')">打开问卷</button>
+                `;
+                renderStepList();
             } else {
                 showToast('问卷生成失败: ' + (data.message || '未知错误'), 'error');
             }
@@ -813,6 +905,9 @@
                 return;
             }
             completedSteps = new Set(data.completed_steps);
+            // 由服务端的 completed + current_step 推出全量状态；running 不再被"只认 completed"抹掉
+            stepStates = WorkflowSteps.statesFromStatus(14, data.completed_steps, data.current_step,
+                { status });
             data.step_summaries.forEach(step => {
                 if ('content' in step) workflowStepResults[step.step_number] = step;
             });
@@ -847,6 +942,11 @@
         document.getElementById('progress-text').textContent = '14 / 14';
         document.getElementById('quick-actions').classList.remove('hidden');
 
+        // 列表也要一起走到"全绿"：以前只改了进度条，左侧仍挂着上一轮的状态
+        completedSteps = new Set(Object.keys(STEPS).map(Number));
+        stepStates = WorkflowSteps.statesFromStatus(14, [...completedSteps], 14, { status: 'completed' });
+        renderStepList();
+
         sessionId = event.session_id || sessionId;
 
         if (event.final_report_preview) {
@@ -868,6 +968,11 @@
         sessionId = null;
         currentApprovalStep = null;
         completedSteps = new Set();
+        stepStates = {};
+        workflowStepResults = {};
+        questionnairePromptHtml = null;
+        questionnairePromptDone = false;
+        resetLivePanel(null);
         document.getElementById('start-btn').disabled = false;
         document.getElementById('stop-btn').classList.add('hidden');
         document.getElementById('approval-panel').classList.add('hidden');
@@ -882,7 +987,14 @@
     // ══════════════════════════════════════
     function showWorkflowStep(step) {
         const result = workflowStepResults[step];
-        if (!result) return;
+        if (!result) {
+            const status = stepStates[step] || 'pending';
+            // 正在跑/等确认：没有"结果"可看，但实时面板里有正在生成的正文
+            if (status === 'running' || status === 'awaiting') { focusLivePanel(step); return; }
+            // 其余情况明确说出来 —— 以前这里静默 return，用户以为"点了没反应"
+            showStepPlaceholder(step, status);
+            return;
+        }
         const details = document.getElementById('workflow-step-detail');
         details.hidden = false;
         details.open = true;
@@ -891,33 +1003,59 @@
         document.getElementById('workflow-step-content').textContent = [result.content, ...sources].join('\n');
     }
 
+    function showStepPlaceholder(step, status) {
+        const details = document.getElementById('workflow-step-detail');
+        details.hidden = false;
+        details.open = true;
+        document.getElementById('workflow-step-name').textContent =
+            `Step ${step} · ${STEPS[step] || ''} · ${WorkflowSteps.stepLabel(status)}`;
+        document.getElementById('workflow-step-content').textContent =
+            status === 'error'
+                ? '该步骤执行失败。可点左侧「重试失败步骤」重新生成，或查看上方告警。'
+                : '该步骤尚未开始，暂无内容。';
+    }
+
     function renderStepList() {
         const container = document.getElementById('step-list');
         container.innerHTML = Object.entries(STEPS).map(([num, name]) => {
             const n = parseInt(num);
-            const status = completedSteps.has(n) ? 'completed' : 'pending';
-            const icon = status === 'completed' ? '✅' : '⏳';
+            // 从 stepStates 渲染（不再只看 completedSteps）—— running 才不会一重画就丢
+            const status = stepStates[n] || 'pending';
             return `<div class="step-row ${status}" id="step-${n}" onclick="showWorkflowStep(${n})">
                 <div class="step-dot ${status}"></div>
                 <span style="font-weight:600;">Step ${num}.</span>
                 <span>${name}</span>
-                <span style="margin-left:auto;">${icon}</span>
+                <span class="step-icon" style="margin-left:auto;">${WorkflowSteps.stepIcon(status)}</span>
             </div>`;
         }).join('');
+        if (questionnairePromptHtml) {
+            const row = document.createElement('div');
+            row.id = 'questionnaire-prompt-row';
+            row.className = 'step-row ' + (questionnairePromptDone ? 'completed' : 'awaiting');
+            row.style.cssText = 'cursor:pointer;';
+            row.innerHTML = questionnairePromptHtml;
+            row.addEventListener('click', () => generateQuestionnaire());
+            container.appendChild(row);
+        }
     }
 
-    function updateStepStatus(stepNo, status, name) {
+    /* 只改一行，不重画整表（重画会丢焦点、丢滚动位置） */
+    function paintStepRow(stepNo) {
         const el = document.getElementById('step-' + stepNo);
-        if (!el) { renderStepList(); return; }
+        if (!el) return;
+        const status = stepStates[stepNo] || 'pending';
         el.className = `step-row ${status}`;
         const dot = el.querySelector('.step-dot');
         if (dot) dot.className = `step-dot ${status}`;
-        const icon = el.querySelector('span:last-child');
-        if (icon) {
-            icon.textContent = status === 'completed' ? '✅' :
-                status === 'running' ? '🔄' :
-                status === 'awaiting' ? '⏸️' : '⏳';
-        }
+        const icon = el.querySelector('.step-icon');
+        if (icon) icon.textContent = WorkflowSteps.stepIcon(status);
+    }
+
+    function updateStepStatus(stepNo, status, name) {
+        const next = WorkflowSteps.mergeStatus(stepStates[stepNo], status);
+        stepStates[stepNo] = next;
+        if (document.getElementById('step-' + stepNo)) paintStepRow(stepNo);
+        else renderStepList();
     }
 
     function updateProgressBar() {
