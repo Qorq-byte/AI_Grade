@@ -479,10 +479,14 @@
 
         // ====== WF State ======
         var wfSessionId=null,wfRunning=false,wfCurrentStep=0,wfStatus="",wfStatusController=null,wfCoverage=null,wfConsistency=null,wfDispo=null,wfCritique=null,wfCritiqueSwitches={},wfVersions={},wfEvidence={},wfComparisons={},wfReviewSteps=[],wfCompletedSteps=[],wfStepContents={},wfApprovalStep=null,wfUploadedFiles=[],wfAbortController=null
+        // 查看步骤独立于执行步骤；内容（含流式草稿）和阅读位置均按步骤保存。
+        var wfSelectedStep=0;
 
         function initWfStepper(){var l=document.getElementById('wfStepperList');if(!l)return;l.innerHTML='';for(var i=1;i<=14;i++){(function(sn){var div=document.createElement('div');div.className='wf-step';div.id='wfStep'+sn;div.innerHTML='<div class="wf-step-dot">'+sn+'</div><span class="wf-step-name">'+C.STEP_NAMES[sn]+'</span>';div.onclick=function(){selectWfStep(sn)};l.appendChild(div)})(i)}}
 
         function selectWfStep(sn){
+    sn=Number(sn);
+    wfSelectedStep=sn;
     document.querySelectorAll('.wf-step').forEach(function(s){s.classList.remove('active')});
     document.getElementById('wfStep'+sn)&&document.getElementById('wfStep'+sn).classList.add('active');
     var c=document.getElementById('wfContent');if(!c)return;
@@ -493,8 +497,12 @@
     if(sn===14)inner+=buildConsistencyBadge();
     if(sn===7)inner+=buildScoreDispositionBadge();
     if(sn===9||sn===10)inner+=buildCritiqueBadge(sn);
-    if(!txt&&st!=='done'){
-        inner+='<div class="wf-empty"><h3>'+C.STEP_NAMES[sn]+'</h3><p>'+(st==='done'?'该步骤已完成，但内容尚未加载。':'该步骤尚未执行或内容生成中。')+'</p></div>';
+    if(st==='doing'){
+        if(!txt)inner+='<div class="wf-empty" id="wfStreamHint"><h3>'+C.STEP_NAMES[sn]+'</h3><p>正在生成内容，请稍候…</p></div>';
+        inner+='<div class="wf-stream-body wf-content-inner">'+esc(txt)+'</div>';
+    }else if(!txt){
+        var hint=st==='done'?'该步骤已完成，但内容尚未加载。':st==='error'?'该步骤执行失败，请重试。':st==='awaiting'?'该步骤等待人工确认。':'该步骤尚未开始，暂无内容。';
+        inner+='<div class="wf-empty"><h3>'+C.STEP_NAMES[sn]+'</h3><p>'+hint+'</p></div>';
     }else{
         var showLayout=(sn>=1);
         if(showLayout)inner+='<div class="layout-selector" style="display:flex" id="wfLayoutSel"><button class="active" onclick="setLayoutMode(\'classic\',this)">经典排版</button><button onclick="setLayoutMode(\'auto\',this)">自动排版</button></div>';
@@ -1417,6 +1425,7 @@ function rollbackStep(sn,version,btn){
             for(var i=1;i<=14;i++){var s=document.getElementById('wfStep'+i);if(!s)continue;s.className='wf-step';var st=wfStepStatus(i);
                 if(st==='done')s.classList.add('done');else if(st==='doing')s.classList.add('doing');if(i===wfApprovalStep&&st==='done')s.classList.add('approval');
                 if(wfCompletedSteps.indexOf(i)<0&&i===wfApprovalStep)s.classList.add('approval');
+                if(i===wfSelectedStep)s.classList.add('active');
             }
             var done=wfCompletedSteps.length;document.getElementById('wfProgressText')&&(document.getElementById('wfProgressText').textContent='已完成 '+done+' / 14 步 · '+(workflowStatusLabels[wfStatus]||wfStatus)+(wfCurrentStep?' · '+C.STEP_NAMES[wfCurrentStep]:''));
             document.getElementById('wfProgressFill')&&(document.getElementById('wfProgressFill').style.width=Math.round(done/14*100)+'%');
@@ -1432,6 +1441,7 @@ function rollbackStep(sn,version,btn){
             wfStatusController?.abort();
             wfSessionId=newWorkflowSession();sessionStorage.setItem(workflowSessionKey,wfSessionId);
             wfCompletedSteps=[];wfStepContents={};wfVersions={};wfEvidence={};wfComparisons={};wfReviewSteps=[];wfApprovalStep=null;wfCurrentStep=0;wfStatus='running';wfCoverage=null;wfConsistency=null;wfDispo=null;wfCritique=null;wfCritiqueSwitches={};
+            wfSelectedStep=0;wfDeltaRenderer.reset();
             document.getElementById('wfRetryBtn').hidden=true;
             window._currentQuestionData=null;  // 清空问卷缓存，确保下次切换Tab重新加载
             initWfStepper();document.getElementById('wfLayout').style.display='flex';
@@ -1454,30 +1464,37 @@ var body={session_id:wfSessionId,use_rag:document.getElementById("wfUseRag").che
         }
 
         /* token 增量渲染：50ms 合并一次，避免逐字触发布局 */
-        var wfDeltaRenderer=WorkflowController.createDeltaRenderer(function(step,text){
-            if(step!==wfCurrentStep)return;
+        var wfDeltaRenderer=WorkflowController.createDeltaRenderer(function(step){
+            if(step!==wfSelectedStep||wfStepStatus(step)!=='doing')return;
             var c=document.getElementById('wfContent');if(!c)return;
-            var body=c.querySelector('.wf-stream-body');
-            if(!body){
-                c.innerHTML='<div class="wf-content-body"><div class="wf-stream-body" style="white-space:pre-wrap;line-height:1.8;font-size:14px;color:#2d3748"></div></div>';
-                body=c.querySelector('.wf-stream-body');
-            }
-            body.textContent+=text;
-            c.scrollTop=c.scrollHeight;
+            var body=c.querySelector('.wf-content-body'),stream=body&&body.querySelector('.wf-stream-body');
+            if(!stream)return;
+            var hint=body.querySelector('#wfStreamHint');if(hint)hint.remove();
+            stream.textContent=wfStepContents[step]||'';
         });
 
         function handleSSEEvent(d){
             if(!wfRunning)return;
-            if(d.event==='token_delta'){wfDeltaRenderer.push(d.step_number,d.delta);return}
+            if(d.event==='token_delta'){
+                var deltaStep=Number(d.step_number);
+                if(deltaStep>=1&&deltaStep<=14&&wfCompletedSteps.indexOf(deltaStep)<0){
+                    // 接收即缓存，50ms 只合并 DOM 更新；切换不丢掉尚未 flush 的内容。
+                    wfStepContents[deltaStep]=(wfStepContents[deltaStep]||'')+(d.delta||'');
+                    wfDeltaRenderer.push(deltaStep,d.delta);
+                }
+                return;
+            }
             if(d.event==='step_start'){
-                wfDeltaRenderer.reset();
-                wfSessionId=d.session_id;
-                var sn=d.step_number;wfCurrentStep=sn;wfStatus="running";updateWfStepper();
-                var c=document.getElementById('wfContent');c&&(c.innerHTML='<div class="wf-empty"><h3>'+C.STEP_NAMES[sn]+'</h3><p>AI正在生成中...</p></div>')
+                wfDeltaRenderer.flushNow();
+                wfSessionId=d.session_id||wfSessionId;
+                var follow=!wfSelectedStep||wfSelectedStep===wfCurrentStep;
+                var sn=Number(d.step_number);wfCurrentStep=sn;wfStatus="running";updateWfStepper();
+                // 用户查看别的步骤时不抢页面；开始事件也不能清掉提前收到的 delta。
+                if(follow||wfSelectedStep===sn)selectWfStep(sn);
             }if(d.event==='token_update'){if(currentUserData){currentUserData.tokens_used=d.tokens_used||0}var stEl=document.getElementById('settingsTokens');if(stEl)stEl.textContent=currentUserData?currentUserData.tokens_used:0;var sbEl=document.getElementById('sidebarTokenCount');if(sbEl)sbEl.textContent=currentUserData?currentUserData.tokens_used:0;return}else if(d.event==='step_complete'){
                 wfDeltaRenderer.flushNow();
                 WBUI.announce('步骤'+d.step_number+'已完成');
-                var sn=d.step_number;if(wfCompletedSteps.indexOf(sn)<0)wfCompletedSteps.push(sn);wfStepContents[sn]=d.content||d.content_preview||'';wfEvidence[sn]=d.evidence||[];updateWfStepper();selectWfStep(sn)
+                var sn=Number(d.step_number);if(wfCompletedSteps.indexOf(sn)<0)wfCompletedSteps.push(sn);wfStepContents[sn]=typeof d.content==='string'?d.content:(d.content_preview||wfStepContents[sn]||'');wfEvidence[sn]=d.evidence||[];updateWfStepper();if(wfSelectedStep===sn||!wfSelectedStep)selectWfStep(sn)
             }else if(d.event==='approval_required'){
                 var sn=d.step_number;wfApprovalStep=sn;updateWfStepper();
                 document.getElementById('wfApprovalTitle').textContent='确认：'+C.STEP_NAMES[sn];
@@ -1504,6 +1521,7 @@ var body={session_id:wfSessionId,use_rag:document.getElementById("wfUseRag").che
                 document.getElementById('wfStartBtn').style.display='none';document.getElementById('wfStopBtn').style.display='';document.getElementById('wfProgress').style.display='';
                 showToast('工作流暂停于步骤'+asn+'，请审核并确认','warn')
             }else if(d.event==='complete'){
+                wfDeltaRenderer.flushNow();
                 window.WF_STREAM_ACTIVE=false;
                 wfSessionId=d.session_id;wfRunning=false;wfStatus='completed';updateWfStepper();
                 var ex=document.getElementById('wfExports');if(ex)ex.style.display='flex';

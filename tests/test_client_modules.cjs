@@ -26,7 +26,7 @@ function makeElement(id, tag = 'div') {
         id,
         tagName: tag.toUpperCase(),
         className: '',
-        textContent: '',
+        _textContent: '',
         _innerHTML: '',
         hidden: false,
         style: {},
@@ -48,6 +48,12 @@ function makeElement(id, tag = 'div') {
         querySelectorAll() { return []; },
         focus() {},
         click() {},
+        get textContent() { return this._textContent; },
+        set textContent(v) {
+            this._textContent = String(v);
+            this._innerHTML = this._textContent.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            this.children = [];
+        },
         get innerHTML() { return this._innerHTML; },
         set innerHTML(v) { this._innerHTML = String(v); this.children = []; },
     };
@@ -136,6 +142,120 @@ function buildContext(fetchImpl) {
 }
 
 function wait(ms = 5) { return new Promise(r => setTimeout(r, ms)); }
+
+// Execute the real client/SSE handlers. Layout here is a small scroll-box stub;
+// actual overflow, anchoring and page scrolling are checked with gstack browse.
+function workflowContext() {
+    const env = buildContext(async () => { throw new Error('unexpected request'); });
+    const { ctx, elements } = env;
+    for (let n = 1; n <= 14; n++) elements.set('wfStep' + n, makeElement('wfStep' + n));
+    const panel = makeElement('wfContent');
+    let body = null, stream = null, hint = null;
+    Object.defineProperty(panel, 'innerHTML', {
+        get() { return this._innerHTML; },
+        set(value) {
+            this._innerHTML = String(value);
+            body = makeElement('body');
+            body.clientHeight = 100;
+            body.scrollTop = 0;
+            const match = this._innerHTML.match(/class="[^"]*wf-stream-body[^"]*"[^>]*>([\s\S]*?)<\/div>/);
+            stream = match ? makeElement('stream') : null;
+            if (stream) stream.textContent = match[1];
+            hint = this._innerHTML.includes('id="wfStreamHint"') ? makeElement('wfStreamHint') : null;
+            if (hint) hint.remove = () => { hint = null; };
+            Object.defineProperty(body, 'scrollHeight', { get: () => 200 + (stream?.textContent.length || 0) * 10 });
+            body.querySelector = sel => sel === '.wf-stream-body' ? stream : sel === '#wfStreamHint' ? hint : null;
+        },
+    });
+    panel.scrollTop = 0;
+    panel.querySelector = sel => sel === '.wf-content-body' ? body : body?.querySelector(sel);
+    elements.set('wfContent', panel);
+    ctx.document.querySelectorAll = sel => sel === '.wf-step' ?
+        [...elements.values()].filter(el => /^wfStep\d+$/.test(el.id)) : [];
+    ctx.wfRunning = true;
+    ctx.wfSessionId = 'workflow-test';
+    const emit = (event, step, extra = {}) => ctx.handleSSEEvent({event, step_number: step, session_id: 'workflow-test', ...extra});
+    return {...env, panel, emit, flush: () => ctx.wfDeltaRenderer.flushNow(),
+        body: () => body, stream: () => stream};
+}
+
+test('切走后仍按步骤缓存，返回立即恢复完整增量并持续更新', () => {
+    const e = workflowContext();
+    e.emit('step_start', 4);
+    e.emit('token_delta', 4, {delta: 'first'});
+    e.flush();
+    e.ctx.selectWfStep(5);
+    e.emit('token_delta', 4, {delta: '-away'});
+    e.flush();
+    assert.equal(e.ctx.wfStepContents[4], 'first-away');
+    assert.equal(e.ctx.wfStepContents[5], undefined);
+    assert.match(e.panel.innerHTML, /该步骤尚未开始/);
+    e.ctx.selectWfStep(4);
+    assert.equal(e.stream().textContent, 'first-away');
+    e.emit('token_delta', 4, {delta: '-back'});
+    e.flush();
+    assert.equal(e.stream().textContent, 'first-away-back');
+});
+
+test('首次 flush 之前切换也能立即读取已经收到的内容', () => {
+    const e = workflowContext();
+    e.emit('step_start', 8);
+    e.ctx.selectWfStep(9);
+    e.emit('token_delta', 8, {delta: 'already received'});
+    e.ctx.selectWfStep(8);
+    assert.equal(e.stream()?.textContent, 'already received');
+    e.flush();
+    assert.equal(e.stream().textContent, 'already received');
+});
+
+test('运行中未输出与尚未开始有各自的提示；进度重画保留选中步骤', () => {
+    const e = workflowContext();
+    e.emit('step_start', 4);
+    assert.match(e.panel.innerHTML, /正在生成内容，请稍候/);
+    e.ctx.selectWfStep(5);
+    assert.match(e.panel.innerHTML, /该步骤尚未开始/);
+    e.ctx.updateWfStepper();
+    assert.ok(e.elements.get('wfStep5').classList.contains('active'));
+    assert.equal(e.ctx.wfCurrentStep, 4);
+});
+
+test('其他步骤完成/开始不抢走用户选择；选中后续步骤即可实时显示', () => {
+    const e = workflowContext();
+    e.emit('step_start', 4);
+    e.ctx.selectWfStep(10);
+    e.emit('step_complete', 4, {content: 'final-four'});
+    e.emit('step_start', 5);
+    e.emit('token_delta', 5, {delta: 'five-live'});
+    e.flush();
+    assert.equal(e.ctx.wfSelectedStep, 10);
+    assert.match(e.panel.innerHTML, /该步骤尚未开始/);
+    e.ctx.selectWfStep(5);
+    assert.equal(e.stream().textContent, 'five-live');
+});
+
+test('查看当前运行步时自动跟随后续步，开始事件不会丢弃提前到达的增量', () => {
+    const e = workflowContext();
+    e.emit('step_start', 4);
+    e.emit('token_delta', 4, {delta: 'partial'});
+    e.emit('step_complete', 4, {content: 'final-four'});
+    e.emit('token_delta', 5, {delta: 'early-five'});
+    e.emit('step_start', 5);
+    e.flush();
+    assert.equal(e.ctx.wfSelectedStep, 5);
+    assert.equal(e.stream().textContent, 'early-five');
+});
+
+test('完成正文替换流式缓存，迟到的 delta 不重复追加到完成正文', () => {
+    const e = workflowContext();
+    e.emit('step_start', 4);
+    e.emit('token_delta', 4, {delta: 'partial'});
+    e.emit('step_complete', 4, {content: 'authoritative'});
+    e.emit('token_delta', 4, {delta: 'late'});
+    e.flush();
+    assert.equal(e.ctx.wfStepContents[4], 'authoritative');
+    assert.ok(e.ctx.wfCompletedSteps.includes(4));
+    assert.match(e.panel.innerHTML, /authoritative/);
+});
 
 test('switchTab 只切 class，不写 style.display，并同步 hash', async () => {
     const calls = [];
