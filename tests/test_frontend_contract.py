@@ -131,3 +131,34 @@ def test_workflow_step_list_renders_from_step_states():
 
     assert "const status = stepStates[n] || 'pending';" in html
     assert "completedSteps.has(n) ? 'completed'" not in html
+
+
+def test_questionnaire_card_is_clickable_as_a_whole():
+    """回归（批次 56）：问卷卡片只有项目名那 30px 挂了 onclick。
+
+    用户点卡片图标/「N 题 待填写」/空白处都没反应 —— 真浏览器探针实测
+    `点卡片空白处能打开问卷` 失败、`点项目名能打开问卷` 通过。
+    改成整卡可点 + 网格上做事件委托（顺带绕开"项目名里带单引号会把 onclick 打断"）。
+    """
+    html = ANALYSIS["client"]["html"]
+
+    # 勾选框也有 data-sid，所以要钉到卡片本身（只给勾选框带 = 点卡片还是没反应）
+    assert '''id="qcard_'+sid+'" data-sid="'+sid+'"''' in html, \
+        "卡片上没有 data-sid，事件委托没法定位会话"
+    assert "function bindQuestionnaireGrid()" in html
+    assert "bindQuestionnaireGrid()" in html.replace("function bindQuestionnaireGrid()", "")
+    # 旧写法：把项目名塞进内联 onclick（名字里有单引号就整段失效）
+    assert 'onclick="openQuestionnaire(' not in html
+
+
+def test_opening_a_questionnaire_never_regenerates_it():
+    """打开已发布的问卷不能走"生成"接口。
+
+    `POST /workflow/questionnaire` 的缓存签名含 `max_questions`：客户端用 20、
+    工作流页用 30，参数一变就重新生成一版、题号全换 —— 已提交的答案再也挂不上。
+    所以打开时先 GET 已发布版本，只有 404 才回退到生成。
+    """
+    html = ANALYSIS["client"]["html"]
+
+    assert "function fetchPublishedQuestionnaire(sid)" in html
+    assert html.count("fetchPublishedQuestionnaire(sid)") >= 2, "定义了却没被打开流程用上"
