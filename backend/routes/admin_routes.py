@@ -160,29 +160,36 @@ def admin_change_own_password(
 
 @router.get("/dashboard")
 def admin_dashboard(db: Session = Depends(get_db)):
-    """管理员仪表盘 — 核心统计数据"""
-    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    """管理员仪表盘 — 核心统计数据
 
-    # 用户统计
-    total_users = db.query(func.count(User.id)).scalar() or 0
-    active_users_today = db.query(func.count(User.id)).filter(
-        User.last_login_at >= today, User.is_active == True
-    ).scalar() or 0
+    原来是 8 条独立的 COUNT/SUM 串着跑，全部在「首屏」这条路径上。
+    同一张表的多口径统计合成一条（用户 3 个口径 1 条、工作流 4 个口径 1 条），
+    8 次往返压到 3 次；口径一个没变。
+    """
+    today = local_day_start_utc()
 
-    # 项目统计
-    total_projects = db.query(func.count(WorkflowSession.id)).scalar() or 0
-    active_workflows = db.query(func.count(WorkflowSession.id)).filter(
-        WorkflowSession.status.in_(["created", "running", "paused"])
-    ).scalar() or 0
-    completed_workflows = db.query(func.count(WorkflowSession.id)).filter(
-        WorkflowSession.status == "completed"
-    ).scalar() or 0
-    failed_workflows = db.query(func.count(WorkflowSession.id)).filter(
-        WorkflowSession.status == "failed"
-    ).scalar() or 0
+    # 用户：总数 / 今日活跃 / Token 合计
+    total_users, active_users_today, total_tokens = db.query(
+        func.count(User.id),
+        func.coalesce(func.sum(case(
+            ((User.last_login_at >= today) & (User.is_active.is_(True)), 1),
+            else_=0,
+        )), 0),
+        func.coalesce(func.sum(User.tokens_used), 0),
+    ).one()
+    total_users = int(total_users or 0)
+    active_users_today = int(active_users_today or 0)
+    total_tokens = int(total_tokens or 0)
 
-    # Token 统计
-    total_tokens = db.query(func.sum(User.tokens_used)).scalar() or 0
+    # 工作流：按状态一次分组，四个口径都从这里取
+    wf_rows = db.query(
+        WorkflowSession.status, func.count(WorkflowSession.id)
+    ).group_by(WorkflowSession.status).all()
+    wf_counts = {status: count for status, count in wf_rows}
+    total_projects = sum(wf_counts.values())
+    active_workflows = sum(wf_counts.get(s, 0) for s in ("created", "running", "paused"))
+    completed_workflows = wf_counts.get("completed", 0)
+    failed_workflows = wf_counts.get("failed", 0)
 
     # 最近操作
     recent_logs = db.query(OperationLog).order_by(
@@ -1659,7 +1666,13 @@ def admin_get_notifications(
     db: Session = Depends(get_db),
 ):
     """管理员查看已发送的通知历史"""
-    q = db.query(Notification).order_by(Notification.created_at.desc())
+    # joinedload：用户名在同一页里逐行懒加载 = 20 条通知 21 次查询。
+    # 一页最多 100 条，这个 N+1 在「全选发送」之后会明显拖慢列表。
+    q = (
+        db.query(Notification)
+        .options(joinedload(Notification.user))
+        .order_by(Notification.created_at.desc())
+    )
     total = q.count()
     items = q.offset((page - 1) * page_size).limit(page_size).all()
 
@@ -1888,24 +1901,28 @@ def admin_update_granular_knowledge(
 
 @router.get("/step-config")
 def admin_get_step_config(db: Session = Depends(get_db)):
-    """获取所有步骤的配置摘要（Prompt数量 + 知识库数量 + 模块序列）"""
-    steps = []
-    for step_number in range(1, 15):
-        prompt_count = db.query(func.count(PromptTemplate.id)).filter(
-            PromptTemplate.step_number == step_number
-        ).scalar() or 0
-        kb_count = db.query(func.count(KnowledgeBase.id)).filter(
-            KnowledgeBase.step_number == step_number
-        ).scalar() or 0
-        module_count = db.query(func.count(ReportModuleSequence.id)).filter(
-            ReportModuleSequence.step_number == step_number
-        ).scalar() or 0
-        steps.append({
+    """获取所有步骤的配置摘要（Prompt数量 + 知识库数量 + 模块序列）
+
+    三张表各一条 GROUP BY 就够了。原来是 14 步 × 3 张表 = 42 条 COUNT，
+    一屏概览要来回 42 次，纯粹是把数据库当计数器用。
+    """
+    def _counts_by_step(model):
+        rows = db.query(model.step_number, func.count(model.id)).group_by(model.step_number).all()
+        return {step: count for step, count in rows if step is not None}
+
+    prompt_counts = _counts_by_step(PromptTemplate)
+    kb_counts = _counts_by_step(KnowledgeBase)
+    module_counts = _counts_by_step(ReportModuleSequence)
+
+    steps = [
+        {
             "step_number": step_number,
-            "prompt_count": prompt_count,
-            "kb_count": kb_count,
-            "module_count": module_count,
-        })
+            "prompt_count": prompt_counts.get(step_number, 0),
+            "kb_count": kb_counts.get(step_number, 0),
+            "module_count": module_counts.get(step_number, 0),
+        }
+        for step_number in range(1, 15)
+    ]
     return {"success": True, "data": steps}
 
 
