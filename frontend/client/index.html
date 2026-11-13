@@ -1486,6 +1486,7 @@ var body={session_id:wfSessionId,use_rag:document.getElementById("wfUseRag").che
 
         function handleSSEEvent(d){
             if(!wfRunning)return;
+            if(d.session_id&&wfSessionId&&d.session_id!==wfSessionId)return;
             if(d.event==='token_delta'){
                 var deltaStep=Number(d.step_number);
                 if(deltaStep>=1&&deltaStep<=14&&wfCompletedSteps.indexOf(deltaStep)<0){

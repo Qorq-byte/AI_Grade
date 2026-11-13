@@ -279,6 +279,18 @@ test('仅内容区贴底跟随，上翻停留，滚回底部恢复，切换保�
     assert.equal(e.body().scrollTop, e.body().scrollHeight);
 });
 
+test('旧任务的迟到事件不能写入新任务或切换当前步骤', () => {
+    const e = workflowContext();
+    e.emit('step_start', 4);
+    e.emit('token_delta', 4, {delta: 'current'});
+    e.emit('token_delta', 4, {delta: 'old', session_id: 'previous-workflow'});
+    e.emit('step_start', 9, {session_id: 'previous-workflow'});
+    e.flush();
+    assert.equal(e.ctx.wfCurrentStep, 4);
+    assert.equal(e.ctx.wfSelectedStep, 4);
+    assert.equal(e.stream().textContent, 'current');
+});
+
 test('状态恢复能刷新所选步骤，保留手动选择，且相同轮询不重建面板', () => {
     const e = workflowContext();
     for (const id of ['wfStartBtn', 'wfRetryBtn', 'wfProgress', 'wfLayout',
