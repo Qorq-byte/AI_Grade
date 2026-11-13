@@ -75,3 +75,4 @@ fe_sample_upload.txt
 # 本机个人资料（非项目内容）
 /*.docx
 /gen_interview_doc.py
+.gstack/
