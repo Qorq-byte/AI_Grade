@@ -211,6 +211,23 @@ def main(argv=None) -> int:
         checked = cdp.eval("document.querySelectorAll('#questionnaire input[type=radio]:checked').length")
         check("单选可以点选", (checked or 0) > 0, f"checked={checked}")
 
+        # E. 返回列表：统计卡/搜索/筛选/网格都要回来（批次 57 去掉了硬编码重建）
+        cdp.eval("backToQuestionnaireList()")
+        cdp.eval("new Promise(r => setTimeout(r, 2500))", await_promise=True)
+        back = cdp.eval("""(() => ({
+            cards: document.querySelectorAll('#questionnaireGrid .stat-card').length,
+            stats: document.querySelectorAll('#questionnaireStatsGrid .stat-card').length,
+            filter: !!document.getElementById('qStatusFilter'),
+            search: !!document.getElementById('qSearchInput'),
+            stepper: document.body.textContent.includes('问卷填写流程'),
+            pending: (document.getElementById('statQPending') || {}).textContent || ''
+        }))()""")
+        check("返回列表后卡片还在", back and back["cards"] > 0, back)
+        check("返回列表后统计卡/筛选/搜索/流程都在",
+              back and back["stats"] == 3 and back["filter"] and back["search"] and back["stepper"],
+              back)
+        check("返回列表后待填写计数已刷新", back and back["pending"] not in ("", "--"), back)
+
         cdp.drain()
         errors = []
         for event in cdp.events:

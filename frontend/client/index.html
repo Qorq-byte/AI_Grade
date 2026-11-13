@@ -2024,6 +2024,8 @@ function backToQuestionnaireList(){
     var sec=document.getElementById('questionnaire');
     var snapshot=questionnaireSectionSnapshot();
     if(sec&&snapshot)sec.innerHTML=snapshot;
+    /* 提交后"已提交"计数会变，缓存必须作废，否则返回列表看到的还是旧统计 */
+    WBStore.invalidate('questionnaires');
     loadQuestionnaireList();
 }
 
