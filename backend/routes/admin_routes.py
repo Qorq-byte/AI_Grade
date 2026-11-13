@@ -2716,4 +2716,41 @@ def admin_export_audit_logs(
     )
 
 
+class NotificationBatchRequest(BaseModel):
+    ids: list[int] = []
+    title: Optional[str] = None
+
+
+@router.post("/notifications/batch-withdraw")
+def admin_batch_withdraw_notifications(
+    req: NotificationBatchRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_admin_user),
+):
+    """按 id 批量撤回通知（比「按标题全删」精确，适合勾选后一次撤）。
+
+    也允许只给 title —— 那是「同一个标题发错了一批」的场景，接口层做二次确认
+    由前端负责，这里只校验「至少给一种」。
+    """
+    if not req.ids and not req.title:
+        raise HTTPException(status_code=400, detail="请至少选择一条通知")
+
+    q = db.query(Notification)
+    if req.ids:
+        q = q.filter(Notification.id.in_(req.ids))
+    if req.title:
+        q = q.filter(Notification.title == req.title)
+
+    count = q.delete(synchronize_session=False)
+    db.commit()
+
+    _log_operation(
+        db, admin.id, admin.username, "admin_batch_withdraw_notifications",
+        resource_type="notification", resource_id="batch",
+        detail=f"批量撤回通知 {count} 条"
+               + (f"（标题「{req.title}」）" if req.title else f"（id {len(req.ids)} 个）"),
+    )
+    return {"success": True, "message": f"已撤回 {count} 条通知", "data": {"deleted": count}}
+
+
 from backend.utils.log_utils import log_operation as _log_operation

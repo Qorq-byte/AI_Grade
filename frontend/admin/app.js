@@ -1141,7 +1141,9 @@ async function refreshNotifHistory(){
     if(!resp||!resp.success){c.innerHTML=failBox(resp,'加载失败');return}
     var items=resp.data.notifications,total=resp.data.total,page=resp.data.page,ps=resp.data.page_size,tp=Math.ceil(total/ps);
     if(!items.length){c.innerHTML='<div class="empty-state"><p>暂无发送记录</p></div>';pagDiv.innerHTML='';return}
-    c.innerHTML='<table class="table-view"><thead><tr><th>ID</th><th>接收用户</th><th>标题</th><th>内容</th><th>状态</th><th>发送时间</th><th>操作</th></tr></thead><tbody>'+items.map(function(n){return '<tr><td>'+n.id+'</td><td>'+esc(n.username)+' (ID:'+n.user_id+')</td><td>'+esc(n.title)+'</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(n.content)+'</td><td><span class="badge '+(n.is_read?'badge-success':'badge-warning')+'">'+(n.is_read?'已读':'未读')+'</span></td><td style="font-size:0.78rem;color:var(--muted)">'+formatTime(n.created_at)+'</td><td><button class="btn btn-sm" style="background:var(--danger-bg);color:var(--danger-fg);padding:4px 10px;font-size:.78rem;border:none;border-radius:6px;cursor:pointer" onclick="withdrawNotification('+n.id+')">撤回</button></td></tr>'}).join('')+'</tbody></table>';
+    c.innerHTML='<div style="display:flex;justify-content:flex-end;margin-bottom:8px">'+
+        '<button class="btn btn-sm btn-danger" onclick="withdrawSelectedNotifications()">撤回选中</button></div>'+
+        '<table class="table-view"><thead><tr><th style="width:34px"><input type="checkbox" id="notif-check-all" onchange="toggleAllNotifs(this.checked)"></th><th>ID</th><th>接收用户</th><th>标题</th><th>内容</th><th>状态</th><th>发送时间</th><th>操作</th></tr></thead><tbody>'+items.map(function(n){return '<tr><td><input type="checkbox" class="notif-check" data-nid="'+n.id+'"></td><td>'+n.id+'</td><td>'+esc(n.username)+' (ID:'+n.user_id+')</td><td>'+esc(n.title)+'</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(n.content)+'</td><td><span class="badge '+(n.is_read?'badge-success':'badge-warning')+'">'+(n.is_read?'已读':'未读')+'</span></td><td style="font-size:0.78rem;color:var(--muted)">'+formatTime(n.created_at)+'</td><td><button class="btn btn-sm" style="background:var(--danger-bg);color:var(--danger-fg);padding:4px 10px;font-size:.78rem;border:none;border-radius:6px;cursor:pointer" onclick="withdrawNotification('+n.id+')">撤回</button></td></tr>'}).join('')+'</tbody></table>';
     renderPagination(pagDiv,page,tp,function(p){notifPage=p;refreshNotifHistory()});
 }
 async function withdrawNotification(id){
@@ -1632,5 +1634,27 @@ function exportAuditCsv(){
     if(auditUserId)p.set('user_id',auditUserId);
     var qs=p.toString();
     downloadCsv(API_BASE+'/audit-logs/export'+(qs?'?'+qs:''),'audit_logs.csv');
+}
+
+// ── 通知批量撤回 ──
+function toggleAllNotifs(checked){
+    var boxes=document.querySelectorAll('.notif-check');
+    for(var i=0;i<boxes.length;i++)boxes[i].checked=checked;
+}
+
+function selectedNotifIds(){
+    var boxes=document.querySelectorAll('.notif-check:checked');
+    var ids=[];
+    for(var i=0;i<boxes.length;i++)ids.push(Number(boxes[i].getAttribute('data-nid')));
+    return ids;
+}
+
+async function withdrawSelectedNotifications(){
+    var ids=selectedNotifIds();
+    if(!ids.length){showToast('请先勾选要撤回的通知','error');return}
+    if(!confirm('确认撤回选中的 '+ids.length+' 条通知？撤回后所有客户端将不可见。'))return;
+    var r=await api(API_BASE+'/notifications/batch-withdraw','POST',{ids:ids});
+    if(r&&r.success){showToast(r.message);refreshNotifHistory()}
+    else{showToast((r&&r.detail)||'撤回失败','error')}
 }
 
