@@ -899,12 +899,27 @@ def change_password(req: ChangePasswordRequest, current_user: User = Depends(get
     current_user.password_hash = f"{new_salt}:{new_hash}"
     # 改完就解除强制改密，否则用户改完还是被自己的 403 拦着（批次 24）
     current_user.must_change_password = False
-    current_user.updated_at = datetime.now(timezone.utc)
+    # 口令一变，之前签发的所有令牌立即作废（批次 25）。
+    # 但不能把正在改密的这台设备也踢下线，所以下面补发一枚新令牌。
+    current_user.token_version = int(getattr(current_user, "token_version", 0) or 0) + 1
+    current_user.updated_at = utcnow()
     db.commit()
 
     _log_operation(db, current_user.id, current_user.username, "change_password", resource_type="user", resource_id=str(current_user.id), detail="用户修改密码")
 
-    return {"success": True, "message": "密码修改成功"}
+    from backend.middleware.auth_middleware import create_access_token
+
+    new_access = create_access_token(data={
+        "user_id": current_user.id,
+        "username": current_user.username,
+        "role": current_user.role.value,
+        "ver": int(current_user.token_version or 0),
+    })
+    return {
+        "success": True,
+        "message": "密码修改成功",
+        "data": {"access_token": new_access},
+    }
 
 
 # ─── 通知相关 ───

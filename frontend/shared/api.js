@@ -314,6 +314,11 @@
     ApiClient.prototype.blob = function (url, opts) {
         return this.request('GET', url, null, Object.assign({ raw: true, long: true }, opts || {}));
     };
+    /* 改密后服务端会补发一枚新令牌（旧令牌随 token_version 作废），
+       调用方拿到后交给这里落盘，避免刚改完密码就被自己的 401 踢下线。 */
+    ApiClient.prototype.setToken = function (token) {
+        if (token) writeAccessToken(token);
+    };
 
     global.WBApiClass = ApiClient;
     global.WBApi = new ApiClient();
