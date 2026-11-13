@@ -220,15 +220,28 @@ def admin_dashboard(db: Session = Depends(get_db)):
 #  用户管理
 # ═══════════════════════════════════════════════════════
 
+_USER_SORT_FIELDS = {
+    # 「谁最烧 Token」是这个列表的主要用途，必须在 SQL 里排，
+    # 否则只能排当前这一页 —— 翻页后答案就变了。
+    "tokens_desc": lambda: func.coalesce(User.tokens_used, 0).desc(),
+    "tokens_asc": lambda: func.coalesce(User.tokens_used, 0).asc(),
+    "created_desc": lambda: User.created_at.desc(),
+    "created_asc": lambda: User.created_at.asc(),
+    "last_login_desc": lambda: func.coalesce(User.last_login_at, User.created_at).desc(),
+    "last_login_asc": lambda: func.coalesce(User.last_login_at, User.created_at).asc(),
+}
+
+
 @router.get("/users")
 def admin_list_users(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     search: Optional[str] = None,
     role: Optional[str] = None,
+    sort: Optional[str] = Query(None, description="tokens_desc / tokens_asc / created_desc / created_asc / last_login_desc / last_login_asc"),
     db: Session = Depends(get_db),
 ):
-    """管理员查看用户列表（分页 + 筛选）"""
+    """管理员查看用户列表（分页 + 筛选 + 排序）"""
     q = db.query(User)
     if search:
         q = q.filter(User.username.contains(search))
@@ -236,7 +249,9 @@ def admin_list_users(
         q = q.filter(User.role == role)
 
     total = q.count()
-    users = q.order_by(User.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    order_by = _USER_SORT_FIELDS.get((sort or "").strip(), _USER_SORT_FIELDS["created_desc"])()
+    # 主排序键可能重复（同 token 数），补 id 兜底，否则翻页会漏人/重复
+    users = q.order_by(order_by, User.id.asc()).offset((page - 1) * page_size).limit(page_size).all()
 
     return {
         "success": True,
@@ -278,6 +293,47 @@ def admin_create_user(req: AdminCreateUserRequest, db: Session = Depends(get_db)
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/users/options")
+def admin_user_options(
+    role: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = Query(2000, ge=1, le=5000),
+    db: Session = Depends(get_db),
+):
+    """用户下拉选项（轻量）— 只回 id/username/role
+
+    必须声明在 `/users/{user_id}` 之前：否则 `options` 会先被当作 int 路径参数
+    匹配进详情接口，直接 422。
+    这个端点的存在是为了让「通知-指定用户」这类需要全量用户的地方不必去调
+    `/users?page_size=9999` —— 那个参数超过 `le=100` 会被 FastAPI 挡下。
+    """
+    q = db.query(User.id, User.username, User.role, User.is_active)
+    if role:
+        q = q.filter(User.role == role)
+    if search:
+        q = q.filter(User.username.contains(search))
+    rows = q.order_by(User.id.asc()).limit(limit + 1).all()
+    truncated = len(rows) > limit
+    rows = rows[:limit]
+
+    return {
+        "success": True,
+        "data": {
+            "total": len(rows),
+            "truncated": truncated,
+            "users": [
+                {
+                    "id": r[0],
+                    "username": r[1],
+                    "role": r[2].value if isinstance(r[2], UserRole) else r[2],
+                    "is_active": r[3],
+                }
+                for r in rows
+            ],
+        },
+    }
 
 
 @router.get("/users/{user_id}")
@@ -346,6 +402,8 @@ def admin_update_user(user_id: int, req: AdminUpdateUserRequest, db: Session = D
         user.password_hash = f"{salt}:{password_hash}"
         # 管理员设的密码本人并不知道（或只是临时口令），置位后强制其下次登录自行改密
         user.must_change_password = True
+        # 管理员重置口令 → 该用户已登录的会话必须立刻失效（批次 25）
+        user.token_version = int(getattr(user, "token_version", 0) or 0) + 1
         changed.append("password")
 
     db.commit()
@@ -360,7 +418,11 @@ def admin_update_user(user_id: int, req: AdminUpdateUserRequest, db: Session = D
 
 
 @router.delete("/users/{user_id}")
-def admin_delete_user(user_id: int, db: Session = Depends(get_db)):
+def admin_delete_user(
+    user_id: int,
+    admin: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
     """管理员删除用户（软删除 — 禁用账户）"""
     user = get_user_by_id(db, user_id)
     if not user:
@@ -373,15 +435,19 @@ def admin_delete_user(user_id: int, db: Session = Depends(get_db)):
     db.commit()
 
     _log_operation(
-        db, user_id=user_id, username=username,
-        action="admin_delete_user", resource_type="user",
+        db, user_id=admin.id, username=admin.username,
+        action="admin_delete_user", resource_type="user", resource_id=str(user_id),
         detail=f"管理员禁用用户 {username}",
     )
     return {"success": True, "message": f"用户 '{username}' 已被禁用"}
 
 
 @router.post("/users/{user_id}/deactivate")
-def admin_deactivate_user(user_id: int, db: Session = Depends(get_db)):
+def admin_deactivate_user(
+    user_id: int,
+    admin: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
     """管理员注销用户（硬删除 — 彻底删除用户及所有关联数据）"""
     username = ""
     session_ids = []
@@ -462,6 +528,15 @@ def admin_deactivate_user(user_id: int, db: Session = Depends(get_db)):
 
     # ── 提交后清理 ──
 
+    # 磁盘上的上传件与导出件：库里的记录跟着 cascade 没了，但盘上的文件不会自己消失。
+    # 只删库不删盘 = 空间没释放、数据还在，等于「注销」了两次都没删干净。
+    disk_stats = {"files": 0, "bytes": 0, "dirs": 0, "errors": []}
+    try:
+        from backend.services.cleanup_service import CleanupService
+        disk_stats = CleanupService.purge_user_disk_artifacts(user_id)
+    except Exception as e:  # noqa: BLE001 磁盘清理失败不该影响已完成的注销
+        logger.error("清理用户 {} 的磁盘残留失败: {}", user_id, str(e))
+
     # 磁盘备份
     try:
         backup_dir = os.path.join(
@@ -489,17 +564,41 @@ def admin_deactivate_user(user_id: int, db: Session = Depends(get_db)):
     except Exception:
         pass
 
-    # 操作日志
+    # ── 操作日志 ──
+    # 必须记在「操作者」名下：被注销的用户行已经删除，再用它的 id 写 OperationLog
+    # 会撞 `operation_logs.user_id → users.id` 外键，写入必然失败；而失败又被
+    # 下面的 except 吞掉，于是最该留痕的操作反而一条记录都没有。
     try:
         _log_operation(
-            db, user_id=user_id, username=username,
-            action="admin_deactivate_user", resource_type="user",
-            detail=f"管理员注销并删除用户 {username} 及其所有关联数据",
+            db,
+            user_id=admin.id,
+            username=admin.username,
+            action="admin_deactivate_user",
+            resource_type="user",
+            resource_id=str(user_id),
+            detail=(
+                f"管理员注销并删除用户 {username}(id={user_id}) 及其所有关联数据；"
+                f"清理磁盘文件 {disk_stats['files']} 个 / "
+                f"{disk_stats['bytes'] / 1024 / 1024:.2f} MB、"
+                f"导出目录 {disk_stats['dirs']} 个"
+            ),
         )
-    except Exception:
-        pass
+    except Exception as e:  # noqa: BLE001 审计失败不应回滚已完成的删除
+        logger.error("注销用户的审计日志写入失败: target={} err={}", user_id, str(e))
 
-    return {"success": True, "message": f"用户 '{username}' 已注销，所有关联数据已删除"}
+    return {
+        "success": True,
+        "message": (
+            f"用户 '{username}' 已注销，数据库记录与磁盘文件均已删除"
+            f"（文件 {disk_stats['files']} 个，释放 {disk_stats['bytes'] / 1024 / 1024:.2f} MB）"
+        ),
+        "data": {
+            "deleted_files": disk_stats["files"],
+            "freed_bytes": disk_stats["bytes"],
+            "deleted_export_dirs": disk_stats["dirs"],
+            "errors": disk_stats["errors"],
+        },
+    }
 
 
 # ═══════════════════════════════════════════════════════

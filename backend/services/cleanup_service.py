@@ -7,6 +7,7 @@
 import os
 import shutil
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import Optional, List, Dict
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -22,6 +23,58 @@ class CleanupService:
     """文件保留与数据清理服务"""
 
     RETENTION_DAYS = 90  # 默认保留90天
+
+    @staticmethod
+    def purge_user_disk_artifacts(user_id: int, root: Optional[Path] = None) -> Dict:
+        """删掉某个用户在磁盘上留下的上传件与导出件（只管磁盘，DB 由调用方负责）。
+
+        注销用户时最容易漏的就是这一步：库里的记录删干净了，`uploads/` 和
+        `backend/exports/` 里那堆文件还在。结果是「已删除」变成一句空话 ——
+        空间没释放，用户数据也仍然躺在盘上。
+
+        命名约定（写入端见 client_routes 的上传逻辑）：
+        - 上传件：`uploads/u{user_id}_{uuid}_{原文件名}`
+        - 导出件：`backend/exports/{user_id}/exports/*`
+        两处都按「用户 id 精确匹配」，不做模糊 glob，避免误删别人的文件。
+        """
+        stats: Dict = {"files": 0, "bytes": 0, "dirs": 0, "errors": []}
+        try:
+            uid = int(user_id)
+        except (TypeError, ValueError):
+            stats["errors"].append(f"非法 user_id: {user_id!r}")
+            return stats
+
+        root = Path(root) if root is not None else Path(__file__).resolve().parent.parent.parent  # 项目根
+
+        upload_dir = root / "uploads"
+        if upload_dir.is_dir():
+            for f in upload_dir.glob(f"u{uid}_*"):
+                try:
+                    if not f.is_file():
+                        continue
+                    size = f.stat().st_size
+                    f.unlink()
+                    stats["files"] += 1
+                    stats["bytes"] += size
+                except OSError as exc:
+                    stats["errors"].append(f"删除上传文件失败 {f.name}: {exc}")
+
+        export_root = root / "backend" / "exports"
+        export_dir = export_root / str(uid)
+        try:
+            # 双保险：必须是 export_root 的直接子目录，防止路径拼接出界
+            if export_dir.is_dir() and export_dir.parent.resolve() == export_root.resolve():
+                shutil.rmtree(export_dir)
+                stats["dirs"] += 1
+        except OSError as exc:
+            stats["errors"].append(f"删除导出目录失败 {export_dir}: {exc}")
+
+        if stats["files"] or stats["dirs"]:
+            logger.info(
+                "已清理用户 {} 的磁盘残留: 文件 {} 个 / {:.2f} MB / 导出目录 {} 个",
+                uid, stats["files"], stats["bytes"] / 1024 / 1024, stats["dirs"],
+            )
+        return stats
 
     @staticmethod
     def _cleanup_upload_dirs(cutoff_date: datetime, stats: Dict) -> None:
