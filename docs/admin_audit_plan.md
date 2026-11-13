@@ -571,6 +571,52 @@ onclick="changeUserPassword(3,'o\'brien')"   // 要手工 replace 反斜杠和�
 ---
 
 
+### 第十一批 · 审计导出 / 通知批量撤回 / 知识库批量导入（P4-5/6/7，2026-11-13 完成）
+
+清单里剩下三条「锦上添花」，一次做完。
+
+**P4-5 审计导出** `GET /audit-logs/export`
+
+合规场景要的是「把这段时间的操作记录给我一份」，一页 50 条翻是交不了差的。
+导出看着简单，三个坑都踩了：
+
+- CSV 转义：详情里有逗号和引号，不转义会把一行撑成好几列
+- **公式注入**：Excel 会把 `= + - @` 开头的单元格当公式执行，加前导单引号掐掉
+- 导出行为本身也要留痕（`admin_export_audit_logs`），否则「谁导走了操作记录」查不到
+
+带 BOM 输出，Excel 才不会把中文显示成乱码；`X-Export-Rows/Total` 两个响应头
+让前端能提示「命中 3000 条，只导了前 5 万条」这类情况。筛选逻辑与列表共用
+`_audit_filtered_query()`，避免两边口径漂移。
+
+**P4-6 通知批量撤回** `POST /notifications/batch-withdraw`
+
+后端其实早就有「按标题全删」，界面没接，而且对「只撤其中几条」太粗暴。
+补了按 id 批量，前端加勾选 + 全选。测试重点不是「删掉了没有」，而是**别删多了**：
+勾了 3 条不能连带把另一个用户的同名通知也撤掉。既不给 id 也不给标题时返回 400
+—— 那等于「删除全部」。
+
+**P4-7 知识库批量导入** `POST /knowledge/bulk`
+
+原来只能一条条手录。关键在于**脏数据不要整批回滚**：从 Excel 导出来的数据总有
+一两行缺列，让人回去手改 200 行是不可接受的。所以逐条校验，返回哪几行失败、
+为什么；同时按名称去重（`skip_existing` 可关）。
+
+解析放在前端：CSV 的引号规则和编码（中文 Windows 上 Excel 另存默认是 GBK）
+在后端处理起来更麻烦，解析完就是一份 JSON，接口保持简单。编码用
+`TextDecoder('utf-8')` 试读，出现替换字符 `�` 就退回 `gbk`。
+
+**测试**：新增 `tests/test_audit_export.py`(7)、`tests/test_notification_batch.py`(5)、
+`tests/test_knowledge_bulk.py`(7)；`test_admin_client.cjs` 增 8 项（CSV 引号/换行/CRLF、
+中文表头映射、无表头按位置、JSON 两种形态、逐条清洗、空输入、BOM）。
+全量 `pytest` **1006 passed**，`node --test` **113 passed**。
+
+**踩到的**：`normalizeKbItem` 里先判空再 trim，导致「只填了空格」的分类留下空串
+而不是 null —— 被测试逮到。另外跨 vm realm 的数组/对象不能用 `assert.deepEqual`
+（原型不同），改用 JSON 比较。
+
+---
+
+
 ## 附：扫描阶段未验证、现已确认的点
 
 1. ~~`/api/admin/users?page_size=9999` 是否真返回 422~~ → **已确认**，`tests/test_admin_recovery.py::test_user_options_rejects_page_size_over_limit_contract` 固化。
