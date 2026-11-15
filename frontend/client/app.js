@@ -29,6 +29,30 @@
         function showApiError(e,opts){return WBUI.showApiError(e,opts)}
         function esc(t){return WBUI.esc(t)}
 
+        // ── 统一事件委托 ──────────────────────────────────
+        // 这些按钮原来把数据拼进 onclick 里的 JS 字符串字面量：值里一个单引号就让
+        // 整个按钮静默失效，一个双引号还能提前闭合 HTML 属性。改成 data-* 之后，
+        // 值只经过属性转义，不再参与 JS 解析。
+        var ACTIONS={
+            'cmp-diff':function(el){showCandidateDiff(Number(el.dataset.step),el.dataset.left||'',el.dataset.right||'')},
+            'cmp-select':function(el){selectCandidate(Number(el.dataset.step),el.dataset.model||'')},
+            'card-toggle':function(el){toggleCard(el.dataset.target)},
+            'report-export':function(el){exportExistingReport(el.dataset.sid,el.dataset.format,el.dataset.name||'')},
+            'report-delete':function(el){deleteReport(el.dataset.sid,el.dataset.name||'')},
+            'q-delete':function(el){deleteQuestionnaire(el.dataset.sid,el.dataset.name||'')},
+            'q-submit':function(el){submitQuestionnaire(el.dataset.sid,Number(el.dataset.total||0))},
+            'wf-file-remove':function(el){removeWfFileByType(el.dataset.type,Number(el.dataset.idx||0))},
+            'step-export':function(el){exportStep(Number(el.dataset.step),el.dataset.format)}
+        };
+        document.addEventListener('click',function(e){
+            var el=e.target.closest('[data-act]');
+            if(!el)return;
+            var fn=ACTIONS[el.dataset.act];
+            if(!fn)return;
+            e.stopPropagation();   // 卡片本身有折叠/打开行为，按钮点击不该继续冒泡
+            fn(el);
+        });
+
         var currentUserData=null,isChatEnabled=true,isCollapsed=false,isMobileOpen=false,currentConversationId=null,conversations=[],isRecording=false,recordingTimer=null,recordingSeconds=0,currentMode='',speechRecognition=null,chatStatusPollTimer=null,notificationPollTimer=null;
 
         // ====== WF State ======
@@ -327,8 +351,8 @@ function buildComparisonPanel(sn){
           +'<span class="cmp-score">'+sc+' 分</span>'
           +(m===cmp.recommended?'<span class="cmp-badge">推荐</span>':'')
           +(m===cmp.selected_best?'<span class="cmp-current">当前采用</span>':'')
-          +(other?'<button class="refine-btn" onclick="showCandidateDiff('+sn+',\''+esc(m)+'\',\''+esc(other)+'\')">差异</button>':'')
-          +'<button class="refine-btn" onclick="selectCandidate('+sn+',\''+esc(m)+'\')">采用</button>'
+          +(other?'<button class="refine-btn" data-act="cmp-diff" data-step="'+sn+'" data-left="'+esc(m)+'" data-right="'+esc(other)+'">差异</button>':'')
+          +'<button class="refine-btn" data-act="cmp-select" data-step="'+sn+'" data-model="'+esc(m)+'">采用</button>'
           +'</div>';
     }
     h+='</div><button class="refine-btn" onclick="showAllDiffs('+sn+')">全部差异</button>'
@@ -574,8 +598,8 @@ function buildStepFooter(sn,st,txt){
     var f='<div class="step-footer-bar">';
     f+='<span style="font-size:11px;color:#a0aec0">步骤 '+sn+' · '+C.STEP_NAMES[sn]+'</span><span class="spacer"></span>';
     if(st==='done'&&txt){
-        f+='<button class="btn-sm" onclick="exportStep(\''+sn+'\',\'word\')">📄 导出Word</button>';
-        f+='<button class="btn-sm primary" onclick="exportStep(\''+sn+'\',\'pdf\')">📕 导出PDF</button>';
+        f+='<button class="btn-sm" data-act="step-export" data-step="'+sn+'" data-format="word">📄 导出Word</button>';
+        f+='<button class="btn-sm primary" data-act="step-export" data-step="'+sn+'" data-format="pdf">📕 导出PDF</button>';
         if(sn===6)f+='<button class="btn-sm success" onclick="generateQuestionnaireFromStep()">📋 生成问卷</button>';
     }
     f+='</div>';
@@ -765,7 +789,7 @@ function renderWfFilesByType(type){
     for(var j=0;j<files.length;j++){(function(idx){
         var f=files[idx],kb=f.size>1024*1024?(f.size/1024/1024).toFixed(1)+'MB':(f.size/1024).toFixed(0)+'KB';
         var t=document.createElement('div');t.className='wf-file-tag';
-        t.innerHTML='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#22543d" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span>'+esc(f.name)+' ('+kb+')</span><button class="remove" onclick="removeWfFileByType(\''+type+'\','+idx+')">x</button>';
+        t.innerHTML='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#22543d" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span>'+esc(f.name)+' ('+kb+')</span><button class="remove" data-act="wf-file-remove" data-type="'+esc(type)+'" data-idx="'+idx+'">x</button>';
         listEl.appendChild(t);
     })(j)}
     if(dropEl){if(files.length>0)dropEl.classList.add('has-files');else dropEl.classList.remove('has-files')}
@@ -1294,8 +1318,8 @@ function renderReportList(data){
         // 标题行：勾选框 + 项目名 + 折叠按钮
         h+='<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">';
         h+='<input type="checkbox" class="batch-check" onchange="updateBatchDeleteState(\'reports\')" data-sid="'+sid+'" style="width:16px;height:16px;accent-color:#667eea;cursor:pointer;flex-shrink:0">';
-        h+='<div class="stat-label" style="font-size:15px;font-weight:600;flex:1;min-width:0">'+pn+'</div>';
-        h+='<button class="card-toggle" onclick="toggleCard(\'rcard_'+sid+'\')" title="折叠/展开" style="width:26px;height:26px;border-radius:50%;border:1px solid #e2e8f0;background:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:14px;color:#718096;transition:all .2s">−</button>';
+        h+='<div class="stat-label" style="font-size:15px;font-weight:600;flex:1;min-width:0">'+esc(pn)+'</div>';
+        h+='<button class="card-toggle" data-act="card-toggle" data-target="rcard_'+sid+'" title="折叠/展开" style="width:26px;height:26px;border-radius:50%;border:1px solid #e2e8f0;background:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:14px;color:#718096;transition:all .2s">−</button>';
         h+='</div>';
         // 可折叠的参数区
         h+='<div class="card-detail" id="rdetail_'+sid+'">';
@@ -1312,7 +1336,7 @@ function renderReportList(data){
         h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span class="status-tag '+tagCls+'">'+status+'</span>'+rvBadge+(d.score?'<span style="font-size:12px;color:#718096">得分：'+esc(String(d.score))+'</span>':'')+'</div>';
         h+='<div style="font-size:11px;color:#a0aec0;margin-bottom:4px">生成时间：'+timeStr+'</div>';
         h+='</div>';
-        h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px"><button class="btn-export" style="font-size:11px;padding:5px 10px;height:26px" onclick="event.stopPropagation();exportExistingReport(\''+sid+'\',\'word\',\''+pn+'\')">Word</button><button class="btn-primary" style="font-size:11px;padding:5px 10px;height:26px" onclick="event.stopPropagation();exportExistingReport(\''+sid+'\',\'pdf\',\''+pn+'\')">PDF</button><button class="btn-delete" style="font-size:11px;padding:5px 10px;height:26px" onclick="event.stopPropagation();deleteReport(\''+sid+'\',\''+pn+'\')">删除</button></div>';
+        h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px"><button class="btn-export" style="font-size:11px;padding:5px 10px;height:26px" data-act="report-export" data-sid="'+sid+'" data-format="word" data-name="'+esc(pn)+'">Word</button><button class="btn-primary" style="font-size:11px;padding:5px 10px;height:26px" data-act="report-export" data-sid="'+sid+'" data-format="pdf" data-name="'+esc(pn)+'">PDF</button><button class="btn-delete" style="font-size:11px;padding:5px 10px;height:26px" data-act="report-delete" data-sid="'+sid+'" data-name="'+esc(pn)+'">删除</button></div>';
         h+='</div>';
     }
     el.innerHTML=h;
@@ -1442,15 +1466,15 @@ function renderQuestionnaireGrid(data){
         // 标题行：勾选框 + 项目名 + 折叠按钮
         h+='<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">';
         h+='<input type="checkbox" class="batch-check" onclick="event.stopPropagation()" onchange="updateBatchDeleteState(\'questionnaire\')" data-sid="'+sid+'" style="width:16px;height:16px;accent-color:#667eea;cursor:pointer;flex-shrink:0">';
-        h+='<div class="stat-label" style="font-size:14px;font-weight:600;flex:1;min-width:0">'+pn+'</div>';
-        h+='<button class="card-toggle" onclick="event.stopPropagation();toggleCard(\'qcard_'+sid+'\')" title="折叠/展开" style="width:26px;height:26px;border-radius:50%;border:1px solid #e2e8f0;background:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:14px;color:#718096;transition:all .2s">−</button>';
+        h+='<div class="stat-label" style="font-size:14px;font-weight:600;flex:1;min-width:0">'+esc(pn)+'</div>';
+        h+='<button class="card-toggle" data-act="card-toggle" data-target="qcard_'+sid+'" title="折叠/展开" style="width:26px;height:26px;border-radius:50%;border:1px solid #e2e8f0;background:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:14px;color:#718096;transition:all .2s">−</button>';
         h+='</div>';
         // 可折叠区
         h+='<div class="card-detail" id="qdetail_'+sid+'">';
         h+='<div class="stat-header"><div class="stat-icon '+cls+'"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div></div>';
         h+='<div class="stat-value" style="font-size:14px;color:#667eea">'+label+'</div>';
         h+='<div style="font-size:11px;color:#a0aec0;margin-top:4px">生成时间：'+timeStr+'</div>';
-        h+='<button class="btn-delete" style="position:absolute;top:8px;right:36px;font-size:11px;padding:3px 8px;height:auto;z-index:1" onclick="event.stopPropagation();deleteQuestionnaire(\''+sid+'\',\''+pn+'\')">删除</button>';
+        h+='<button class="btn-delete" style="position:absolute;top:8px;right:36px;font-size:11px;padding:3px 8px;height:auto;z-index:1" data-act="q-delete" data-sid="'+sid+'" data-name="'+esc(pn)+'">删除</button>';
         h+='</div>';
         h+='</div>';
     }
@@ -1574,7 +1598,7 @@ function renderQuestionnaireForm(qs,sid,pn){
         h+='<div class="content-panel" style="background:#fafbff"><div class="panel-title" style="font-size:14px">第'+(i+1)+'题：'+esc(qt)+'</div><div class="panel-content"><div style="display:flex;gap:8px;flex-wrap:wrap">';
         for(var li=0;li<5;li++)h+='<label class="likert-label" onmouseover="this.style.borderColor=\'#667eea\';this.style.background=\'#ebf5ff\'" onmouseout="var r=document.querySelector(\'input[name=q_'+i+']:checked\');if(!r||r.value!==\''+li+'\'){this.style.borderColor=\'#e2e8f0\';this.style.background=\'white\'}"><input type="radio" name="q_'+i+'" value="'+li+'" onchange="markAnswered(this)" style="accent-color:#667eea">'+levels[li]+'</label>';
         h+='</div></div></div>'}
-    h+='<div style="padding:20px;display:flex;gap:12px;justify-content:center"><button class="btn-export" onclick="backToQuestionnaireList()">返回列表</button><button class="btn-primary" style="padding:10px 32px" onclick="submitQuestionnaire(\''+esc(sid)+'\','+qs.length+')">提交问卷</button></div></div>';
+    h+='<div style="padding:20px;display:flex;gap:12px;justify-content:center"><button class="btn-export" onclick="backToQuestionnaireList()">返回列表</button><button class="btn-primary" style="padding:10px 32px" data-act="q-submit" data-sid="'+esc(sid)+'" data-total="'+qs.length+'">提交问卷</button></div></div>';
     questionnaireSectionSnapshot();   // 覆盖之前先把列表那套标记存下来
     panel.innerHTML=h;
 }

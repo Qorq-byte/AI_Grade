@@ -115,8 +115,11 @@ def test_comparison_panel_is_wired_into_the_step_panel():
     """面板本身是 JS 拼出来的，这里只查"有没有被挂到步骤面板上、有没有入口"。"""
     assert "inner+=buildComparisonPanel(sn)" in JS
     assert "function buildComparisonPanel(sn)" in JS
-    assert 'onclick="selectCandidate(' in JS
-    assert 'onclick="showCandidateDiff(' in JS
+    # 批次 13：入口从内联 onclick 改成 data-act（避免把模型名拼进 JS 字符串）
+    assert 'data-act="cmp-select"' in JS
+    assert 'data-act="cmp-diff"' in JS
+    assert 'onclick="selectCandidate(' not in JS
+    assert 'onclick="showCandidateDiff(' not in JS
     assert 'onclick="showAllDiffs(' in JS
 
 

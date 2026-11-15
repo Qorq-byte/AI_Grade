@@ -160,6 +160,13 @@ def main():
         r = client.get("/admin")
         check("管理端页面可下发", r.status_code == 200 and "/static/admin/app.js" in r.text,
               f"{len(r.text)} 字节")
+        r = client.get("/client")
+        check("客户端页面可下发且脚本已外链",
+              r.status_code == 200 and "/static/client/app.js" in r.text and "<script>" not in r.text,
+              f"{len(r.text)} 字节")
+        r = client.get("/static/client/app.js")
+        check("客户端脚本可缓存", r.status_code == 200 and bool(r.headers.get("etag")),
+              f"{len(r.text)} 字符")
         r = client.get("/static/admin/app.js")
         check("脚本带缓存校验头", r.status_code == 200 and bool(r.headers.get("etag")),
               r.headers.get("content-type", ""))
