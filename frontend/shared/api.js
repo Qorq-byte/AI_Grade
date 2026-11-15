@@ -119,7 +119,9 @@
         opts = opts || {};
         var upper = String(method || 'GET').toUpperCase();
         var isGet = upper === 'GET' || upper === 'HEAD';
-        var timeout = opts.timeout || (opts.long ? LONG_TIMEOUT : DEFAULT_TIMEOUT);
+        // noTimeout：工作流步进动辄几分钟，调用方明确要求不设超时。
+        // 注意超时只覆盖「等到响应头」，流式响应开始后本来就不受它影响。
+        var timeout = opts.noTimeout ? 0 : (opts.timeout || (opts.long ? LONG_TIMEOUT : DEFAULT_TIMEOUT));
         var maxRetries = isGet ? (opts.retries === undefined ? MAX_RETRIES : opts.retries) : 0;
         var dedupe = opts.dedupe === undefined ? isGet : !!opts.dedupe;
         var dedupeKey = upper + ' ' + url + ' ' + (body ? JSON.stringify(body) : '');
@@ -173,7 +175,7 @@
         var timer = null;
         var timeoutReject = null;
         /* 超时用独立的 deferred 判定，不依赖 fetch 是否响应 abort */
-        var timeoutPromise = new Promise(function (_, reject) {
+        var timeoutPromise = timeout > 0 ? new Promise(function (_, reject) {
             timeoutReject = reject;
             timer = setTimeout(function () {
                 timedOut = true;
@@ -182,7 +184,7 @@
                     code: 'timeout', retryable: true, requestId: requestId
                 }));
             }, timeout);
-        });
+        }) : new Promise(function () {});   // 永不 settle：保留错误归一化，又不会自己 abort
         if (opts.signal) {
             if (opts.signal.aborted) controller.abort();
             else opts.signal.addEventListener('abort', function () { controller.abort(); }, { once: true });
@@ -190,7 +192,8 @@
 
         var init = { method: method, headers: headers, signal: controller.signal };
         if (body !== undefined && body !== null) {
-            init.body = body instanceof FormData ? body : JSON.stringify(body);
+            init.body = (body instanceof FormData || typeof body === 'string')
+                ? body : JSON.stringify(body);
         }
 
         var fetchPromise = fetch(url, init).then(function (response) {
@@ -214,7 +217,7 @@
                 });
             }
             if (opts.raw) {
-                if (!response.ok) {
+                if (!response.ok && !opts.rawAll) {
                     throw ApiError('请求失败（HTTP ' + response.status + '）', {
                         code: 'http_' + response.status, status: response.status,
                         retryable: !!RETRYABLE_STATUS[response.status], requestId: requestId
@@ -310,6 +313,12 @@
     ApiClient.prototype.del = function (url, opts) { return this.request('DELETE', url, null, opts); };
     ApiClient.prototype.upload = function (url, formData, opts) {
         return this.request('POST', url, formData, Object.assign({ long: true }, opts || {}));
+    };
+    /* 需要「拿到原始 Response 自己处理」的场景（读流、看状态码）。
+       仍然走统一层：带令牌、401 自动刷新并重放、错误归一化。 */
+    ApiClient.prototype.raw = function (method, url, body, opts) {
+        return this.request(method, url, body,
+            Object.assign({ raw: true, rawAll: true }, opts || {}));
     };
     ApiClient.prototype.blob = function (url, opts) {
         return this.request('GET', url, null, Object.assign({ raw: true, long: true }, opts || {}));
