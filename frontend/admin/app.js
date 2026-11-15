@@ -377,7 +377,8 @@ async function submitPasswordGate(){
     }
 }
 
-function esc(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+// 与 shared/ui.js 保持一致：& < > " ' 全转义。属性值里出现引号时才不会提前闭合。
+function esc(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 
 function tok(n){if(!n)return'0';if(n<1000)return String(n);if(n<1e6)return (n/1e3).toFixed(1)+'K';return (n/1e6).toFixed(1)+'M'}
 

@@ -60,10 +60,18 @@
         return host;
     }
 
+    // 转义要覆盖引号：这个函数的返回值经常被塞进 HTML 属性（data-*/title），
+    // 只转 & < > 的话，值里一个 " 就能提前闭合属性、注入新标签。
+    // 注意：实体转义挡不住「把值拼进内联 JS 字符串字面量」—— 属性值在交给 JS 前
+    // 会先做实体解码，&#39; 又变回 ' 了。那种场景必须改用 data-* + 事件委托。
     function esc(text) {
-        var d = document.createElement('div');
-        d.textContent = text === undefined || text === null ? '' : String(text);
-        return d.innerHTML;
+        if (text === undefined || text === null) return '';
+        return String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
 
     function showToast(msg, type, options) {
