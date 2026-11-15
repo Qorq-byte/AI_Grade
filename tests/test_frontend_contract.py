@@ -31,30 +31,49 @@ PAGES = {
 _SCRIPT = re.compile(r"<script[\s\S]*?</script>", re.I)
 
 
+def _external_js(html: str) -> str:
+    """把页面用 `<script src="/static/...">` 引的外部脚本也读进来。
+
+    批次 13 起，客户端与管理端都把内联脚本抽成了独立文件（页面 no-store、脚本可缓存），
+    契约检查如果只读 HTML，就会看不见几乎所有函数定义 —— 那是假红。
+    """
+    chunks = []
+    for src in re.findall(r'<script[^>]*\bsrc="([^"]+)"', html, flags=re.I):
+        if not src.startswith("/static/"):
+            continue
+        target = FRONTEND / src[len("/static/"):]
+        if target.is_file():
+            chunks.append(target.read_text(encoding="utf-8"))
+    return "\n".join(chunks)
+
+
 def analyze(path: Path) -> dict:
     """把一个页面的「接线」抽成集合，供各条断言使用。"""
     html = path.read_text(encoding="utf-8")
     markup = _SCRIPT.sub("", html)
     js = "\n".join(re.findall(r"<script[^>]*>([\s\S]*?)</script>", html, flags=re.I))
+    js += "\n" + _external_js(html)
     markup_ids = re.findall(r'\bid="([^"]+)"', markup)
     # JS 里"造出来"的 id：模板字符串里的 id="x"，以及 row.id = 'x' 这种属性赋值
     js_ids = set(re.findall(r'id="([^"]+)"', js))
     js_ids |= set(re.findall(r"\.id\s*=\s*['\"]([^'\"]+)['\"]", js))
-    refs = set(re.findall(r"getElementById\(['\"]([^'\"]+)['\"]\)", html))
-    refs |= set(re.findall(r"querySelector\(['\"]#([A-Za-z0-9_-]+)['\"]\)", html))
+    refs = set(re.findall(r"getElementById\(['\"]([^'\"]+)['\"]\)", js))
+    refs |= set(re.findall(r"querySelector\(['\"]#([A-Za-z0-9_-]+)['\"]\)", js))
     handlers = set()
-    for call in re.findall(r'on(?:click|change|input|keydown|submit)="([^"]+)"', html):
+    for call in re.findall(r'on(?:click|change|input|keydown|submit)="([^"]+)"', html + js):
         match = re.match(r"\s*([A-Za-z_$][\w$]*)\s*\(", call)
         if match:
             handlers.add(match.group(1))
-    funcs = set(re.findall(r"function\s+([A-Za-z_$][\w$]*)\s*\(", html))
-    funcs |= set(re.findall(r"(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*function", html))
-    return {"html": html, "markup_ids": markup_ids, "all_ids": set(markup_ids) | js_ids,
+    funcs = set(re.findall(r"function\s+([A-Za-z_$][\w$]*)\s*\(", js))
+    funcs |= set(re.findall(r"(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*function", js))
+    return {"html": html, "js": js, "markup_ids": markup_ids,
+            "all_ids": set(markup_ids) | js_ids,
             "refs": refs, "handlers": handlers, "funcs": funcs}
 
 
 ANALYSIS = {name: analyze(path) for name, path in PAGES.items()}
 HTML = ANALYSIS["client"]["html"]
+JS = ANALYSIS["client"]["js"]          # 已抽离到 frontend/client/app.js
 MARKUP_IDS = ANALYSIS["client"]["markup_ids"]
 
 _CONTROL = {"if", "for", "while", "switch", "return", "typeof", "alert", "confirm"}
@@ -94,11 +113,11 @@ def test_key_anchors_still_exist(anchor):
 
 def test_comparison_panel_is_wired_into_the_step_panel():
     """面板本身是 JS 拼出来的，这里只查"有没有被挂到步骤面板上、有没有入口"。"""
-    assert "inner+=buildComparisonPanel(sn)" in HTML
-    assert "function buildComparisonPanel(sn)" in HTML
-    assert 'onclick="selectCandidate(' in HTML
-    assert 'onclick="showCandidateDiff(' in HTML
-    assert 'onclick="showAllDiffs(' in HTML
+    assert "inner+=buildComparisonPanel(sn)" in JS
+    assert "function buildComparisonPanel(sn)" in JS
+    assert 'onclick="selectCandidate(' in JS
+    assert 'onclick="showCandidateDiff(' in JS
+    assert 'onclick="showAllDiffs(' in JS
 
 
 def test_workflow_page_loads_the_step_module_before_using_it():
@@ -140,15 +159,13 @@ def test_questionnaire_card_is_clickable_as_a_whole():
     `点卡片空白处能打开问卷` 失败、`点项目名能打开问卷` 通过。
     改成整卡可点 + 网格上做事件委托（顺带绕开"项目名里带单引号会把 onclick 打断"）。
     """
-    html = ANALYSIS["client"]["html"]
-
     # 勾选框也有 data-sid，所以要钉到卡片本身（只给勾选框带 = 点卡片还是没反应）
-    assert '''id="qcard_'+sid+'" data-sid="'+sid+'"''' in html, \
+    assert '''id="qcard_'+sid+'" data-sid="'+sid+'"''' in JS, \
         "卡片上没有 data-sid，事件委托没法定位会话"
-    assert "function bindQuestionnaireGrid()" in html
-    assert "bindQuestionnaireGrid()" in html.replace("function bindQuestionnaireGrid()", "")
+    assert "function bindQuestionnaireGrid()" in JS
+    assert "bindQuestionnaireGrid()" in JS.replace("function bindQuestionnaireGrid()", "")
     # 旧写法：把项目名塞进内联 onclick（名字里有单引号就整段失效）
-    assert 'onclick="openQuestionnaire(' not in html
+    assert 'onclick="openQuestionnaire(' not in JS
 
 
 def test_opening_a_questionnaire_never_regenerates_it():
@@ -158,10 +175,8 @@ def test_opening_a_questionnaire_never_regenerates_it():
     工作流页用 30，参数一变就重新生成一版、题号全换 —— 已提交的答案再也挂不上。
     所以打开时先 GET 已发布版本，只有 404 才回退到生成。
     """
-    html = ANALYSIS["client"]["html"]
-
-    assert "function fetchPublishedQuestionnaire(sid)" in html
-    assert html.count("fetchPublishedQuestionnaire(sid)") >= 2, "定义了却没被打开流程用上"
+    assert "function fetchPublishedQuestionnaire(sid)" in JS
+    assert JS.count("fetchPublishedQuestionnaire(sid)") >= 2, "定义了却没被打开流程用上"
 
 
 def test_questionnaire_section_markup_is_not_duplicated_in_js():
@@ -171,8 +186,9 @@ def test_questionnaire_section_markup_is_not_duplicated_in_js():
     和静态标记是两份 —— 已经漂移过（`#qTotalCount` 只在 JS 里，静态标记里没有）。
     现在改成：进表单前把这一段 HTML 存快照，返回时原样放回 + 重新拉列表。
     """
-    html = ANALYSIS["client"]["html"]
-
-    assert html.count('id="statQPending"') == 1, "问卷区标记被复制了一份到 JS 里"
-    assert html.count('id="qStatusFilter"') == 1
-    assert "function questionnaireSectionSnapshot()" in html
+    assert HTML.count('id="statQPending"') == 1, "静态标记里不该出现两次"
+    assert HTML.count('id="qStatusFilter"') == 1
+    # 标记只存在于 HTML；JS 里再抄一份就是又漂移了
+    assert 'id="statQPending"' not in JS, "问卷区标记又被复制到 JS 里"
+    assert 'id="qStatusFilter"' not in JS
+    assert "function questionnaireSectionSnapshot()" in JS

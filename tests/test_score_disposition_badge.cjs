@@ -9,16 +9,18 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const HTML = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'client', 'index.html'), 'utf8');
+// 脚本已从 index.html 抽离到 app.js
+const HTML = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'client', 'app.js'), 'utf8');
 
 // esc 是页面里的公共转义函数，这里用等价实现，避免把整页脚本都拉进来
 const escImpl = (s) => String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
 /** 把 index.html 里的函数原样装进作用域，返回 (台账) => HTML。 */
 function loadBadge() {
     const start = HTML.indexOf('function buildScoreDispositionBadge(){');
-    assert.notStrictEqual(start, -1, 'index.html 里找不到 buildScoreDispositionBadge');
+    assert.notStrictEqual(start, -1, 'app.js 里找不到 buildScoreDispositionBadge');
     const end = HTML.indexOf('/* 手改过分值或章节后', start);
     assert.notStrictEqual(end, -1, '找不到函数结束标记（注释「手改过分值或章节后」）');
     // 整段函数原样带进来，只用 var wfDispo 注入数据，免得在测试里复制一份实现

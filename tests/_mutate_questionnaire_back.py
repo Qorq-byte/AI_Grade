@@ -21,7 +21,7 @@ TESTS = [
     [PY, "-m", "tests._probe_questionnaire_fill"],
 ]
 
-PAGE = "frontend/client/index.html"
+PAGE = "frontend/client/app.js"   # 脚本已从 index.html 抽离
 
 MUTATIONS = [
     ("返回列表不恢复快照", PAGE,

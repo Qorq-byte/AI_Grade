@@ -134,9 +134,11 @@ function buildContext(fetchImpl) {
         vm.runInContext(fs.readFileSync(path.join(root, `frontend/shared/${name}.js`), 'utf8'), ctx, { filename: name + '.js' });
     });
 
+    // 脚本已从 index.html 抽到 app.js：页面是 no-store，脚本走 /static 可缓存
     const html = fs.readFileSync(path.join(root, 'frontend/client/index.html'), 'utf8');
-    const inline = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map(m => m[1]).join('\n');
-    vm.runInContext(inline, ctx, { filename: 'client-inline.js' });
+    assert.ok(html.includes('/static/client/app.js'), 'index.html 没引用 app.js');
+    const inline = fs.readFileSync(path.join(root, 'frontend/client/app.js'), 'utf8');
+    vm.runInContext(inline, ctx, { filename: 'client-app.js' });
 
     return { ctx, elements, navLinks, sections, storage, history, location };
 }

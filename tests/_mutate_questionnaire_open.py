@@ -19,7 +19,7 @@ PY = ".venv/Scripts/python.exe"
 TESTS = [PY, "-m", "pytest", "tests/test_frontend_contract.py", "-q", "--no-header",
          "-p", "no:cacheprovider"]
 
-PAGE = "frontend/client/index.html"
+PAGE = "frontend/client/app.js"   # 脚本已从 index.html 抽离
 
 MUTATIONS = [
     ("卡片不绑点击委托", PAGE,
