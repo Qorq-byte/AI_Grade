@@ -27,9 +27,10 @@ TESTS = [
 
 STEPS = "frontend/shared/workflow-steps.js"
 PAGE = "frontend/workflow/index.html"
+APP = "frontend/workflow/app.js"   # 页面脚本已抽离
 
 MUTATIONS = [
-    ("列表退回「只认 completed/pending」", PAGE,
+    ("列表退回「只认 completed/pending」", APP,
      "            const status = stepStates[n] || 'pending';",
      "            const status = completedSteps.has(n) ? 'completed' : 'pending';"),
     ("completed 不再是终态", STEPS,
@@ -46,7 +47,7 @@ MUTATIONS = [
      ""),
 ]
 
-originals = {path: Path(path).read_text(encoding="utf-8") for path in (STEPS, PAGE)}
+originals = {path: Path(path).read_text(encoding="utf-8") for path in (STEPS, PAGE, APP)}
 failures = []
 
 

@@ -61,8 +61,8 @@ test('ignores heartbeats and repeated step events across chunks', async () => {
 });
 
 test('CSV cells escape quotes and prevent formula interpretation', () => {
-    const html = fs.readFileSync(join(__dirname, '../frontend/questionnaire/index.html'), 'utf8');
-    const inline = html.match(/<script>([\s\S]+?)<\/script>/)[1];
+    // 脚本已从 index.html 抽离到 app.js
+    const inline = fs.readFileSync(join(__dirname, '../frontend/questionnaire/app.js'), 'utf8');
     const start = inline.indexOf('    function csvCell');
     const end = inline.indexOf('    function exportAsCSV', start);
     const cell = vm.runInNewContext(inline.slice(start, end) + '\ncsvCell');

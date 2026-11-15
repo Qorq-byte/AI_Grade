@@ -74,6 +74,7 @@ def analyze(path: Path) -> dict:
 ANALYSIS = {name: analyze(path) for name, path in PAGES.items()}
 HTML = ANALYSIS["client"]["html"]
 JS = ANALYSIS["client"]["js"]          # 已抽离到 frontend/client/app.js
+WJS = ANALYSIS["workflow"]["js"]       # 已抽离到 frontend/workflow/app.js
 MARKUP_IDS = ANALYSIS["client"]["markup_ids"]
 
 _CONTROL = {"if", "for", "while", "switch", "return", "typeof", "alert", "confirm"}
@@ -124,15 +125,18 @@ def test_comparison_panel_is_wired_into_the_step_panel():
 
 
 def test_workflow_page_loads_the_step_module_before_using_it():
-    """顺序错了页面就整个不工作（`WorkflowSteps` 未定义），而浏览器只在控制台报错。"""
+    """顺序错了页面就整个不工作（`WorkflowSteps` 未定义），而浏览器只在控制台报错。
+
+    脚本抽离后页面里全是 `<script src>`，顺序靠标签先后决定：
+    共享模块必须排在页面自己的 app.js 之前。
+    """
     html = ANALYSIS["workflow"]["html"]
     shared = html.index("/static/shared/workflow-steps.js")
-    inline = re.search(r"<script(?![^>]*src=)[^>]*>", html)
+    own = html.index("/static/workflow/app.js")
 
-    assert inline is not None
-    assert shared < inline.start()
+    assert shared < own, "app.js 排在了 workflow-steps.js 前面，运行时会拿不到 WorkflowSteps"
     for fn in ("statesFromStatus", "mergeStatus", "shouldAutoFollow", "stepIcon"):
-        assert f"WorkflowSteps.{fn}" in html, f"{fn} 没接上，模块白加了"
+        assert f"WorkflowSteps.{fn}" in WJS, f"{fn} 没接上，模块白加了"
 
 
 def test_workflow_step_list_has_its_anchors():
@@ -149,10 +153,8 @@ def test_workflow_step_list_renders_from_step_states():
     用户报的现象就是它：运行中点别的步骤再点回来，运行中的步骤和后面一串
     都显示"未开始"—— 因为 pollStatus 每 5 秒调一次 renderStepList()。
     """
-    html = ANALYSIS["workflow"]["html"]
-
-    assert "const status = stepStates[n] || 'pending';" in html
-    assert "completedSteps.has(n) ? 'completed'" not in html
+    assert "const status = stepStates[n] || 'pending';" in WJS
+    assert "completedSteps.has(n) ? 'completed'" not in WJS
 
 
 def test_questionnaire_card_is_clickable_as_a_whole():
