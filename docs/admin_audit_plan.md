@@ -703,6 +703,49 @@ questionnaire` 四个路由的 32 个无测试接口。
 ---
 
 
+### 第十四批 · 全站收口（2026-11-15）
+
+上一批之后剩下的三项，一次做完。
+
+**一、工作流页接统一请求层** `frontend/workflow/`
+
+它原来自己拼 fetch，只加 Authorization 头：**401 不会刷新令牌**，令牌一过期用户点
+任何按钮都是「请求失败」，只能手动重登；出错也只有一句 `Failed to fetch`。
+
+共享层补了 `raw()`（返回原始 Response，供读 SSE 流）、`rawAll`（非 2xx 也交回）、
+`noTimeout`（步进动辄几分钟，30 秒会把它掐掉；超时只覆盖「等到响应头」，关掉不影响
+流式读取）。页面里那段全局 `fetch` 猴补丁随之删掉。
+
+**二、四个页面脚本全部外链**
+
+| 页面 | 之前 | 之后 | 脚本 |
+|---|---|---|---|
+| client | 231 KB | 75 KB | 154 KB |
+| workflow | 88 KB | 24 KB | 64 KB |
+| login | 41 KB | 20 KB | 22 KB（Tailwind 配置块留在页面里） |
+| report | 17 KB | 7 KB | 11 KB |
+| questionnaire | 16 KB | 7 KB | 10 KB |
+
+report / questionnaire 顺带去掉了 Tailwind（0 处工具类）并补 preflight 等价规则；
+三个页面的 lucide 从 `@latest` 锁到 1.72.0。
+
+**三、给 32 个业务端点补契约测试**
+
+report / scoring / export / questionnaire 四个路由都在 `/api/agent` 前缀下。
+写测试时发现一个**我自己的认知错误**：之前按 `/api/report` 去找测试文件，
+自然是 0 —— 于是得出「零测试」的结论。实际是这个命名空间有 21 个测试文件，
+只是它们全打工作流主流程，这 32 个端点确实没被单独打过。判断要修正为
+「命名空间有覆盖，端点没有」。
+
+37 条断言钉三类契约：必须登录、不存在的会话给 4xx 不给堆栈、空 body 不能正常执行；
+外加下载接口的路径穿越（`../`、URL 编码、非白名单后缀）。
+
+**全站现在**：6 个页面的脚本全部外链可缓存；`pytest` **1049 passed**，
+`node --test` **118 passed**，真实库冒烟 **46 项全过**。
+
+---
+
+
 ## 附：扫描阶段未验证、现已确认的点
 
 1. ~~`/api/admin/users?page_size=9999` 是否真返回 422~~ → **已确认**，`tests/test_admin_recovery.py::test_user_options_rejects_page_size_over_limit_contract` 固化。
