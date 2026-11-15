@@ -653,6 +653,56 @@ Notification 112 / PromptTemplate 14 / PromptVersion 0 / OperationLog 1095 / Wor
 ---
 
 
+### 第十三批 · 客户端页面治理（2026-11-15）
+
+前十批都在管理端。这次做了一次全站盘点，客户端主页面是最大的空白：
+
+| 模块 | 体量 | 内联脚本 | 结论 |
+|---|---|---|---|
+| admin | 151 行 + app.js | 121 字节 | 已治理 |
+| **client** | **231 KB** | **154 KB（66%）** | 未治理 |
+| workflow | 87 KB | 63 KB | 未治理（自带一套 fetch） |
+| login / report / questionnaire | 16–42 KB | 9–22 KB | 未治理 |
+
+本批只做 client（用户天天用的那个），三件事：
+
+**一、脚本外链** —— 页面 231 KB → 75 KB，154 KB 脚本走 `/static` 带 ETag。
+HTML 是 `no-store`，原来每次访问都要重下这 154 KB。
+
+**二、`esc()` 补引号** —— 共享层用的是 `textContent → innerHTML`，只转义 `& < >`。
+这个返回值大量进 HTML 属性，值里一个 `"` 就能提前闭合属性。
+这里有个反直觉点值得记下来：**实体转义挡不住内联 JS 字面量** —— 属性值交给 JS 前
+会先做实体解码，`&#39;` 又变回 `'` 了。所以真正的修法是别把数据拼进 onclick。
+
+**三、22 处内联拼接改 `data-act`** —— 最危险的一处：
+
+```js
+exportExistingReport('+sid+','word','+pn+')   // pn = 用户填的项目名
+```
+
+项目名里一个单引号，三个按钮同时静默失效；一个双引号还能闭合属性。
+改成 data-act + dataset + 12 项调度表后，值不再参与 JS 解析。
+
+**顺带挖出一个存储型 XSS**：项目名在报告/问卷列表里是 `'>'+pn+'</div>'` 直接拼进
+innerHTML 的，项目名叫 `<img src=x onerror=alert(1)>` 就会执行。两处补了 `esc()`。
+
+**守卫**：新增 `tests/test_client_markup.py`（6 条）+ `tests/test_frontend_escaping.cjs`
+（5 条）。其中「handler 不许同时出现转义引号与拼接」这条做了变异验证 —— 注入历史
+写法能变红，恢复后转绿。
+
+**契约检查的连带修复**：`test_frontend_contract.py` 原来只解析 HTML 里的内联脚本，
+抽离后所有函数定义都看不见（假红）。现在会把 `<script src="/static/...">` 指向的
+文件也读进来；三条问卷断言从「在 HTML 里找」改成「在 JS 里找」。
+
+全量 `pytest` **1012 passed**，`node --test` **118 passed**，真实库冒烟 **46 项全过**。
+
+**仍未做**：`workflow/index.html`（87 KB，自带 fetch、无刷新/重试/错误透出）、
+login/report/questionnaire 三个小页面的内联脚本，以及 `report/scoring/export/
+questionnaire` 四个路由的 32 个无测试接口。
+
+---
+
+
 ## 附：扫描阶段未验证、现已确认的点
 
 1. ~~`/api/admin/users?page_size=9999` 是否真返回 422~~ → **已确认**，`tests/test_admin_recovery.py::test_user_options_rejects_page_size_over_limit_contract` 固化。
